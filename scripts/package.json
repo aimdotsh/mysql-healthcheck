@@ -1,0 +1,21 @@
+{
+  "name": "mysql-inspection-report-detailed",
+  "version": "3.0.0",
+  "private": true,
+  "description": "Detailed MySQL monthly inspection report generator (txt/html → docx)",
+  "bin": {
+    "mysql-extract": "./extract.js",
+    "mysql-render": "./render.js"
+  },
+  "scripts": {
+    "extract": "node extract.js",
+    "render": "node render.js",
+    "build": "node extract.js && node render.js"
+  },
+  "dependencies": {
+    "docx": "^8.5.0"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}
