@@ -111,23 +111,37 @@ node render.js <data.json> --out <输出.docx>
 
 ---
 
-## 报告结构（13 章）
+## 报告结构（17 章 + 执行摘要 + 自动目录）
 
+### 报告前置部分
+| 位置 | 内容 | 数据来源 |
+|---|---|---|
+| 封面 | 项目名 / 巡检日期 / 拓扑摘要 / 版本号 | 元数据 |
+| 执行摘要 | 6 维度健康度评分 + 雷达图 + 关键事实速览 | `healthScore` + `cluster` |
+| 目录 | 自动目录（TOC field，Word/WPS 打开后右键更新可显示页码）| 渲染时插入 |
+
+### 17 章详细分析
 | 章节 | 标题 | 数据来源 |
 |---|---|---|
-| 一 | 巡检摘要 | 自动生成的 issues 汇总 |
-| 二 | 服务器与拓扑概况 | hostname / mem info / CPU / disk mount |
-| 三 | 连接与会话分析 | MySQL Variables + Processlist info |
-| 四 | 数据库清单 | database CHARACTER |
-| 五 | 关键配置参数对比 | MySQL Variables（21+ 参数横向对比 + 差异检测） |
-| 六 | 性能指标分析 | Uptime / QPS / Slow / Buffer Pool |
-| 七 | 存储空间分析 | DB TOTAL SIZE / Top 10 / fragment / no-pk / non-utf8 |
-| 八 | 临时表空间（ibtmp1） | html innodb_sys_tablespaces + Variables |
-| 九 | InnoDB 引擎状态 | Engine innodb status |
-| 十 | 事务与锁分析 | Engine innodb status 内 TRANSACTIONS / DEADLOCK |
-| 十一 | 用户权限审计 | user check |
-| 十二 | 主从复制状态 | MySQL Replication Info + 复制相关 Variables |
-| 十三 | 巡检总结与行动计划 | issues 按优先级汇总 → 行动计划 |
+| 一 | 巡检摘要 | issues 集群级 + 节点级 + 根因关联分析 |
+| 二 | 服务器与拓扑概况 | hostname / mem / CPU / disk + 磁盘使用率柱状图 |
+| 三 | 连接与会话分析 | Variables + Processlist（过滤 system user / 从库复制线程） |
+| 四 | 数据库清单 | database CHARACTER + 跨节点差异检测 |
+| 五 | 关键配置参数对比 | Variables（21+ 参数）+ 差异自动 ✅/❌ 判断 |
+| 六 | 性能指标分析 | Uptime / QPS / Slow / Buffer Pool（含命中率柱状图）|
+| 七 | 存储空间分析 | TOP10（含归档表识别 + 横向柱状图）/ 高碎片 / 无主键 / 非 utf8 |
+| 八 | 临时表空间（ibtmp1）分析 | innodb_sys_tablespaces + Variables |
+| 九 | InnoDB 引擎状态 | Engine innodb status + key metrics + buffer pool stats |
+| 十 | 事务与锁分析 | innodb_trx / lock_waits / 最近死锁 |
+| 十一 | 用户权限审计 | user check + host=% 用户**按危险等级分组** |
+| 十二 | 主从复制状态 | Replication Info + 复制参数 + 复制风险评估 |
+| **十三** | **Schema 设计审计** | 未使用索引 / 冗余索引 / 大字段 / 分区表 / 自增列使用率 / 存储过程 |
+| **十四** | **SQL 性能治理** | TOP 20 SQL by latency + 慢日志样本 + 全表扫描 SQL + 临时表 SQL |
+| **十五** | **备份与恢复评估** | 备份工具 / cron / 备份产物 / binlog 保留 / RTO·RPO 推算 |
+| **十六** | **安全合规审计** | 9 项检查 + TLS 详情 + 等保 2.0 / PCI / GDPR / SOX 框架对照 |
+| 十七 | 巡检总结与行动计划 | issues 按优先级汇总 + 每条带 SQL 整改片段 + 长期规划 |
+
+加粗 4 章为 v4.0 新增。
 
 ---
 
