@@ -61,7 +61,7 @@ if (!outPath) {
   const safeName = (data.project || 'report').replace(/[^\w一-鿿-]+/g, '_');
   outPath = path.join(
     path.dirname(dataPath),
-    `${safeName}_MySQL数据库巡检报告_详细版_v3.0.docx`,
+    `${safeName}_MySQL数据库巡检报告_详细版_v3.1.docx`,
   );
 }
 
@@ -308,7 +308,7 @@ function chapterCover(data) {
       spacing: { before: 80, after: 80 },
     }),
     new Paragraph({
-      children: [new TextRun({ text: '版本：v3.0', size: 28, color: COLOR.text, font: FONT })],
+      children: [new TextRun({ text: '版本：v3.1', size: 28, color: COLOR.text, font: FONT })],
       alignment: AlignmentType.CENTER,
       spacing: { before: 80, after: 400 },
     }),
@@ -702,58 +702,87 @@ function chapterPerformance(data) {
 
 function chapterStorage(data) {
   const out = [h1('七、存储空间分析'), h2('7.1 数据库容量汇总')];
-  // 用主库或第一个节点的库容量
   const refNode = data.nodes.find(n => n.role === 'primary') || data.nodes[0];
   const dbRows = (refNode.dbSizes || []).map(d => [
     refNode.ip, d.name, d.sizeGB + ' GB',
   ]);
+  if (refNode.dbTotalSizeGB) {
+    dbRows.push([refNode.ip, '合计', refNode.dbTotalSizeGB + ' GB']);
+  }
   out.push(makeTable(
     ['节点 IP', '数据库', '容量 (GB)'],
     dbRows,
-    '库级容量（取自主库）',
+    `库级容量（取自主库 ${refNode.ip}）`,
   ));
   out.push(emptyLine());
 
+  // TOP10 + 归档表识别
   out.push(h2('7.2 TOP 10 大表（按数据量）'));
+  const ARCHIVE_RE = /_\d{8}$|_\d{6}$|_\d{4}_\d{2}$|_\d{4}-\d{2}/;
+  const archives = (refNode.topTables || []).filter(t => ARCHIVE_RE.test(t.table));
   const topRows = (refNode.topTables || []).map(t => [
     t.schema, t.table, t.sizeGB + ' GB',
     Number(t.rows).toLocaleString(), t.engine,
+    ARCHIVE_RE.test(t.table) ? '历史归档表' : '业务表',
   ]);
   out.push(makeTable(
-    ['库名', '表名', '大小', '估算行数', '引擎'],
+    ['库名', '表名', '大小', '估算行数', '引擎', '类型'],
     topRows,
     'TOP 10 大表',
   ));
+  if (archives.length > 0) {
+    const totalGB = archives.reduce((s, t) => s + Number(t.sizeGB), 0);
+    out.push(emptyLine());
+    out.push(para([
+      { text: `⚠️ TOP10 中识别到 ${archives.length} 张带日期后缀的历史归档表，合计约 ${totalGB.toFixed(1)} GB：`, bold: true, color: 'BF8F00' },
+    ]));
+    archives.forEach(t => out.push(bullet(`${t.schema}.${t.table}（${t.sizeGB} GB）`)));
+    out.push(para('建议评估：导出冷存 + DROP，或改造为分区表按月自动滚动，可显著释放主库空间。'));
+  }
   out.push(emptyLine());
 
-  out.push(h2('7.3 高碎片表（碎片率 ≥30%）'));
-  const fragRows = (refNode.fragTables || []).map(t => [
-    t.schema, t.table,
-    Number(t.rows).toLocaleString(),
-    formatBytesNum(t.dataLength),
-    formatBytesNum(t.dataFree),
-    (Number(t.fragRate) * 100).toFixed(1) + '%',
-    Number(t.fragRate) >= 0.7 ? '建议重建' : '关注',
-  ]);
+  // 碎片表 — 过滤小表（碎片绝对值 < 100MB 的不展示）
+  out.push(h2('7.3 高碎片表（碎片率 ≥70% 且碎片空间 ≥100MB）'));
+  const SIG_FRAG_THRESHOLD = 100 * 1024 * 1024;
+  const sigFrags = (refNode.fragTables || []).filter(t =>
+    Number(t.fragRate) >= 0.7 && Number(t.dataFree) >= SIG_FRAG_THRESHOLD
+  );
+  const fragRows = sigFrags
+    .sort((a, b) => Number(b.dataFree) - Number(a.dataFree))
+    .map(t => [
+      t.schema, t.table,
+      Number(t.rows).toLocaleString(),
+      formatBytesNum(t.dataLength),
+      formatBytesNum(t.dataFree),
+      (Number(t.fragRate) * 100).toFixed(1) + '%',
+      Number(t.dataFree) >= 10 * 1073741824 ? '高优先级重建' : '建议重建',
+    ]);
   out.push(makeTable(
     ['库名', '表名', '行数', '数据大小', '碎片空间', '碎片率', '建议'],
     fragRows,
-    '高碎片表清单',
+    '显著高碎片表清单（已过滤 <100MB 小表噪声）',
   ));
+  if (sigFrags.length === 0) {
+    out.push(noteParagraph('未发现需关注的高碎片大表。'));
+  } else {
+    const totalFree = sigFrags.reduce((s, t) => s + Number(t.dataFree), 0);
+    out.push(noteParagraph(`重建后可回收约 ${(totalFree / 1073741824).toFixed(1)} GB 空间。大表（≥10GB）推荐 pt-online-schema-change 在线重建，避免锁表。`));
+  }
   out.push(emptyLine());
 
   out.push(h2('7.4 无主键表'));
   const noPkRows = (refNode.noPkTables || []).map(t => [
-    t.schema, t.table, '无主键',
+    t.schema, t.table,
+    /^(tmp|temp|test|_)/i.test(t.table) ? '临时/测试' : '业务表',
     '补充自增主键或唯一索引',
   ]);
   out.push(makeTable(
-    ['库名', '表名', '问题', '建议'],
+    ['库名', '表名', '类型', '建议'],
     noPkRows,
-    '无主键表清单',
+    `无主键表清单（共 ${(refNode.noPkTables||[]).length} 张）`,
   ));
   out.push(emptyLine());
-  out.push(noteParagraph('无主键表在 ROW 格式复制下从库需全表扫描匹配行，复制效率极低且无法 MTS 并行复制。'));
+  out.push(noteParagraph('无主键表在 ROW 格式复制下从库需全表扫描匹配行，复制效率极低且无法 MTS 并行复制。表名含 tmp/temp/test/_ 前缀的可保留，正式业务表建议补充主键。'));
   out.push(emptyLine());
 
   out.push(h2('7.5 非 utf8 表'));
@@ -887,38 +916,74 @@ function chapterTransactions(data) {
 }
 
 function chapterUsers(data) {
-  const out = [h1('十一、用户权限审计'), h2('11.1 用户清单')];
-  const userRows = [];
-  for (const n of data.nodes) {
-    for (const u of (n.users || [])) {
-      userRows.push([
-        n.ip, u.user, u.host,
-        u.passwordExpired === 'Y' ? '已过期' : '正常',
-        u.passwordLastChanged || '-',
-        u.accountLocked === 'Y' ? '已锁定' : '未锁',
-      ]);
-    }
-    if (data.nodes.length > 1) break; // 多节点账号通常一致，只展示主库
-  }
+  const out = [h1('十一、用户权限审计')];
+  const primary = data.nodes.find(n => n.role === 'primary') || data.nodes[0];
+
+  out.push(h2('11.1 用户清单'));
+  out.push(para(`取自主库 ${primary.ip} mysql.user：`));
+  out.push(emptyLine());
+  const userRows = (primary.users || []).map(u => [
+    primary.ip, u.user, u.host,
+    u.passwordExpired === 'Y' ? '已过期' : '正常',
+    u.passwordLastChanged || '-',
+    u.accountLocked === 'Y' ? '已锁定' : '未锁',
+  ]);
   out.push(makeTable(
     ['节点 IP', '用户', '允许主机', '密码状态', '上次修改', '账户状态'],
     userRows,
-    '用户清单（取自主库 mysql.user）',
+    `用户清单（共 ${userRows.length} 个）`,
   ));
   out.push(emptyLine());
 
-  out.push(h2('11.2 风险点'));
-  const refNode = data.nodes.find(n => n.role === 'primary') || data.nodes[0];
-  const wildcards = (refNode.users || []).filter(u => u.host === '%');
-  const noLifetime = (refNode.users || []).filter(u => u.passwordLifetime === 'NULL' || !u.passwordLifetime);
-  if (wildcards.length > 0) {
-    out.push(para([{ text: `允许从任意主机（host=%）登录的用户：`, bold: true }, { text: wildcards.map(u => u.user).join('、') }]));
+  // host=% 用户按危险等级分组
+  out.push(h2('11.2 host=% 用户分级'));
+  const wildcards = (primary.users || []).filter(u => u.host === '%');
+  if (wildcards.length === 0) {
+    out.push(para('未发现 host=% 的用户，账号策略合规。'));
+  } else {
+    const classify = (user) => {
+      const u = (user || '').toLowerCase();
+      if (u === 'root' || /admin|dba|super/.test(u)) return { level: 'critical', label: '🔴 致命', reason: 'root / 管理员账号' };
+      if (u === 'repl' || /replic/.test(u)) return { level: 'high', label: '🔴 高危', reason: '复制账号，应限制为复制源 IP' };
+      if (/backup|dump/.test(u)) return { level: 'high', label: '🟠 高危', reason: '备份账号，权限较广' };
+      if (/zabbix|prometheus|nagios|monitor|exporter/.test(u)) return { level: 'low', label: '🟢 低危', reason: '监控只读账号' };
+      if (/^ro|readonly/.test(u)) return { level: 'low', label: '🟢 低危', reason: '只读账号' };
+      return { level: 'medium', label: '🟡 中危', reason: '业务账号' };
+    };
+    const grouped = { critical: [], high: [], medium: [], low: [] };
+    wildcards.forEach(u => {
+      const c = classify(u.user);
+      grouped[c.level].push({ user: u.user, host: u.host, label: c.label, reason: c.reason });
+    });
+    const rows = [];
+    for (const lvl of ['critical', 'high', 'medium', 'low']) {
+      for (const item of grouped[lvl]) {
+        rows.push([item.label, item.user, item.host, item.reason, lvl==='low'?'可保留':lvl==='medium'?'建议缩限网段':'立即收紧到具体 IP/网段']);
+      }
+    }
+    out.push(makeTable(
+      ['等级', '用户', '主机', '类型', '建议'],
+      rows,
+      `host=% 用户清单（${wildcards.length} 个，按危险等级排序）`,
+    ));
+    out.push(emptyLine());
+
+    const critCount = grouped.critical.length + grouped.high.length;
+    if (critCount > 0) {
+      out.push(para([
+        { text: `⚠️ 必须立即收紧 ${critCount} 个高风险账号：`, bold: true, color: 'C00000' },
+        { text: [...grouped.critical, ...grouped.high].map(u => u.user).join('、') },
+      ]));
+    }
   }
-  out.push(para('安全建议：'));
-  out.push(bullet('限制 root / admin / repl 等高权限用户的允许主机，禁止 host=%'));
+  out.push(emptyLine());
+
+  out.push(h2('11.3 安全建议'));
+  out.push(bullet('立即清理 host=% 的 root / 管理员账号：DROP USER \'root\'@\'%\';'));
+  out.push(bullet('复制账号 repl 应限制为从库 IP 列表：CREATE USER \'repl\'@\'172.16.0.0/255.255.0.0\' ...'));
   out.push(bullet('为业务账号设置 password_lifetime（强制定期改密）'));
-  out.push(bullet('MySQL 5.7 默认 mysql_native_password 插件，可评估迁移到 caching_sha2_password'));
-  out.push(bullet('定期审计权限，回收离职人员或无用账号'));
+  out.push(bullet('MySQL 5.7 默认 mysql_native_password 插件，建议评估迁移到 caching_sha2_password'));
+  out.push(bullet('定期审计权限，回收离职人员账号'));
   return out;
 }
 
@@ -1001,25 +1066,42 @@ function chapterConclusion(data) {
   }
   out.push(emptyLine());
 
-  out.push(h2('13.2 行动计划'));
+  // 13.2 行动计划（按优先级，带具体 issue 与 SQL hint）
+  out.push(h2('13.2 行动计划（按优先级）'));
+  const renderActionBlock = (label, color, issues) => {
+    if (!issues || issues.length === 0) return;
+    out.push(para([{ text: label, bold: true, color }]));
+    issues.forEach((i, idx) => {
+      out.push(para([
+        { text: `${idx + 1}. `, bold: true },
+        { text: i.description },
+        { text: `  [节点：${i.node}]`, color: COLOR.muted },
+      ]));
+      out.push(para([
+        { text: '   ✦ 措施：', color: '548235' },
+        { text: i.action },
+      ]));
+      if (i.sql) {
+        out.push(code(i.sql));
+      }
+    });
+    out.push(emptyLine());
+  };
+
+  const p0 = data.issues.filter(i => i.priority === 'P0');
+  const p1 = data.issues.filter(i => i.priority === 'P1');
+  const p2 = data.issues.filter(i => i.priority === 'P2');
+
+  renderActionBlock('🔴 本周内（P0 紧急）', 'C00000', p0);
+  renderActionBlock('🟠 两周内（P1 重要）', 'BF8F00', p1);
+  renderActionBlock('🟡 本月内（P2 建议）', '548235', p2);
+
   const recs = data.recommendations || {};
-  if ((recs.immediate || []).length > 0) {
-    out.push(para([{ text: '本周内（P0 紧急）：', bold: true, color: 'C00000' }]));
-    recs.immediate.forEach(r => out.push(bullet(r)));
-  }
-  if ((recs.shortTerm || []).length > 0) {
-    out.push(para([{ text: '两周内（P1 重要）：', bold: true, color: 'BF8F00' }]));
-    recs.shortTerm.forEach(r => out.push(bullet(r)));
-  }
-  if ((recs.midTerm || []).length > 0) {
-    out.push(para([{ text: '本月内（P2 建议）：', bold: true, color: '548235' }]));
-    recs.midTerm.forEach(r => out.push(bullet(r)));
-  }
   if ((recs.longTerm || []).length > 0) {
-    out.push(para([{ text: '长期规划：', bold: true, color: COLOR.secondary }]));
+    out.push(para([{ text: '🔵 长期规划：', bold: true, color: COLOR.secondary }]));
     recs.longTerm.forEach(r => out.push(bullet(r)));
+    out.push(emptyLine());
   }
-  out.push(emptyLine());
 
   out.push(h2('13.3 附录 · 数据来源'));
   out.push(para('本报告基于以下原始采集文件生成：'));
@@ -1086,7 +1168,7 @@ function buildDocument(data) {
   }));
 
   return new Document({
-    creator: 'MySQL Inspection Skill v3.0',
+    creator: 'MySQL Inspection Skill v3.1',
     title: `${data.project} MySQL 数据库巡检报告（详细版）`,
     styles: {
       default: { document: { run: { font: FONT, size: 22 } } },

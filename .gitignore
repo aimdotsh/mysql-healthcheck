@@ -1,0 +1,16 @@
+# 依赖（用户运行 install.sh / npm install 自动生成）
+scripts/node_modules/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 运行产物
+*.docx
+data.json
+scripts/data.json
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
