@@ -239,26 +239,44 @@ node render.js <data.json> --out <输出.docx>
 ## 文件清单
 
 ```
-~/.workbuddy/skills/mysql-inspection-report-detailed/
-├── SKILL.md                 # 本文档
-└── scripts/
-    ├── package.json         # docx 依赖
-    ├── extract.js           # 数据提取 + 规则分析
-    ├── render.js            # docx 渲染
+mysql-inspection-report/                            # 发行包根目录
+├── README.md                                       # 5 分钟上手指南
+├── USAGE.md                                        # 详细使用文档（10 节，含 FAQ）
+├── SKILL.md                                        # 本文档（技能规范）
+├── CHANGELOG.md                                    # 版本变更记录
+├── install.sh                                      # 一键安装脚本
+├── .gitignore
+│
+├── collectors/                                     # 采集端
+│   └── mysqlHealthCheckV3.0.sh                     # 统一 sh 采集脚本（单 txt 输出）
+│
+└── scripts/                                        # 处理端（Node.js）
+    ├── package.json                                # 依赖声明（docx + @resvg/resvg-js）
+    ├── extract.js                                  # 解析 txt → data.json + 自动规则分析
+    ├── render.js                                   # 渲染 data.json → docx
+    ├── lib/
+    │   └── charts.js                               # SVG 图表生成器（gauge/pie/hbar/vbar/radar）
     └── assets/
-        └── logo.png         # 页眉 logo（可替换）
+        └── logo.png                                # 页眉 logo（可替换）
 ```
 
+**模块职责**：
+
+| 文件 | 职责 |
+|---|---|
+| `collectors/mysqlHealthCheckV3.0.sh` | 在 MySQL 主机本地运行，输出统一 txt（含 OS / DB / 慢日志 / 备份信息） |
+| `scripts/extract.js` | 解析 txt → 结构化 JSON，含健康度评分、规则分析、关联推断 |
+| `scripts/render.js` | 渲染 JSON → docx，含 17 章 + 图表嵌入 + 占位符校验 |
+| `scripts/lib/charts.js` | 纯 SVG 图表生成 + resvg PNG 转换，跨平台无 native 编译 |
+
 ---
 
-## 与 8 章精简版的关系
+## 版本演进
 
-`mysql-inspection-report`（8 章 v1.0）保留原状，适用于快速概览。本技能（13 章 v4.0）适用于深度技术审计。两者数据来源相同，但本版表达更详尽。
-
----
-
-## 版本
-
-- v4.0（当前）：数据/视图分离 + 自动分析 + 多节点自适应 + 占位符校验
-- v2.0：13 章模板，硬编码占位
-- v1.0：8 章精简版
+| 版本 | 主要变更 |
+|---|---|
+| **v4.0（当前）** | **17 章商业可交付级**：执行摘要 + 自动目录 + Schema 审计 + SQL 治理 + 备份评估 + 安全合规 + 7 类图表 + 健康度评分 + V3.0 单脚本统一采集 |
+| v3.1 | 跨节点 issue 聚合 + 根因关联分析 + 行动计划 SQL 片段 + 参数差异 ✅/❌ 自动判断 |
+| v3.0 | 数据/视图分离首版（extract.js + render.js）+ 20+ 自动规则 + 多节点自适应 + 占位符自检 |
+| v2.0 | 13 章模板，硬编码占位（已废弃） |
+| v1.0 | 8 章精简版（`mysql-inspection-report` 仍保留，适用于快速概览） |
