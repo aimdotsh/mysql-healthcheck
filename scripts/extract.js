@@ -73,7 +73,9 @@ function getSection(content, sectionName, options = {}) {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (line.includes(marker)) {
-      const after = line.split(marker)[1].trim();
+      // 兼容 V3 新格式 "[NN] 段名" 和 V2 旧格式 "段名"
+      let after = line.split(marker)[1].trim();
+      after = after.replace(/^\[\d+\]\s*/, ''); // 去掉 [01] 等前缀
       const matches = caseInsensitive
         ? after.toLowerCase().startsWith(sectionName.toLowerCase())
         : after.startsWith(sectionName);
@@ -81,7 +83,7 @@ function getSection(content, sectionName, options = {}) {
         inSec = true;
         continue;
       }
-      if (inSec) break; // 下一个段开始就停
+      if (inSec) break;
     } else if (inSec) {
       result.push(line);
     }
@@ -263,11 +265,15 @@ function parseTxt(filepath) {
 
   // -------- BLOB 字段统计 --------
   const blobSec = getSection(content, 'BLOB info');
-  node.blobColumns = parseMysqlTable(blobSec).rows.length;
+  node.blobColumns = parseMysqlTable(blobSec).rows.map(r => ({
+    schema: r[0], table: r[1], column: r[2], type: r[3],
+  }));
 
   // -------- Partitions --------
   const partSec = getSection(content, 'PARTITIONS table');
-  node.partitionTables = parseMysqlTable(partSec).rows.length;
+  node.partitionTables = parseMysqlTable(partSec).rows.map(r => ({
+    schema: r[0], table: r[1], count: r[2],
+  }));
 
   // -------- Routines --------
   const routinesSec = getSection(content, 'ROUTINES OBJECTS');
@@ -275,7 +281,331 @@ function parseTxt(filepath) {
     schema: r[0], name: r[1], type: r[2], definer: r[3],
   }));
 
+  // -------- CPU model (V3 新增) --------
+  const cpuModelSec = getSection(content, 'CPU model');
+  if (cpuModelSec) {
+    const cpuLine = cpuModelSec.trim().split('\n')[0];
+    if (cpuLine) node.cpuModel = cpuLine.trim();
+  }
+
+  // -------- 数据库对象汇总 (V3 新增) --------
+  const dbObjSec = getSection(content, 'Database objects summary');
+  if (dbObjSec) {
+    node.dbObjects = parseMysqlTable(dbObjSec).rows.map(r => ({
+      db: r[0], type: r[1], count: Number(r[2]) || 0,
+    }));
+  }
+
+  // -------- TOP 10 索引大小 (V3 新增) --------
+  const top10IdxSec = getSection(content, 'Top 10 Index Size');
+  if (top10IdxSec) {
+    node.topIndexes = parseMysqlTable(top10IdxSec).rows.map(r => ({
+      schema: r[0], table: r[1], index: r[2], sizeMB: r[3], type: r[5], columns: r[6],
+    }));
+  }
+
+  // -------- TOP SQL by latency (V3 新增) --------
+  const topSqlLat = getSection(content, 'TOP 20 SQL by total latency');
+  if (topSqlLat) {
+    node.topSqlByLatency = parseMysqlTable(topSqlLat).rows.map(r => ({
+      query: r[0], db: r[1], execCount: r[2], totalLatency: r[3],
+      avgLatency: r[4], maxLatency: r[5], rowsExamined: r[6], rowsSent: r[7],
+      digest: r[r.length - 1],
+    }));
+  }
+
+  // -------- TOP SQL by exec count --------
+  const topSqlExec = getSection(content, 'TOP 20 SQL by exec count');
+  if (topSqlExec) {
+    node.topSqlByExec = parseMysqlTable(topSqlExec).rows.map(r => ({
+      query: r[0], db: r[1], execCount: r[2], totalLatency: r[3], avgLatency: r[4],
+    }));
+  }
+
+  // -------- TOP SQL by avg latency --------
+  const topSqlAvg = getSection(content, 'TOP 20 SQL by avg latency');
+  if (topSqlAvg) {
+    node.topSqlByAvg = parseMysqlTable(topSqlAvg).rows.map(r => ({
+      query: r[0], db: r[1], execCount: r[2], avgLatency: r[3], totalLatency: r[4],
+    }));
+  }
+
+  // -------- SQL no good index --------
+  const sqlNoIdx = getSection(content, 'SQL no good index');
+  if (sqlNoIdx) {
+    node.sqlNoGoodIndex = parseMysqlTable(sqlNoIdx).rows.map(r => ({
+      query: r[0], db: r[1], execCount: r[2], totalLatency: r[3],
+      noIndexCount: r[4], noGoodIndexCount: r[5], noIndexPct: r[6],
+    }));
+  }
+
+  // -------- SQL with temp tables --------
+  const sqlTmp = getSection(content, 'SQL with temp tables');
+  if (sqlTmp) {
+    node.sqlWithTmp = parseMysqlTable(sqlTmp).rows.map(r => ({
+      query: r[0], db: r[1], execCount: r[2], totalLatency: r[3],
+      memoryTmp: r[4], diskTmp: r[5], diskPct: r[6],
+    }));
+  }
+
+  // -------- Schema unused indexes --------
+  const unusedIdx = getSection(content, 'Schema unused indexes');
+  if (unusedIdx) {
+    node.unusedIndexes = parseMysqlTable(unusedIdx).rows.map(r => ({
+      schema: r[0], table: r[1], index: r[2],
+    }));
+  }
+
+  // -------- Schema redundant indexes --------
+  const redundantIdx = getSection(content, 'Schema redundant indexes');
+  if (redundantIdx) {
+    node.redundantIndexes = parseMysqlTable(redundantIdx).rows.slice(0, 30);
+  }
+
+  // -------- 慢日志 tail --------
+  const slowLogStatus = getSection(content, 'Slow query log status');
+  if (slowLogStatus) {
+    node.slowLogStatus = slowLogStatus.trim();
+  }
+  const slowLog = getSection(content, 'Slow query log tail');
+  if (slowLog) {
+    node.slowLogAnalysis = analyzeSlowLog(slowLog);
+  }
+
+  // -------- 错误日志 tail --------
+  const errLogStatus = getSection(content, 'Error log status');
+  if (errLogStatus) {
+    node.errorLogStatus = errLogStatus.trim();
+  }
+  const errLog = getSection(content, 'Error log tail');
+  if (errLog) {
+    node.errorLogAnalysis = analyzeErrorLog(errLog);
+  }
+
+  // -------- 备份信息 --------
+  const backupTools = getSection(content, 'Backup tools available');
+  if (backupTools) {
+    node.backupTools = backupTools.trim().split('\n').filter(l => l.startsWith('[OK]') || l.startsWith('[--]'))
+      .map(l => {
+        const m = l.match(/^\[(OK|--)\]\s+(\S+):\s*(.*)$/);
+        return m ? { tool: m[2], installed: m[1] === 'OK', detail: m[3] } : null;
+      })
+      .filter(Boolean);
+  }
+  const cronUserSec = getSection(content, 'Crontab for mysql user');
+  if (cronUserSec) {
+    node.mysqlCrontab = cronUserSec.trim();
+  }
+  const cronRootSec = getSection(content, 'Crontab for root');
+  if (cronRootSec) {
+    node.rootCrontab = cronRootSec.trim();
+  }
+  const sysCronSec = getSection(content, 'System cron files for backup');
+  if (sysCronSec) {
+    node.systemCronBackup = sysCronSec.trim();
+  }
+  const backupDir = getSection(content, 'Backup directory inspection');
+  if (backupDir) {
+    node.backupDirs = parseBackupDirs(backupDir);
+  }
+  const binlogDir = getSection(content, 'Binlog directory');
+  if (binlogDir) {
+    node.binlogDirInfo = binlogDir.trim();
+  }
+
+  // -------- 安全配置 --------
+  const auditSec = getSection(content, 'Audit plugin status');
+  if (auditSec) {
+    node.auditPlugin = auditSec.trim();
+    node.hasAuditPlugin = /audit/i.test(auditSec);
+  }
+  const tlsSec = getSection(content, 'TLS / SSL configuration');
+  if (tlsSec) {
+    const tlsTable = parseMysqlTable(tlsSec);
+    const map = {};
+    tlsTable.rows.forEach(r => { map[r[0]] = r[1]; });
+    node.tlsConfig = map;
+  }
+  const tlsStatus = getSection(content, 'TLS / SSL status');
+  if (tlsStatus) {
+    const table = parseMysqlTable(tlsStatus);
+    const map = {};
+    table.rows.forEach(r => { map[r[0]] = r[1]; });
+    node.tlsStatus = map;
+  }
+  const pwdPolicy = getSection(content, 'Password validation policy');
+  if (pwdPolicy) {
+    node.passwordPolicy = pwdPolicy.trim();
+    node.hasPasswordPolicy = /validate_password/i.test(pwdPolicy) && !/未启用/.test(pwdPolicy);
+  }
+  const encryptSec = getSection(content, 'InnoDB encryption status');
+  if (encryptSec) {
+    node.encryptionStatus = encryptSec.trim();
+    node.hasInnodbEncryption = !/未启用/.test(encryptSec) && parseMysqlTable(encryptSec).rows.length > 0;
+  }
+  const emptyPwdSec = getSection(content, 'Users with empty password');
+  if (emptyPwdSec) {
+    node.emptyPasswordUsers = parseMysqlTable(emptyPwdSec).rows.map(r => ({ user: r[0], host: r[1] }));
+  }
+  const oldAuthSec = getSection(content, 'Users with old auth plugin');
+  if (oldAuthSec) {
+    node.oldAuthUsers = parseMysqlTable(oldAuthSec).rows.map(r => ({ user: r[0], host: r[1], plugin: r[2] }));
+  }
+  const failedLoginSec = getSection(content, 'failed login attempts');
+  if (failedLoginSec) {
+    node.failedLogins = parseMysqlTable(failedLoginSec).rows.slice(0, 10).map(r => ({
+      ip: r[0], host: r[1], connectErrors: r[2], handshakeErrors: r[3], authErrors: r[4],
+    }));
+  }
+  const sqlModeSec = getSection(content, 'Global SQL_MODE');
+  if (sqlModeSec) {
+    const m = sqlModeSec.match(/\|\s*([A-Z_,]+)\s*\|/);
+    if (m) node.sqlMode = m[1];
+  }
+
+  // -------- 客户访谈占位 --------
+  const interview = getSection(content, 'interview template');
+  if (interview) {
+    node.interviewTemplate = interview.trim();
+  }
+
+  // -------- auto_increment 高使用率 --------
+  const autoIncSec = getSection(content, 'auto_increment usage');
+  if (autoIncSec) {
+    const table = parseMysqlTable(autoIncSec);
+    node.autoIncrementUsage = table.rows.map(r => ({
+      schema: r[0], table: r[1], column: r[2],
+      autoIncrement: r[3], rate: parseFloat(r[4]) || 0,
+    })).filter(x => x.rate > 0.5);
+  }
+
   return node;
+}
+
+// ============== 慢日志简要分析 ==============
+function analyzeSlowLog(text) {
+  if (!text || text.trim().length === 0 || /不可读|未启用/.test(text)) {
+    return { available: false, reason: '慢日志未启用或不可读' };
+  }
+  const lines = text.split(/\r?\n/);
+  const sqls = [];
+  let currentSql = null;
+  for (const line of lines) {
+    if (line.startsWith('# Time:')) {
+      if (currentSql) sqls.push(currentSql);
+      currentSql = { time: line.replace('# Time:', '').trim() };
+    } else if (line.startsWith('# User@Host:')) {
+      if (currentSql) currentSql.userHost = line.replace('# User@Host:', '').trim();
+    } else if (line.startsWith('# Query_time:')) {
+      if (currentSql) {
+        const m = line.match(/Query_time:\s+([\d.]+)\s+Lock_time:\s+([\d.]+)\s+Rows_sent:\s+(\d+)\s+Rows_examined:\s+(\d+)/);
+        if (m) {
+          currentSql.queryTime = parseFloat(m[1]);
+          currentSql.lockTime = parseFloat(m[2]);
+          currentSql.rowsSent = Number(m[3]);
+          currentSql.rowsExamined = Number(m[4]);
+        }
+      }
+    } else if (line.startsWith('use ')) {
+      if (currentSql) currentSql.db = line.replace('use ', '').replace(';', '').trim();
+    } else if (line.startsWith('SET timestamp=')) {
+      // ignore
+    } else if (currentSql && !line.startsWith('#') && line.trim()) {
+      currentSql.sql = (currentSql.sql || '') + ' ' + line.trim();
+    }
+  }
+  if (currentSql) sqls.push(currentSql);
+
+  // 排序：按 query_time 取 TOP 20
+  const valid = sqls.filter(s => s.queryTime != null && s.sql);
+  valid.sort((a, b) => b.queryTime - a.queryTime);
+  const top = valid.slice(0, 20).map(s => ({
+    time: s.time,
+    userHost: s.userHost,
+    queryTime: s.queryTime,
+    lockTime: s.lockTime,
+    rowsSent: s.rowsSent,
+    rowsExamined: s.rowsExamined,
+    db: s.db,
+    sql: (s.sql || '').trim().slice(0, 400),
+  }));
+
+  // 简单统计
+  const stats = {
+    available: true,
+    totalEntries: valid.length,
+    maxQueryTime: valid[0]?.queryTime || 0,
+    avgQueryTime: valid.length > 0 ? valid.reduce((a, b) => a + b.queryTime, 0) / valid.length : 0,
+    maxRowsExamined: Math.max(...valid.map(s => s.rowsExamined || 0)),
+    timeSpan: valid.length > 1 ? `${valid[valid.length-1].time} ~ ${valid[0].time}` : '-',
+    top,
+  };
+  return stats;
+}
+
+// ============== 错误日志分析 ==============
+function analyzeErrorLog(text) {
+  if (!text || text.trim().length === 0 || /不可读|未启用/.test(text)) {
+    return { available: false, reason: '错误日志不可读' };
+  }
+  const lines = text.split(/\r?\n/);
+  const errors = [];
+  const warnings = [];
+  const startupEvents = [];
+
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    if (/\[ERROR\]/.test(line) || /\bERROR\b/.test(line) && !/\[Note\]/i.test(line)) {
+      errors.push(line);
+    } else if (/\[Warning\]/i.test(line) || /\bWarning\b/.test(line) && !/\[Note\]/i.test(line)) {
+      warnings.push(line);
+    } else if (/ready for connections|shutdown|starting|aborted|crash/i.test(line)) {
+      startupEvents.push(line);
+    }
+  }
+
+  return {
+    available: true,
+    totalLines: lines.length,
+    errorCount: errors.length,
+    warningCount: warnings.length,
+    errors: errors.slice(-20),       // 最后 20 条
+    warnings: warnings.slice(-10),
+    startupEvents: startupEvents.slice(-20),
+  };
+}
+
+// ============== 备份目录解析 ==============
+function parseBackupDirs(text) {
+  const dirs = [];
+  let current = null;
+  for (const line of text.split(/\r?\n/)) {
+    const headMatch = line.match(/^=====\s+(.+?)\s+=====$/);
+    if (headMatch) {
+      if (current) dirs.push(current);
+      current = { path: headMatch[1], totalSize: '-', files: [] };
+      continue;
+    }
+    if (!current) continue;
+    const sizeMatch = line.match(/^总大小:\s*(.+)$/);
+    if (sizeMatch) current.totalSize = sizeMatch[1].trim();
+    // 文件行：YYYY-MM-DD+HH:MM:SS BYTES /path
+    const fileMatch = line.match(/^(\d{4}-\d{2}-\d{2}\+[\d:.]+)\s+(\d+)\s+(.+)$/);
+    if (fileMatch) {
+      current.files.push({
+        mtime: fileMatch[1].replace('+', ' '),
+        bytes: Number(fileMatch[2]),
+        path: fileMatch[3],
+      });
+    }
+    if (/不存在/.test(line)) {
+      current = { path: line.match(/\[--\]\s+(\S+)/)?.[1] || line, exists: false, totalSize: '-', files: [] };
+      dirs.push(current);
+      current = null;
+    }
+  }
+  if (current) dirs.push(current);
+  return dirs;
 }
 
 function parseDiskMount(text) {
@@ -553,10 +883,13 @@ function main() {
   const issues = analyzeIssues(nodes);
   const correlations = deriveCorrelations(nodes, issues);
   const paramJudgments = deriveParamDiffJudgments(nodes);
+  const healthScore = computeHealthScore(nodes, issues);
+  const backupAssessment = assessBackup(nodes);
+  const securityAssessment = assessSecurity(nodes);
 
   // ============== 构造输出 ==============
   const out = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     project,
     inspectionDate,
     reportDate: new Date().toISOString().slice(0, 10),
@@ -566,10 +899,13 @@ function main() {
       nodeCount: nodes.length,
       ips: nodes.map(n => n.ip),
     },
-    overallAssessment: deriveOverallAssessment(issues),
+    healthScore,
+    overallAssessment: deriveOverallAssessment(issues, healthScore),
     issues,
     correlations,
     paramJudgments,
+    backupAssessment,
+    securityAssessment,
     nodes,
     recommendations: deriveRecommendations(nodes, issues),
   };
@@ -593,13 +929,210 @@ function deriveTopology(nodes) {
 }
 
 // ============== 整体评价 ==============
-function deriveOverallAssessment(issues) {
+function deriveOverallAssessment(issues, healthScore) {
   const p0 = issues.filter(i => i.priority === 'P0').length;
   const p1 = issues.filter(i => i.priority === 'P1').length;
-  if (p0 > 0) return '存在紧急风险，需立即处理';
-  if (p1 > 0) return '总体平稳，存在需短期处理的重点问题';
-  if (issues.length > 0) return '运行平稳，存在建议优化项';
-  return '运行平稳，未发现明显问题';
+  const scoreText = healthScore ? `（健康度评分 ${healthScore.total}/100）` : '';
+  if (p0 > 0) return '存在紧急风险，需立即处理' + scoreText;
+  if (p1 > 0) return '总体平稳，存在需短期处理的重点问题' + scoreText;
+  if (issues.length > 0) return '运行平稳，存在建议优化项' + scoreText;
+  return '运行平稳，未发现明显问题' + scoreText;
+}
+
+// ============== 健康度评分 ==============
+// 6 维度：可用性、安全性、性能、数据规范、持久化、运维规范
+function computeHealthScore(nodes, issues) {
+  const dim = {
+    availability: 100,   // 可用性（复制、磁盘、节点状态）
+    security: 100,       // 安全（账号、加密、审计）
+    performance: 100,    // 性能（命中率、慢查询、IO）
+    dataDesign: 100,     // 数据规范（主键、字符集、索引）
+    durability: 100,     // 持久化（sync_binlog、flush_log、GTID）
+    operations: 100,     // 运维（备份、监控、变更）
+  };
+
+  for (const i of issues) {
+    const penalty = { P0: 18, P1: 7, P2: 3, P3: 1 }[i.priority] || 0;
+    const t = i.type || '';
+    // 按规则类型扣对应维度的分
+    if (/disk|repl_thread|repl_delay|mem_high/.test(t)) dim.availability -= penalty;
+    else if (/wildcard|empty_password|old_auth|pwd_/.test(t)) dim.security -= penalty;
+    else if (/slow|bp_hit|long_query|sql_/.test(t)) dim.performance -= penalty;
+    else if (/no_pk|non_utf8|heavy_frag|unused_index|redundant_index|lct_/.test(t)) dim.dataDesign -= penalty;
+    else if (/flush_log|sync_binlog|gtid|ibtmp1|swap|master_readonly|slave_writable|expire_logs/.test(t)) dim.durability -= penalty;
+    else if (/param_inconsistent|backup|slow_log_off/.test(t)) dim.operations -= penalty;
+    else {
+      // 默认拆分给 availability
+      dim.availability -= penalty / 2;
+    }
+  }
+
+  // 备份维度：没备份 / 没备份工具 → 重扣
+  const hasBackupTool = nodes.some(n => (n.backupTools || []).some(t => t.installed && /xtrabackup|mysqldump|mariabackup/.test(t.tool)));
+  const hasBackupDir = nodes.some(n => (n.backupDirs || []).some(d => d.files && d.files.length > 0));
+  if (!hasBackupTool) dim.operations -= 15;
+  if (!hasBackupDir) dim.operations -= 15;
+  const hasBackupCron = nodes.some(n => /mysql|backup|dump/i.test(n.mysqlCrontab || '') || /mysql|backup|dump/i.test(n.rootCrontab || '') || /mysql|backup|dump/i.test(n.systemCronBackup || ''));
+  if (!hasBackupCron && (hasBackupDir || hasBackupTool)) dim.operations -= 5;
+
+  // 安全维度：加密 / TLS / 审计 缺失各扣
+  const hasEncryption = nodes.some(n => n.hasInnodbEncryption);
+  const hasTls = nodes.some(n => n.tlsConfig?.have_ssl === 'YES');
+  const hasAudit = nodes.some(n => n.hasAuditPlugin);
+  if (!hasEncryption) dim.security -= 5;
+  if (!hasTls) dim.security -= 5;
+  if (!hasAudit) dim.security -= 3;
+
+  // clamp 0-100
+  for (const k of Object.keys(dim)) {
+    dim[k] = Math.max(0, Math.min(100, Math.round(dim[k])));
+  }
+
+  // 总分：加权平均
+  const weights = {
+    availability: 0.25, security: 0.15, performance: 0.20,
+    dataDesign: 0.10, durability: 0.20, operations: 0.10,
+  };
+  let total = 0;
+  for (const k of Object.keys(dim)) total += dim[k] * weights[k];
+  total = Math.round(total);
+
+  return { total, dimensions: dim };
+}
+
+// ============== 备份能力评估 ==============
+function assessBackup(nodes) {
+  const items = [];
+  const tools = new Map();
+  for (const n of nodes) {
+    for (const t of (n.backupTools || [])) {
+      if (!tools.has(t.tool)) tools.set(t.tool, { tool: t.tool, installed: t.installed, detail: t.detail });
+    }
+  }
+  const result = {
+    tools: [...tools.values()],
+    hasTool: [...tools.values()].some(t => t.installed && /xtrabackup|mysqldump|mariabackup/.test(t.tool)),
+    crontabs: nodes.map(n => ({
+      ip: n.ip,
+      mysqlUser: n.mysqlCrontab || '',
+      rootUser: (n.rootCrontab || '').slice(0, 500),
+      system: (n.systemCronBackup || '').slice(0, 1000),
+    })),
+    dirs: [],
+    latestBackup: null,
+    binlogs: nodes.map(n => ({ ip: n.ip, info: n.binlogDirInfo || '' })),
+  };
+  let latestTime = 0;
+  for (const n of nodes) {
+    for (const d of (n.backupDirs || [])) {
+      result.dirs.push({ ip: n.ip, ...d });
+      for (const f of (d.files || [])) {
+        const t = new Date(f.mtime.replace(' ', 'T')).getTime();
+        if (t > latestTime) {
+          latestTime = t;
+          result.latestBackup = { ip: n.ip, path: f.path, mtime: f.mtime, sizeBytes: f.bytes };
+        }
+      }
+    }
+  }
+  // 评估
+  result.hasBackupArtifact = result.dirs.some(d => d.files && d.files.length > 0);
+  result.hasScheduledBackup = result.crontabs.some(c =>
+    /mysql|backup|dump|xtrabackup/i.test(c.mysqlUser) ||
+    /mysql|backup|dump|xtrabackup/i.test(c.rootUser) ||
+    /mysql|backup|dump|xtrabackup/i.test(c.system)
+  );
+
+  // 给出综合评估
+  if (!result.hasTool) {
+    result.assessment = '未检测到 mysqldump / xtrabackup / mariabackup 等备份工具';
+    result.severity = 'P0';
+  } else if (!result.hasBackupArtifact) {
+    result.assessment = '检测到备份工具但未发现备份产物（指定路径下无备份文件）';
+    result.severity = 'P1';
+  } else if (!result.hasScheduledBackup) {
+    result.assessment = '检测到备份产物，但未发现 cron 调度（可能是手工备份或调度在其它系统）';
+    result.severity = 'P2';
+  } else {
+    const ageMs = latestTime ? Date.now() - latestTime : Infinity;
+    const ageDays = Math.floor(ageMs / 86400000);
+    if (ageDays <= 1) result.assessment = `最近备份在 ${ageDays} 天内，状态良好`;
+    else if (ageDays <= 7) result.assessment = `最近备份在 ${ageDays} 天前，频率偏低`;
+    else result.assessment = `最近备份已 ${ageDays} 天前，存在数据丢失风险`;
+    result.severity = ageDays <= 1 ? 'OK' : ageDays <= 7 ? 'P2' : 'P0';
+  }
+
+  return result;
+}
+
+// ============== 安全合规评估 ==============
+function assessSecurity(nodes) {
+  const primary = nodes.find(n => n.role === 'primary') || nodes[0];
+  const items = [
+    {
+      id: 'strong_password_policy',
+      label: '强密码策略',
+      status: primary?.hasPasswordPolicy ? 'PASS' : 'FAIL',
+      detail: primary?.hasPasswordPolicy ? '已启用 validate_password' : '未启用密码强度校验插件',
+    },
+    {
+      id: 'no_wildcard_root',
+      label: 'root 账号未开放 host=%',
+      status: !nodes.some(n => (n.users || []).some(u => u.user === 'root' && u.host === '%')) ? 'PASS' : 'FAIL',
+      detail: nodes.some(n => (n.users || []).some(u => u.user === 'root' && u.host === '%')) ? 'root@% 存在，远程入侵敞口' : '已限制 root 远程登录',
+    },
+    {
+      id: 'audit_log',
+      label: '审计日志已启用',
+      status: nodes.some(n => n.hasAuditPlugin) ? 'PASS' : 'FAIL',
+      detail: nodes.some(n => n.hasAuditPlugin) ? '检测到 audit 插件' : '未启用 audit log 插件，无法满足等保合规',
+    },
+    {
+      id: 'tls_enabled',
+      label: 'TLS 传输加密',
+      status: primary?.tlsConfig?.have_ssl === 'YES' ? 'PASS' : 'WARN',
+      detail: primary?.tlsConfig?.have_ssl === 'YES' ? `已支持 TLS（${primary?.tlsConfig?.tls_version || ''}）` : '未开启 TLS',
+    },
+    {
+      id: 'require_secure_transport',
+      label: '强制 TLS 连接',
+      status: primary?.tlsConfig?.require_secure_transport === 'ON' ? 'PASS' : 'WARN',
+      detail: primary?.tlsConfig?.require_secure_transport === 'ON' ? '已强制 TLS' : '未强制 TLS，允许明文连接',
+    },
+    {
+      id: 'innodb_encryption',
+      label: '数据 at-rest 加密',
+      status: nodes.some(n => n.hasInnodbEncryption) ? 'PASS' : 'WARN',
+      detail: nodes.some(n => n.hasInnodbEncryption) ? '已启用 InnoDB 表空间加密' : '未启用透明数据加密',
+    },
+    {
+      id: 'no_empty_password',
+      label: '无空密码账号',
+      status: !nodes.some(n => (n.emptyPasswordUsers || []).length > 0) ? 'PASS' : 'FAIL',
+      detail: nodes.some(n => (n.emptyPasswordUsers || []).length > 0) ? '发现空密码账号' : '所有账号均设置密码',
+    },
+    {
+      id: 'auth_plugin',
+      label: '认证插件 (caching_sha2_password)',
+      status: nodes.some(n => (n.oldAuthUsers || []).length > 0) ? 'WARN' : 'PASS',
+      detail: nodes.some(n => (n.oldAuthUsers || []).length > 0) ? '仍有账号使用 mysql_native_password' : '所有账号已用现代认证',
+    },
+    {
+      id: 'failed_login_baseline',
+      label: '登录失败异常监控',
+      status: nodes.some(n => (n.failedLogins || []).some(f => Number(f.connectErrors) > 100)) ? 'WARN' : 'PASS',
+      detail: nodes.some(n => (n.failedLogins || []).some(f => Number(f.connectErrors) > 100)) ? '检测到高失败次数 IP' : '采集时未见高异常失败次数',
+    },
+  ];
+  const pass = items.filter(i => i.status === 'PASS').length;
+  const fail = items.filter(i => i.status === 'FAIL').length;
+  const warn = items.filter(i => i.status === 'WARN').length;
+  return {
+    items,
+    pass, fail, warn,
+    total: items.length,
+    complianceLevel: fail === 0 && warn <= 1 ? '高' : fail <= 2 ? '中' : '低',
+  };
 }
 
 // ============== 问题自动分析（节点级 → 集群级聚合）==============

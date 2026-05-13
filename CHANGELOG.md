@@ -4,6 +4,65 @@
 
 ---
 
+## [4.0.0] - 2026-05-13
+
+**商业可交付级**升级。结构从 13 章扩展到 **17 章**，增加图表、目录、执行摘要、健康度评分等高级 DBA 报告必备元素。
+
+### 🆕 新增章节
+
+- **执行摘要页**（面向管理层一页式摘要）：6 维度健康度评分 + 关键事实速览
+- **目录页（TOC）**：自动生成可点击目录
+- **十三、Schema 设计审计**：未使用索引 / 冗余索引 / 大字段分布 / 分区表 / 自增列使用率 / 存储过程清单（这些数据原本已采集但 v3.x 未渲染）
+- **十四、SQL 性能治理**：TOP 20 慢 SQL（performance_schema.events_statements_summary_by_digest）+ 慢日志样本 + 全表扫描 SQL + 临时表 SQL
+- **十五、备份与恢复评估**：备份工具检测 / cron 调度 / 备份产物 / RTO·RPO 推算
+- **十六、安全合规审计**：9 项自动检查 + 等保 2.0 / PCI DSS / GDPR / SOX 框架对照
+- **十七、巡检总结与行动计划**：原十三章重命名
+
+### 🎨 新增图表（替代纯文字 / 表格）
+
+- 健康度仪表（圆环式 Gauge）
+- 6 维度雷达图（可用性 / 安全性 / 性能 / 数据规范 / 持久化 / 运维）
+- 问题优先级分布饼图
+- 磁盘使用率横向柱状图
+- Buffer Pool 命中率纵向柱状图
+- TOP 10 大表横向柱状图（含归档表着色）
+- 安全合规结果饼图
+
+### 🔧 内部架构
+
+- `scripts/lib/charts.js` —— 纯 SVG 图表生成器（gauge / pie / hbar / vbar / radar）
+- `@resvg/resvg-js` —— SVG → PNG 转换（预编译二进制，跨平台无需 native 编译）
+- `extract.js` 新增字段：`healthScore`（六维度评分）/ `backupAssessment` / `securityAssessment` / `topSqlByLatency` / `unusedIndexes` / `redundantIndexes` / `autoIncrementUsage` / `slowLogAnalysis` / `errorLogAnalysis` 等
+
+### 📥 采集脚本升级（V3.0）
+
+新增 `collectors/mysqlHealthCheckV3.0.sh`（替代旧的 V2.0 + html SQL）：
+
+- **单脚本，单 txt 输出**（不再生成 html，统一格式便于解析）
+- 段名规范：`----->>>---->>>  [NN] 段名`（13 个模块）
+- 支持命令行参数 + 非交互式批量运行
+- **新增采集**：
+  - 慢日志 tail（默认 5000 行）
+  - 错误日志 tail（默认 1000 行）
+  - TOP 20 SQL by latency / exec count / avg latency
+  - 备份工具检测 / crontab 扫描 / 备份目录扫描
+  - TLS / SSL 配置与状态
+  - InnoDB 加密状态
+  - 审计插件状态
+  - 密码策略
+  - 失败登录次数
+  - CPU 型号、NUMA 信息、内核参数、网络连接数
+  - InnoDB key metrics + buffer pool stats（per pool）
+  - 客户访谈占位段
+
+### 🐛 修复
+
+- CPU 型号字段不再显示 `-`（V3 采集脚本读取 `/proc/cpuinfo`）
+- 数据库列表 / 用户清单错取 IP 最小节点（已修复为取主库）
+- v3.1 → v4.0 版本号全局更新
+
+---
+
 ## [3.1.0] - 2026-05-13
 
 基于 v3.0 报告的实战使用反馈，对**分析深度**、**问题聚合**、**用户体验**做了系统性提升。

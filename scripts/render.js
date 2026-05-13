@@ -41,7 +41,39 @@ const {
   Document, Packer, Paragraph, Table, TableRow, TableCell, TextRun,
   HeadingLevel, AlignmentType, WidthType, BorderStyle, ShadingType,
   TableLayoutType, Header, Footer, PageNumber, PageBreak, ImageRun,
+  TableOfContents, StyleLevel, Bookmark, InternalHyperlink,
 } = loadDocx();
+
+// ============== 图表生成 ==============
+let charts = null;
+try { charts = require('./lib/charts.js'); } catch (_) {}
+
+function chartImage(svgFn, opts = {}) {
+  if (!charts) return null;
+  try {
+    const svg = svgFn();
+    const png = charts.svgToPng(svg);
+    if (!png) return null;
+    return new ImageRun({
+      data: png,
+      transformation: { width: opts.width || 480, height: opts.height || 280 },
+      type: 'png',
+    });
+  } catch (e) {
+    console.warn('图表生成失败：' + e.message);
+    return null;
+  }
+}
+
+function chartParagraph(svgFn, opts = {}) {
+  const img = chartImage(svgFn, opts);
+  if (!img) return null;
+  return new Paragraph({
+    children: [img],
+    alignment: AlignmentType.CENTER,
+    spacing: { before: 100, after: 100 },
+  });
+}
 
 // ============== CLI 参数 ==============
 const args = process.argv.slice(2);
@@ -61,7 +93,7 @@ if (!outPath) {
   const safeName = (data.project || 'report').replace(/[^\w一-鿿-]+/g, '_');
   outPath = path.join(
     path.dirname(dataPath),
-    `${safeName}_MySQL数据库巡检报告_详细版_v3.1.docx`,
+    `${safeName}_MySQL数据库巡检报告_详细版_v4.0.docx`,
   );
 }
 
@@ -308,7 +340,7 @@ function chapterCover(data) {
       spacing: { before: 80, after: 80 },
     }),
     new Paragraph({
-      children: [new TextRun({ text: '版本：v3.1', size: 28, color: COLOR.text, font: FONT })],
+      children: [new TextRun({ text: '版本：v4.0', size: 28, color: COLOR.text, font: FONT })],
       alignment: AlignmentType.CENTER,
       spacing: { before: 80, after: 400 },
     }),
@@ -318,6 +350,99 @@ function chapterCover(data) {
       spacing: { before: 100, after: 200 },
     }),
     new Paragraph({ children: [new PageBreak()], spacing: { before: 0, after: 0 } }),
+  ];
+}
+
+// ============== 执行摘要（一页面向管理层）==============
+function chapterExecutiveSummary(data) {
+  const out = [h1('执行摘要')];
+  const hs = data.healthScore || { total: 0, dimensions: {} };
+  const p0 = data.issues.filter(i => i.priority === 'P0').length;
+  const p1 = data.issues.filter(i => i.priority === 'P1').length;
+  const p2 = data.issues.filter(i => i.priority === 'P2').length;
+  const p3 = data.issues.filter(i => i.priority === 'P3').length;
+
+  // 健康度仪表 + 维度雷达 并排（图表）
+  if (charts) {
+    const gaugeP = chartParagraph(() => charts.gauge(hs.total, '集群健康度'), { width: 380, height: 240 });
+    const radarP = chartParagraph(() => charts.radar([
+      { label: '可用性', value: hs.dimensions.availability || 0, max: 100 },
+      { label: '安全性', value: hs.dimensions.security || 0, max: 100 },
+      { label: '性能', value: hs.dimensions.performance || 0, max: 100 },
+      { label: '数据规范', value: hs.dimensions.dataDesign || 0, max: 100 },
+      { label: '持久化', value: hs.dimensions.durability || 0, max: 100 },
+      { label: '运维', value: hs.dimensions.operations || 0, max: 100 },
+    ], { title: '6 维度健康评分' }), { width: 380, height: 320 });
+    if (gaugeP) out.push(gaugeP);
+    if (radarP) out.push(radarP);
+  }
+
+  // 维度评分表
+  out.push(makeTable(
+    ['维度', '得分', '等级', '说明'],
+    [
+      ['可用性 (HA)', `${hs.dimensions.availability || 0}/100`, levelOf(hs.dimensions.availability), '复制状态、磁盘、节点健康'],
+      ['安全性',     `${hs.dimensions.security || 0}/100`,     levelOf(hs.dimensions.security),     '账号策略、加密、审计'],
+      ['性能',       `${hs.dimensions.performance || 0}/100`,  levelOf(hs.dimensions.performance),  '命中率、慢查询、IO'],
+      ['数据规范',   `${hs.dimensions.dataDesign || 0}/100`,   levelOf(hs.dimensions.dataDesign),   '主键、字符集、索引'],
+      ['持久化',     `${hs.dimensions.durability || 0}/100`,   levelOf(hs.dimensions.durability),   'sync_binlog、刷盘、GTID'],
+      ['运维',       `${hs.dimensions.operations || 0}/100`,   levelOf(hs.dimensions.operations),   '备份、参数一致性、监控'],
+    ],
+    `六维度健康度评分（总分 ${hs.total}/100）`,
+  ));
+  out.push(emptyLine());
+
+  // 关键事实表
+  out.push(makeTable(
+    ['指标', '值'],
+    [
+      ['项目名称', data.project],
+      ['采集日期', formatChineseDate(data.inspectionDate)],
+      ['集群拓扑', `${data.cluster.topology}（${data.cluster.nodeCount} 节点）`],
+      ['集群 IP', data.cluster.ips.join('、')],
+      ['整体评估', data.overallAssessment.replace(/（健康度评分.*?）/, '')],
+      ['问题分布', `P0 紧急 ${p0} 项 / P1 重要 ${p1} 项 / P2 建议 ${p2} 项 / P3 观察 ${p3} 项`],
+      ['备份能力', data.backupAssessment?.assessment || '-'],
+      ['合规等级', data.securityAssessment?.complianceLevel || '-'],
+    ],
+    '关键事实速览',
+  ));
+  out.push(emptyLine());
+
+  out.push(para([
+    { text: '本报告组成：', bold: true },
+    { text: '本页（执行摘要） + 目录页 + 17 章详细分析。管理层可仅阅读本页与第十七章总结；DBA 团队建议完整阅读全部章节。' },
+  ]));
+  out.push(new Paragraph({ children: [new PageBreak()] }));
+  return out;
+}
+
+function levelOf(score) {
+  if (score == null) return '-';
+  if (score >= 85) return '✅ 优秀';
+  if (score >= 70) return '✓ 良好';
+  if (score >= 55) return '⚠ 中等';
+  if (score >= 40) return '⚠ 较差';
+  return '🔴 严重';
+}
+
+// ============== 目录页 ==============
+function chapterTOC() {
+  return [
+    h1('目录'),
+    new Paragraph({
+      children: [
+        new TableOfContents('目录', {
+          hyperlink: true,
+          headingStyleRange: '1-3',
+        }),
+      ],
+    }),
+    new Paragraph({
+      children: [new TextRun({ text: '提示：Word/WPS 打开后在目录上右键 → 更新域 → 更新整个目录，可显示页码。', italics: true, size: 18, color: COLOR.muted, font: FONT })],
+      spacing: { before: 200, after: 100 },
+    }),
+    new Paragraph({ children: [new PageBreak()] }),
   ];
 }
 
@@ -344,6 +469,18 @@ function chapterSummary(data) {
     ]),
     emptyLine(),
   ];
+
+  // 问题分布饼图
+  if (charts && data.issues.length > 0) {
+    const pieP = chartParagraph(() => charts.pie([
+      { label: 'P0 紧急', value: p0, color: charts.COLORS.p0 },
+      { label: 'P1 重要', value: p1, color: charts.COLORS.p1 },
+      { label: 'P2 建议', value: p2, color: charts.COLORS.p2 },
+      { label: 'P3 观察', value: p3, color: charts.COLORS.p3 },
+    ].filter(x => x.value > 0), { title: '问题优先级分布', width: 520, height: 260 }),
+    { width: 520, height: 260 });
+    if (pieP) out.push(pieP);
+  }
 
   // 1.1 集群级问题（一次修复影响所有节点）
   if (clusterIssues.length > 0) {
@@ -454,6 +591,31 @@ function chapterServers(data) {
     diskRows,
     '磁盘挂载与使用',
   ));
+
+  // 磁盘使用率柱状图（每节点 /data 挂载点）
+  if (charts) {
+    const dataPoints = [];
+    for (const n of data.nodes) {
+      const dataMount = (n.disks || []).find(d => d.mount === '/data') || (n.disks || []).find(d => d.mount === '/');
+      if (dataMount) {
+        const pct = parseInt((dataMount.usePct || '0').replace('%', '')) || 0;
+        let color = charts.COLORS.good;
+        if (pct >= 90) color = charts.COLORS.p0;
+        else if (pct >= 80) color = charts.COLORS.p1;
+        else if (pct >= 70) color = charts.COLORS.p2;
+        dataPoints.push({ label: `${n.ip}\n${dataMount.mount}`, value: pct, color });
+      }
+    }
+    if (dataPoints.length > 0) {
+      const p = chartParagraph(() => charts.hbar(dataPoints, {
+        title: '磁盘使用率（关键挂载点）', max: 100,
+        format: v => `${v}%`,
+        width: 600, height: Math.max(180, 60 + dataPoints.length * 32),
+      }), { width: 600, height: Math.max(180, 60 + dataPoints.length * 32) });
+      if (p) out.push(p);
+    }
+  }
+
   return out;
 }
 
@@ -677,6 +839,26 @@ function chapterPerformance(data) {
     'Buffer Pool 状态',
   ));
   out.push(emptyLine());
+
+  // Buffer Pool 命中率柱状图
+  if (charts) {
+    const groups = [];
+    for (const n of data.nodes) {
+      const hit = n.innodb?.bufferPoolHitRate;
+      if (!hit) continue;
+      const parts = hit.split('/').map(s => Number(s.trim()));
+      const pct = parts[1] ? (parts[0] / parts[1] * 100) : 0;
+      groups.push({ label: n.ip, series: [{ name: 'Buffer Pool 命中率', value: Math.round(pct * 10) / 10, color: pct >= 99 ? charts.COLORS.good : pct >= 95 ? charts.COLORS.warn : charts.COLORS.bad }] });
+    }
+    if (groups.length > 0) {
+      const p = chartParagraph(() => charts.vbar(groups, {
+        title: 'Buffer Pool 命中率（推荐 ≥99%）',
+        max: 100, formatY: v => v.toFixed(0) + '%', formatV: v => v.toFixed(1) + '%',
+        showValues: true, width: 600, height: 280,
+      }), { width: 600, height: 280 });
+      if (p) out.push(p);
+    }
+  }
   out.push(noteParagraph('命中率公式：(1 - reads/read_requests) × 100%。生产环境建议保持 ≥99%；低于 95% 需评估扩大 innodb_buffer_pool_size。'));
   out.push(emptyLine());
 
@@ -730,6 +912,22 @@ function chapterStorage(data) {
     topRows,
     'TOP 10 大表',
   ));
+
+  // TOP10 横向柱状图
+  if (charts && (refNode.topTables || []).length > 0) {
+    const points = refNode.topTables.slice(0, 10).map(t => ({
+      label: t.table.length > 24 ? t.table.slice(0, 22) + '…' : t.table,
+      value: Number(t.sizeGB) || 0,
+      color: ARCHIVE_RE.test(t.table) ? charts.COLORS.p1 : charts.COLORS.primary,
+    }));
+    const p = chartParagraph(() => charts.hbar(points, {
+      title: 'TOP 10 大表（GB，橙色=历史归档）',
+      format: v => v.toFixed(1) + ' GB',
+      width: 640, height: Math.max(180, 60 + points.length * 32),
+    }), { width: 640, height: Math.max(180, 60 + points.length * 32) });
+    if (p) out.push(p);
+  }
+
   if (archives.length > 0) {
     const totalGB = archives.reduce((s, t) => s + Number(t.sizeGB), 0);
     out.push(emptyLine());
@@ -1054,9 +1252,371 @@ function chapterReplication(data) {
   return out;
 }
 
+// ============== 十三、Schema 设计审计（V4 新增）==============
+function chapterSchemaDesignAudit(data) {
+  const out = [h1('十三、Schema 设计审计')];
+  const refNode = data.nodes.find(n => n.role === 'primary') || data.nodes[0];
+
+  out.push(h2('13.1 数据库对象总览'));
+  if ((refNode.dbObjects || []).length > 0) {
+    const byDb = {};
+    for (const o of refNode.dbObjects) {
+      byDb[o.db] = byDb[o.db] || { TABLE: 0, EVENT: 0, TRIGGER: 0, PROCEDURE: 0, FUNCTION: 0, VIEW: 0 };
+      byDb[o.db][o.type] = o.count;
+    }
+    const rows = Object.entries(byDb).map(([db, c]) => [db, c.TABLE || 0, c.VIEW || 0, c.PROCEDURE || 0, c.FUNCTION || 0, c.TRIGGER || 0, c.EVENT || 0]);
+    out.push(makeTable(['数据库', '表', '视图', '存储过程', '函数', '触发器', '事件'], rows, '业务库对象统计'));
+  } else {
+    out.push(para('（采集数据中未含对象汇总，请确认 V3 采集脚本运行结果）'));
+  }
+  out.push(emptyLine());
+
+  out.push(h2('13.2 未使用索引（Schema Unused Indexes）'));
+  const unused = refNode.unusedIndexes || [];
+  if (unused.length > 0) {
+    out.push(para([{ text: `检测到 ${unused.length} 个长期未使用的索引（自 MySQL 启动以来从未被读取），占用空间且拖慢写入：`, bold: true }]));
+    const rows = unused.slice(0, 30).map(u => [u.schema, u.table, u.index]);
+    out.push(makeTable(['库名', '表名', '索引名'], rows, `Top 30 未使用索引（共 ${unused.length}）`));
+    out.push(emptyLine());
+    out.push(code(`-- 示例：DROP INDEX ${unused[0].index} ON ${unused[0].schema}.${unused[0].table};`));
+    out.push(noteParagraph('Schema_unused_indexes 视图依赖 performance_schema，结果只反映 MySQL 运行期间未被使用的索引。删除前建议至少观察一个完整业务周期（含月底/月初/促销）。'));
+  } else {
+    out.push(para('未检测到未使用索引（或采集源不含该数据）。'));
+  }
+  out.push(emptyLine());
+
+  out.push(h2('13.3 冗余索引'));
+  const redundant = refNode.redundantIndexes || [];
+  if (redundant.length > 0) {
+    out.push(para(`检测到 ${redundant.length} 组冗余索引（左前缀重复或完全覆盖），可考虑删除被覆盖的索引。`));
+    const rows = redundant.slice(0, 15).map(r => r.slice(0, 6));
+    out.push(makeTable(['库.表', '冗余索引', '主索引', '冗余列', '主列', '主索引唯一'].slice(0, rows[0]?.length || 6), rows, '冗余索引（前 15 组）'));
+  } else {
+    out.push(para('未检测到明显冗余索引。'));
+  }
+  out.push(emptyLine());
+
+  out.push(h2('13.4 大字段（BLOB/TEXT）分布'));
+  const blobs = refNode.blobColumns || [];
+  if (blobs.length > 0) {
+    // 按表汇总
+    const byTable = {};
+    for (const c of blobs) {
+      const key = `${c.schema}.${c.table}`;
+      byTable[key] = byTable[key] || { table: key, columns: [], types: new Set() };
+      byTable[key].columns.push(c.column);
+      byTable[key].types.add(c.type);
+    }
+    const rows = Object.values(byTable).slice(0, 20).map(t => [
+      t.table, t.columns.length, t.columns.join(', '), [...t.types].join('/')
+    ]);
+    out.push(makeTable(['表', '大字段数', '字段名', '类型'], rows, `含 BLOB/TEXT 的表（前 20 张，共 ${Object.keys(byTable).length}）`));
+    out.push(noteParagraph('TEXT/BLOB 行外存储会增加 IO 与备份大小。若字段实际较短且更新频繁，可评估改为 VARCHAR；若仅冷数据查询，可拆出归档表。'));
+  } else {
+    out.push(para('未检测到大字段使用。'));
+  }
+  out.push(emptyLine());
+
+  out.push(h2('13.5 分区表使用情况'));
+  const partitions = refNode.partitionTables || [];
+  if (partitions.length > 0) {
+    const rows = partitions.slice(0, 30).map(p => [p.schema, p.table, p.count]);
+    out.push(makeTable(['库名', '表名', '分区数'], rows, `分区表清单（共 ${partitions.length}）`));
+    out.push(noteParagraph('分区数过多（>100）会显著增加优化器开销。历史数据归档型分区表应有定期清理机制。'));
+  } else {
+    out.push(para('未使用分区表（如有大表按时间归档需求，可考虑 RANGE 分区）。'));
+  }
+  out.push(emptyLine());
+
+  out.push(h2('13.6 自增主键使用率'));
+  const autoInc = refNode.autoIncrementUsage || [];
+  if (autoInc.length > 0) {
+    const rows = autoInc.slice(0, 20).map(a => [a.schema, a.table, a.column, a.autoIncrement, (a.rate * 100).toFixed(2) + '%', a.rate >= 0.8 ? '🔴 紧急' : a.rate >= 0.5 ? '🟠 关注' : '✅ 正常']);
+    out.push(makeTable(['库名', '表名', '列名', '当前值', '使用率', '风险'], rows, `自增列使用率（前 20，共 ${autoInc.length}）`));
+    out.push(noteParagraph('使用率超过 80% 应立即扩容（如 INT→BIGINT 或重建表）；超过 50% 应纳入容量规划。'));
+  } else {
+    out.push(para('未发现自增主键使用率超过 50% 的表。'));
+  }
+  out.push(emptyLine());
+
+  out.push(h2('13.7 存储过程与函数'));
+  const routines = refNode.routines || [];
+  if (routines.length > 0) {
+    const rows = routines.slice(0, 30).map(r => [r.schema, r.name, r.type, r.definer]);
+    out.push(makeTable(['库名', '名称', '类型', '定义者'], rows, `存储过程/函数清单（共 ${routines.length}）`));
+    out.push(noteParagraph('过多存储过程不利于横向扩展。建议将业务逻辑放在应用层，数据库仅做数据存取。'));
+  } else {
+    out.push(para('未使用存储过程或函数。'));
+  }
+  return out;
+}
+
+// ============== 十四、SQL 治理（V4 新增）==============
+function chapterSqlGovernance(data) {
+  const out = [h1('十四、SQL 性能治理')];
+  const refNode = data.nodes.find(n => n.role === 'primary') || data.nodes[0];
+
+  out.push(h2('14.1 慢日志状态'));
+  if (refNode.slowLogStatus) {
+    out.push(code(refNode.slowLogStatus));
+  } else {
+    out.push(para('（V2 采集不含慢日志详情；运行 V3 采集脚本可获取）'));
+  }
+  out.push(emptyLine());
+
+  out.push(h2('14.2 TOP 20 慢 SQL（按总延迟）'));
+  const top = refNode.topSqlByLatency || [];
+  if (top.length > 0) {
+    const rows = top.slice(0, 20).map((s, i) => [
+      i + 1, truncate(s.db, 14), truncate(s.query, 80),
+      s.execCount, s.avgLatency, s.totalLatency,
+    ]);
+    out.push(makeTable(['#', 'DB', 'SQL（已脱敏）', '执行次数', '平均时长', '总时长'], rows, 'TOP 20 SQL（performance_schema.events_statements_summary_by_digest）'));
+    out.push(emptyLine());
+  } else {
+    out.push(para('（无 TOP SQL 数据；V3 采集脚本会自动包含此项）'));
+    out.push(emptyLine());
+  }
+
+  out.push(h2('14.3 慢日志样本（实际 SQL）'));
+  const sl = refNode.slowLogAnalysis;
+  if (sl?.available && (sl.top || []).length > 0) {
+    out.push(para([
+      { text: '慢日志统计：', bold: true },
+      { text: `共 ${sl.totalEntries} 条；最长 ${sl.maxQueryTime.toFixed(2)}s；平均 ${sl.avgQueryTime.toFixed(2)}s；扫描最多行数 ${sl.maxRowsExamined.toLocaleString()}。` },
+    ]));
+    out.push(para(`时间跨度：${sl.timeSpan}`));
+    out.push(emptyLine());
+    const samples = sl.top.slice(0, 10);
+    for (let i = 0; i < samples.length; i++) {
+      const s = samples[i];
+      out.push(para([
+        { text: `[#${i + 1}] `, bold: true, color: COLOR.secondary },
+        { text: `${s.queryTime}s | rows ${s.rowsSent}/${s.rowsExamined} | db: ${s.db || '-'} | ${s.time}`, color: COLOR.muted, size: 18 },
+      ]));
+      out.push(code(s.sql || '(无 SQL)'));
+    }
+  } else {
+    out.push(para('（无慢日志样本；V3 采集脚本会 tail 慢日志写入到报告中）'));
+  }
+  out.push(emptyLine());
+
+  out.push(h2('14.4 全表扫描 / 缺索引 SQL'));
+  const noIdx = refNode.sqlNoGoodIndex || [];
+  if (noIdx.length > 0) {
+    const rows = noIdx.slice(0, 15).map((s, i) => [
+      i + 1, truncate(s.db, 14), truncate(s.query, 80),
+      s.execCount, s.totalLatency, s.noIndexPct + '%',
+    ]);
+    out.push(makeTable(['#', 'DB', 'SQL（脱敏）', '执行次数', '总时长', '无索引占比'], rows, '未使用索引的 SQL'));
+  } else {
+    out.push(para('（无相关数据）'));
+  }
+  out.push(emptyLine());
+
+  out.push(h2('14.5 临时表磁盘溢出 SQL'));
+  const tmp = refNode.sqlWithTmp || [];
+  if (tmp.length > 0) {
+    const rows = tmp.slice(0, 15).map((s, i) => [
+      i + 1, truncate(s.db, 14), truncate(s.query, 80),
+      s.execCount, s.memoryTmp, s.diskTmp, s.diskPct + '%',
+    ]);
+    out.push(makeTable(['#', 'DB', 'SQL（脱敏）', '执行次数', '内存临时表', '磁盘临时表', '磁盘占比'], rows, '触发临时表的 SQL'));
+  } else {
+    out.push(para('（无相关数据）'));
+  }
+  out.push(emptyLine());
+
+  out.push(h2('14.6 治理建议'));
+  out.push(bullet('每周用 pt-query-digest 跑慢日志，对比上周 Top SQL 变化'));
+  out.push(bullet('为执行频次 >1000 + 平均延迟 >500ms 的 SQL 加索引或重写'));
+  out.push(bullet('对 14.5 表中的 SQL，调优策略：增加 tmp_table_size / 增加索引避免临时表 / 重写为多步 SQL'));
+  out.push(bullet('对 14.4 表中的 SQL，用 EXPLAIN 分析；若确实需全表扫描的报表 SQL，移到从库或归档库执行'));
+  return out;
+}
+
+// ============== 十五、备份与恢复评估（V4 新增）==============
+function chapterBackupRecovery(data) {
+  const out = [h1('十五、备份与恢复评估')];
+  const ba = data.backupAssessment || {};
+
+  out.push(h2('15.1 综合评估'));
+  const sevColor = ba.severity === 'P0' ? 'C00000' : ba.severity === 'P1' ? 'BF8F00' : ba.severity === 'OK' ? '548235' : COLOR.text;
+  out.push(para([
+    { text: '当前状态：', bold: true },
+    { text: ba.assessment || '未评估', color: sevColor, bold: true },
+  ]));
+  if (ba.severity && ba.severity !== 'OK') {
+    out.push(para([
+      { text: '严重程度：', bold: true },
+      { text: ba.severity, color: sevColor, bold: true },
+    ]));
+  }
+  out.push(emptyLine());
+
+  out.push(h2('15.2 备份工具检测'));
+  if ((ba.tools || []).length > 0) {
+    const rows = ba.tools.map(t => [t.tool, t.installed ? '✅ 已安装' : '❌ 未安装', t.detail || '-']);
+    out.push(makeTable(['工具', '状态', '版本/路径'], rows, '常见备份工具'));
+  } else {
+    out.push(para('（V2 采集不含备份工具信息；运行 V3 采集脚本可获取）'));
+  }
+  out.push(emptyLine());
+
+  out.push(h2('15.3 备份调度（crontab）'));
+  let hasCron = false;
+  for (const c of (ba.crontabs || [])) {
+    const items = [];
+    if (c.mysqlUser && !/无 crontab/.test(c.mysqlUser)) items.push(['mysql 用户', c.mysqlUser]);
+    if (c.rootUser) items.push(['root 用户', c.rootUser]);
+    if (c.system) items.push(['系统级 cron', c.system]);
+    if (items.length > 0) {
+      hasCron = true;
+      out.push(para([{ text: `节点 ${c.ip}：`, bold: true }]));
+      for (const [src, txt] of items) {
+        out.push(para([{ text: `[${src}]`, bold: true, color: COLOR.muted }]));
+        out.push(code(String(txt).slice(0, 600)));
+      }
+    }
+  }
+  if (!hasCron) out.push(para('未发现备份相关 cron 任务（可能在外部调度系统中，建议人工确认）。'));
+  out.push(emptyLine());
+
+  out.push(h2('15.4 备份产物清单'));
+  if ((ba.dirs || []).length > 0) {
+    const rows = [];
+    for (const d of ba.dirs) {
+      if (d.exists === false) {
+        rows.push([d.ip || '-', d.path, '不存在', '-', '-']);
+        continue;
+      }
+      const fileCount = (d.files || []).length;
+      const latest = (d.files || [])[0];
+      rows.push([
+        d.ip || '-', d.path, d.totalSize || '-',
+        fileCount + ' 个文件',
+        latest ? latest.mtime : '-',
+      ]);
+    }
+    out.push(makeTable(['节点', '路径', '总大小', '文件数', '最近修改'], rows, '备份目录扫描'));
+  } else {
+    out.push(para('（V2 采集不含备份目录信息）'));
+  }
+  if (ba.latestBackup) {
+    out.push(emptyLine());
+    out.push(para([
+      { text: '最新备份：', bold: true },
+      { text: `${ba.latestBackup.path}（${ba.latestBackup.mtime}, ${formatBytesNum(ba.latestBackup.sizeBytes)}）` },
+    ]));
+  }
+  out.push(emptyLine());
+
+  out.push(h2('15.5 Binlog 保留情况'));
+  for (const b of (ba.binlogs || [])) {
+    if (b.info) {
+      out.push(para([{ text: `节点 ${b.ip}：`, bold: true }]));
+      out.push(code(b.info.slice(0, 1000)));
+    }
+  }
+  out.push(emptyLine());
+
+  out.push(h2('15.6 RTO / RPO 推算'));
+  out.push(para('基于当前观察到的备份能力（实际值需结合演练数据）：'));
+  out.push(bullet(`理论 RPO：${ba.latestBackup ? '取决于备份频率（见 15.3）' : '无完整备份 → RPO 不可估'}`));
+  out.push(bullet(`理论 RTO：基于备份大小 ${ba.latestBackup ? formatBytesNum(ba.latestBackup.sizeBytes) : '-'} 与磁盘恢复速度估算（参考 200 MB/s）`));
+  out.push(bullet('真实 RTO/RPO 需通过 **恢复演练** 验证，建议每季度执行一次'));
+  out.push(emptyLine());
+
+  out.push(h2('15.7 行动建议'));
+  if (!ba.hasTool) {
+    out.push(bullet('🔴 立即安装备份工具：xtrabackup（推荐）或 mariabackup（MariaDB 兼容）'));
+  }
+  if (!ba.hasBackupArtifact) {
+    out.push(bullet('🔴 制定备份策略：全量 + 增量 + binlog，至少异地保存'));
+  }
+  if (!ba.hasScheduledBackup) {
+    out.push(bullet('🟠 将备份任务接入 cron 或调度系统（不依赖人工记忆）'));
+  }
+  out.push(bullet('每月校验：备份完整性 + 备份归档加密 + 异地保存（建议 3-2-1 策略）'));
+  out.push(bullet('每季度演练：随机抽取一份备份恢复到测试环境，记录 RTO'));
+  out.push(bullet('考虑物理备份（xtrabackup）+ 逻辑备份（mysqldump）双轨：物理快速、逻辑可移植'));
+  return out;
+}
+
+// ============== 十六、安全合规审计（V4 新增）==============
+function chapterSecurityCompliance(data) {
+  const out = [h1('十六、安全合规审计')];
+  const sa = data.securityAssessment || { items: [], pass: 0, warn: 0, fail: 0 };
+
+  out.push(h2('16.1 综合评估'));
+  out.push(para([
+    { text: '合规等级：', bold: true },
+    { text: sa.complianceLevel || '-', color: sa.complianceLevel === '高' ? '548235' : sa.complianceLevel === '中' ? 'BF8F00' : 'C00000', bold: true },
+    { text: `（PASS ${sa.pass} 项 / WARN ${sa.warn} 项 / FAIL ${sa.fail} 项 / 共 ${sa.total || sa.items.length} 项检查）` },
+  ]));
+  out.push(emptyLine());
+
+  // 安全合规结果饼图
+  if (charts) {
+    const p = chartParagraph(() => charts.pie([
+      { label: '通过 PASS', value: sa.pass || 0, color: charts.COLORS.good },
+      { label: '告警 WARN', value: sa.warn || 0, color: charts.COLORS.warn },
+      { label: '不合规 FAIL', value: sa.fail || 0, color: charts.COLORS.bad },
+    ].filter(x => x.value > 0), { title: '安全合规检查结果分布', width: 480, height: 240 }),
+    { width: 480, height: 240 });
+    if (p) out.push(p);
+  }
+
+  out.push(h2('16.2 合规检查清单'));
+  const rows = (sa.items || []).map(i => [
+    i.label,
+    i.status === 'PASS' ? '✅ 通过' : i.status === 'WARN' ? '⚠️ 告警' : '❌ 不合规',
+    i.detail,
+  ]);
+  out.push(makeTable(['检查项', '状态', '说明'], rows, '安全合规检查项'));
+  out.push(emptyLine());
+
+  out.push(h2('16.3 TLS / 加密细节'));
+  const primary = data.nodes.find(n => n.role === 'primary') || data.nodes[0];
+  if (primary?.tlsConfig) {
+    const rows = Object.entries(primary.tlsConfig).map(([k, v]) => [k, v]);
+    out.push(makeTable(['配置项', '值'], rows, 'TLS / SSL 配置'));
+  } else {
+    out.push(para('（V2 采集不含 TLS 详情；V3 采集脚本会包含）'));
+  }
+  out.push(emptyLine());
+
+  out.push(h2('16.4 整改建议优先级'));
+  const failItems = (sa.items || []).filter(i => i.status === 'FAIL');
+  const warnItems = (sa.items || []).filter(i => i.status === 'WARN');
+  if (failItems.length > 0) {
+    out.push(para([{ text: '🔴 必须整改（FAIL）：', bold: true, color: 'C00000' }]));
+    failItems.forEach(i => out.push(bullet(`${i.label} — ${i.detail}`)));
+  }
+  if (warnItems.length > 0) {
+    out.push(para([{ text: '🟠 建议加强（WARN）：', bold: true, color: 'BF8F00' }]));
+    warnItems.forEach(i => out.push(bullet(`${i.label} — ${i.detail}`)));
+  }
+  out.push(emptyLine());
+
+  out.push(h2('16.5 常见合规框架对照'));
+  out.push(makeTable(
+    ['框架', '关键要求', '当前状态'],
+    [
+      ['等保 2.0 三级', '强密码 + 审计日志 + 操作可追溯', sa.items.find(i => i.id === 'strong_password_policy')?.status === 'PASS' && sa.items.find(i => i.id === 'audit_log')?.status === 'PASS' ? '✅ 满足' : '❌ 不满足'],
+      ['PCI DSS', '数据加密（at rest + transit） + 最小权限', sa.items.find(i => i.id === 'innodb_encryption')?.status === 'PASS' && sa.items.find(i => i.id === 'tls_enabled')?.status === 'PASS' ? '✅ 满足' : '⚠️ 部分满足'],
+      ['GDPR', '数据可删除 + 访问审计', sa.items.find(i => i.id === 'audit_log')?.status === 'PASS' ? '⚠️ 部分满足' : '❌ 不满足'],
+      ['SOX', '变更审计 + 职责分离', '⚠️ 需结合流程评估'],
+    ],
+    '主流合规框架对照',
+  ));
+
+  return out;
+}
+
 function chapterConclusion(data) {
-  const out = [h1('十三、巡检总结与行动计划')];
-  out.push(h2('13.1 整体结论'));
+  const out = [h1('十七、巡检总结与行动计划')];
+  out.push(h2('17.1 整体结论'));
   out.push(para(`【${data.project}】MySQL 集群本次巡检整体评估：${data.overallAssessment}。`));
   const sl = data.nodes.filter(n => n.replication?.isSlave);
   if (sl.length > 0) {
@@ -1067,7 +1627,7 @@ function chapterConclusion(data) {
   out.push(emptyLine());
 
   // 13.2 行动计划（按优先级，带具体 issue 与 SQL hint）
-  out.push(h2('13.2 行动计划（按优先级）'));
+  out.push(h2('17.2 行动计划（按优先级）'));
   const renderActionBlock = (label, color, issues) => {
     if (!issues || issues.length === 0) return;
     out.push(para([{ text: label, bold: true, color }]));
@@ -1103,7 +1663,7 @@ function chapterConclusion(data) {
     out.push(emptyLine());
   }
 
-  out.push(h2('13.3 附录 · 数据来源'));
+  out.push(h2('17.3 附录 · 数据来源'));
   out.push(para('本报告基于以下原始采集文件生成：'));
   for (const n of data.nodes) {
     out.push(bullet(`${n.ip}（${roleLabel(n.role)}）：${n._file || '-'}`));
@@ -1168,7 +1728,7 @@ function buildDocument(data) {
   }));
 
   return new Document({
-    creator: 'MySQL Inspection Skill v3.1',
+    creator: 'MySQL Inspection Skill v4.0',
     title: `${data.project} MySQL 数据库巡检报告（详细版）`,
     styles: {
       default: { document: { run: { font: FONT, size: 22 } } },
@@ -1209,6 +1769,8 @@ function buildDocument(data) {
       },
       children: [
         ...chapterCover(data),
+        ...chapterExecutiveSummary(data),
+        ...chapterTOC(),
         ...chapterSummary(data),
         ...chapterServers(data),
         ...chapterConnections(data),
@@ -1221,6 +1783,10 @@ function buildDocument(data) {
         ...chapterTransactions(data),
         ...chapterUsers(data),
         ...chapterReplication(data),
+        ...chapterSchemaDesignAudit(data),
+        ...chapterSqlGovernance(data),
+        ...chapterBackupRecovery(data),
+        ...chapterSecurityCompliance(data),
         ...chapterConclusion(data),
       ],
     }],
