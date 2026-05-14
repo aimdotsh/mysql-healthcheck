@@ -18,7 +18,7 @@ description: 为 MySQL 数据库集群生成商业可交付级巡检报告（.do
    - 合规自查（等保 / PCI / GDPR / SOX）
    - 商业交付级 / 客户递交版 MySQL 报告
 
-**不要**用于：8 章精简版报告（用 `mysql-inspection-report` skill）；非 MySQL 数据库；只读数据的纯查询任务。
+**不要**用于：非 MySQL 数据库；纯只读数据查询任务（不生成 docx）。
 
 ---
 
@@ -43,7 +43,7 @@ description: 为 MySQL 数据库集群生成商业可交付级巡检报告（.do
 ### Step 1：解析数据
 
 ```bash
-cd ~/.workbuddy/skills/mysql-inspection-report-detailed/scripts
+cd ~/.workbuddy/skills/mysql-inspection-report/scripts
 node extract.js <数据目录> --project "<项目正式名>"
 ```
 
@@ -175,7 +175,7 @@ collectors/mysqlHealthCheckV3.0.sh \
 ## 关键文件
 
 ```
-~/.workbuddy/skills/mysql-inspection-report-detailed/
+~/.workbuddy/skills/mysql-inspection-report/
 ├── SKILL.md                       # 本文档（agent 协议）
 ├── USAGE.md                       # 完整使用说明（人类视角）
 ├── CHANGELOG.md                   # 版本变更
