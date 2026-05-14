@@ -13,6 +13,9 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/aimdotsh/mysql-healthcheck/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/aimdotsh/mysql-healthcheck?style=flat-square&logo=github"></a>
+  <a href="https://github.com/aimdotsh/mysql-healthcheck/issues"><img alt="GitHub issues" src="https://img.shields.io/github/issues/aimdotsh/mysql-healthcheck?style=flat-square&logo=github"></a>
+  <a href="https://github.com/aimdotsh/mysql-healthcheck/commits/main"><img alt="GitHub last commit" src="https://img.shields.io/github/last-commit/aimdotsh/mysql-healthcheck?style=flat-square&logo=github"></a>
   <img alt="Version" src="https://img.shields.io/badge/version-v4.1-1F4E79?style=flat-square">
   <img alt="Node" src="https://img.shields.io/badge/node-%E2%89%A516-43853d?style=flat-square&logo=node.js">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square">
@@ -31,7 +34,7 @@
 请帮我安装 mysql-healthcheck 这个 skill：
 
 ```bash
-git clone <YOUR_GIT_URL> /tmp/mysql-healthcheck-src && \
+git clone https://github.com/aimdotsh/mysql-healthcheck.git /tmp/mysql-healthcheck-src && \
   bash /tmp/mysql-healthcheck-src/install.sh && \
   rm -rf /tmp/mysql-healthcheck-src
 ```
@@ -119,7 +122,7 @@ git clone <YOUR_GIT_URL> /tmp/mysql-healthcheck-src && \
 ### 1. 克隆 & 安装
 
 ```bash
-git clone <YOUR_GIT_URL> mysql-healthcheck
+git clone https://github.com/aimdotsh/mysql-healthcheck.git mysql-healthcheck
 cd mysql-healthcheck
 bash install.sh                    # 默认装到 ~/.claude/skills/
 # 或：
@@ -253,7 +256,11 @@ Claude 会自动加载本 skill 的 `SKILL.md` playbook，按 2 步流程完成�
 
 ## 🤝 贡献
 
-欢迎 PR。开发约定：
+- 🐛 **Bug / 需求**：到 [Issues](https://github.com/aimdotsh/mysql-healthcheck/issues) 反馈
+- 🔧 **PR**：欢迎，目标分支 `main`
+- 💬 **讨论**：到 [Discussions](https://github.com/aimdotsh/mysql-healthcheck/discussions)（启用后）
+
+开发约定：
 
 - 完成一项独立功能就 commit（不堆积），commit message 用 `feat: / fix: / docs: / chore: / refactor:` 前缀
 - 新加检测规则：编辑 `scripts/extract.js` 的 `analyzeIssues()`，同步更新 [references/rules.md](references/rules.md)
