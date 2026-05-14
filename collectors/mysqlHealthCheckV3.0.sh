@@ -10,11 +10,20 @@
 #   ./mysqlHealthCheckV3.0.sh \
 #       --user dbadmin --password 'xxx' \
 #       --host 127.0.0.1 --port 3306 \
+#       --socket /path/to/mysql.sock \
+#       --defaults-file /path/to/my.cnf \
 #       --mysql-cmd /usr/local/mysql/bin/mysql \
 #       --output-dir ./reports \
 #       --slow-log-lines 5000 \
 #       --error-log-lines 1000 \
 #       --backup-paths /backup,/data/backup
+#
+# 登录预检：
+#   ./mysqlHealthCheckV3.0.sh --test-login --non-interactive
+#
+# 自动发现：
+#   默认从 ps -ef 中的 mysqld/mariadbd 进程解析 --defaults-file、--basedir、
+#   --socket、--port，并优先使用 basedir/bin/mysql 作为客户端。
 #
 # 输出：MySQLHealthCheck_<IP>_<TS>.txt
 ###############################################################################
@@ -22,7 +31,9 @@
 set -uo pipefail
 
 # ============== 默认值 ==============
-EXEC_MYSQL="/usr/local/mysql/bin/mysql"
+EXEC_MYSQL=""
+DEFAULTS_FILE=""
+DB_SOCKET=""
 DB_USER="dbadmin"
 DB_PWD=""
 DB_HOST="127.0.0.1"
@@ -33,28 +44,299 @@ ERROR_LOG_LINES=1000
 BACKUP_PATHS="/backup,/data/backup,/data/mysql/backup,/home/backup,/data/backup_mysql"
 SKIP_MODULES=""
 NON_INTERACTIVE=0
+TEST_LOGIN_ONLY=0
+MYSQL_SSL_OPTION=""
+MYSQL_DEFAULTS_EXTRA_FILE=""
+AUTO_DETECT_NOTES=()
+MYSQLD_PID_DETECTED=""
+EXPLICIT_MYSQL_CMD=0
+EXPLICIT_DEFAULTS_FILE=0
+EXPLICIT_SOCKET=0
+EXPLICIT_USER=0
+EXPLICIT_PASSWORD=0
+EXPLICIT_HOST=0
+EXPLICIT_PORT=0
 
 # ============== 命令行参数解析 ==============
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --user) DB_USER="$2"; shift 2 ;;
-        --password) DB_PWD="$2"; shift 2 ;;
-        --host) DB_HOST="$2"; shift 2 ;;
-        --port) DB_PORT="$2"; shift 2 ;;
-        --mysql-cmd) EXEC_MYSQL="$2"; shift 2 ;;
+        --user) DB_USER="$2"; EXPLICIT_USER=1; shift 2 ;;
+        --password) DB_PWD="$2"; EXPLICIT_PASSWORD=1; shift 2 ;;
+        --host) DB_HOST="$2"; EXPLICIT_HOST=1; shift 2 ;;
+        --port) DB_PORT="$2"; EXPLICIT_PORT=1; shift 2 ;;
+        --socket) DB_SOCKET="$2"; EXPLICIT_SOCKET=1; shift 2 ;;
+        --defaults-file) DEFAULTS_FILE="$2"; EXPLICIT_DEFAULTS_FILE=1; shift 2 ;;
+        --mysql-cmd) EXEC_MYSQL="$2"; EXPLICIT_MYSQL_CMD=1; shift 2 ;;
+        --ssl-mode) MYSQL_SSL_OPTION="--ssl-mode=$2"; shift 2 ;;
         --output-dir) OUT_DIR="$2"; shift 2 ;;
         --slow-log-lines) SLOW_LOG_LINES="$2"; shift 2 ;;
         --error-log-lines) ERROR_LOG_LINES="$2"; shift 2 ;;
         --backup-paths) BACKUP_PATHS="$2"; shift 2 ;;
         --skip-modules) SKIP_MODULES="$2"; shift 2 ;;
         --non-interactive) NON_INTERACTIVE=1; shift ;;
+        --test-login) TEST_LOGIN_ONLY=1; shift ;;
         -h|--help)
-            grep -E '^# ' "$0" | head -25 | sed 's/^# //'
+            awk '/^###############################################################################/ { block++; next } block == 1 && /^#/ { sub(/^# ?/, ""); print }' "$0"
+            cat <<'EOF'
+
+常用自动发现参数：
+  --test-login              只测试数据库登录，成功后退出，不生成报告
+  --defaults-file PATH      指定 mysqld 配置文件；不指定时从 ps -ef 的 --defaults-file 自动发现
+  --socket PATH             指定 socket；不指定时从 mysqld 进程或 cnf 自动发现
+  --ssl-mode MODE           传给 mysql 客户端的 SSL 模式，例如 DISABLED / PREFERRED
+
+默认会在采集前执行登录测试；无法登录会报错退出，避免生成空报告。
+EOF
             exit 0
             ;;
         *) echo "未知参数: $1"; exit 1 ;;
     esac
 done
+
+# ============== 自动发现与登录测试 ==============
+read_ps_lines() {
+    if [[ -n "${MYSQL_HEALTHCHECK_PS_FILE:-}" && -f "${MYSQL_HEALTHCHECK_PS_FILE}" ]]; then
+        cat "${MYSQL_HEALTHCHECK_PS_FILE}"
+    else
+        ps -ef 2>/dev/null
+    fi
+}
+
+print_cnf_redacted() {
+    local file="$1"
+    [[ -f "$file" ]] || return 1
+    echo "===== ${file} ====="
+    sed -E \
+        -e 's/^([[:space:]]*(password|loose-password|ssl_key)[[:space:]]*=[[:space:]]*).*/\1*******/I' \
+        -e 's/^([[:space:]]*(user)[[:space:]]*=[[:space:]]*).*/\1*******/I' \
+        "$file"
+}
+
+print_include_cnf_files() {
+    local file="$1" base inc dir
+    [[ -f "$file" ]] || return 0
+    base="$(dirname "$file")"
+    while IFS= read -r inc; do
+        inc="${inc%%#*}"
+        inc="${inc%%;*}"
+        inc="$(printf '%s\n' "$inc" | awk '{$1=$1; print}')"
+        [[ -z "$inc" ]] && continue
+        case "$inc" in
+            '!include '*)
+                inc="${inc#!include }"
+                [[ "$inc" != /* ]] && inc="$base/$inc"
+                [[ -f "$inc" ]] && print_cnf_redacted "$inc"
+                ;;
+            '!includedir '*)
+                dir="${inc#!includedir }"
+                [[ "$dir" != /* ]] && dir="$base/$dir"
+                if [[ -d "$dir" ]]; then
+                    for f in "$dir"/*.cnf; do
+                        [[ -f "$f" ]] && print_cnf_redacted "$f"
+                    done
+                fi
+                ;;
+        esac
+    done < "$file"
+}
+
+extract_proc_arg() {
+    local line="$1"
+    local key="$2"
+    local m
+    m=$(printf '%s\n' "$line" | sed -n "s/.*${key}=\\([^[:space:]]*\\).*/\\1/p" | head -1)
+    [[ -n "$m" ]] && printf '%s\n' "$m"
+}
+
+cnf_get() {
+    local file="$1"
+    local section="$2"
+    local key="$3"
+    [[ -f "$file" ]] || return 1
+    awk -v section="$section" -v key="$key" '
+        BEGIN { in_section = 0; found = "" }
+        /^[[:space:]]*[#;]/ { next }
+        /^[[:space:]]*\[/ {
+            in_section = ($0 ~ "^[[:space:]]*\\[" section "\\]")
+            next
+        }
+        in_section {
+            line = $0
+            sub(/[[:space:]]*[#;].*$/, "", line)
+            if (line ~ "^[[:space:]]*" key "[[:space:]]*=") {
+                sub("^[[:space:]]*" key "[[:space:]]*=[[:space:]]*", "", line)
+                gsub(/^[\"\047]|[\"\047]$/, "", line)
+                found = line
+            }
+        }
+        END { if (found != "") print found }
+    ' "$file" | tail -1
+}
+
+first_existing_file() {
+    for f in "$@"; do
+        [[ -n "$f" && -f "$f" ]] && { printf '%s\n' "$f"; return 0; }
+    done
+    return 1
+}
+
+detect_mysql_runtime() {
+    local ps_lines mysqld_line mysqld_safe_line basedir datadir socket port defaults_file mysqld_bin
+    ps_lines="$(read_ps_lines)"
+    mysqld_line="$(printf '%s\n' "$ps_lines" | grep -E '[ /](mysqld|mariadbd)( |$)' | grep -vE 'mysqld_safe|grep' | head -1 || true)"
+    mysqld_safe_line="$(printf '%s\n' "$ps_lines" | grep -E '[ /](mysqld_safe|mariadbd-safe)( |$)' | grep -v grep | head -1 || true)"
+    MYSQLD_PID_DETECTED="$(printf '%s\n' "$mysqld_line" | awk '{print $2}')"
+
+    defaults_file="$(extract_proc_arg "$mysqld_line" '--defaults-file')"
+    [[ -z "$defaults_file" ]] && defaults_file="$(extract_proc_arg "$mysqld_safe_line" '--defaults-file')"
+    if [[ "$EXPLICIT_DEFAULTS_FILE" -eq 0 && -n "$defaults_file" && -f "$defaults_file" ]]; then
+        DEFAULTS_FILE="$defaults_file"
+        AUTO_DETECT_NOTES+=("defaults-file=${DEFAULTS_FILE}")
+    elif [[ -z "$DEFAULTS_FILE" ]]; then
+        DEFAULTS_FILE="$(first_existing_file /etc/my.cnf /etc/mysql/my.cnf /usr/local/mysql/etc/my.cnf /opt/mysql/my.cnf 2>/dev/null || true)"
+        [[ -n "$DEFAULTS_FILE" ]] && AUTO_DETECT_NOTES+=("defaults-file=${DEFAULTS_FILE}")
+    fi
+
+    basedir="$(extract_proc_arg "$mysqld_line" '--basedir')"
+    datadir="$(extract_proc_arg "$mysqld_line" '--datadir')"
+    socket="$(extract_proc_arg "$mysqld_line" '--socket')"
+    port="$(extract_proc_arg "$mysqld_line" '--port')"
+    mysqld_bin="$(printf '%s\n' "$mysqld_line" | awk '{for (i=8; i<=NF; i++) if ($i ~ /\/(mysqld|mariadbd)$/) { print $i; exit }}')"
+
+    if [[ -n "$DEFAULTS_FILE" ]]; then
+        [[ -z "$basedir" ]] && basedir="$(cnf_get "$DEFAULTS_FILE" mysqld basedir || true)"
+        [[ -z "$datadir" ]] && datadir="$(cnf_get "$DEFAULTS_FILE" mysqld datadir || true)"
+        [[ -z "$socket" ]] && socket="$(cnf_get "$DEFAULTS_FILE" mysqld socket || true)"
+        [[ -z "$socket" ]] && socket="$(cnf_get "$DEFAULTS_FILE" client socket || true)"
+        [[ -z "$port" ]] && port="$(cnf_get "$DEFAULTS_FILE" mysqld port || true)"
+        [[ -z "$port" ]] && port="$(cnf_get "$DEFAULTS_FILE" client port || true)"
+        if [[ "$EXPLICIT_USER" -eq 0 ]]; then
+            local cnf_user
+            cnf_user="$(cnf_get "$DEFAULTS_FILE" client user || true)"
+            [[ -n "$cnf_user" ]] && DB_USER="$cnf_user"
+        fi
+        if [[ "$EXPLICIT_PASSWORD" -eq 0 ]]; then
+            local cnf_pwd
+            cnf_pwd="$(cnf_get "$DEFAULTS_FILE" client password || true)"
+            [[ -n "$cnf_pwd" ]] && DB_PWD="$cnf_pwd"
+        fi
+    fi
+
+    if [[ "$EXPLICIT_SOCKET" -eq 0 && -n "$socket" ]]; then
+        DB_SOCKET="$socket"
+        AUTO_DETECT_NOTES+=("socket=${DB_SOCKET}")
+    fi
+    if [[ "$EXPLICIT_PORT" -eq 0 && -n "$port" ]]; then
+        DB_PORT="$port"
+        AUTO_DETECT_NOTES+=("port=${DB_PORT}")
+    fi
+
+    if [[ "$EXPLICIT_MYSQL_CMD" -eq 0 ]]; then
+        local candidate=""
+        if [[ -n "$basedir" && -x "$basedir/bin/mysql" ]]; then
+            candidate="$basedir/bin/mysql"
+        elif [[ -n "$mysqld_bin" && -x "$(dirname "$mysqld_bin")/mysql" ]]; then
+            candidate="$(dirname "$mysqld_bin")/mysql"
+        elif command -v mysql >/dev/null 2>&1; then
+            candidate="$(command -v mysql)"
+        elif [[ -x /usr/local/mysql/bin/mysql ]]; then
+            candidate="/usr/local/mysql/bin/mysql"
+        elif [[ -x /opt/mysql/bin/mysql ]]; then
+            candidate="/opt/mysql/bin/mysql"
+        fi
+        EXEC_MYSQL="$candidate"
+        [[ -n "$EXEC_MYSQL" ]] && AUTO_DETECT_NOTES+=("mysql-cmd=${EXEC_MYSQL}")
+    fi
+
+    if [[ -z "$MYSQL_SSL_OPTION" ]]; then
+        MYSQL_SSL_OPTION="--ssl-mode=DISABLED"
+    fi
+}
+
+cleanup_defaults_extra_file() {
+    [[ -n "$MYSQL_DEFAULTS_EXTRA_FILE" && -f "$MYSQL_DEFAULTS_EXTRA_FILE" ]] && rm -f "$MYSQL_DEFAULTS_EXTRA_FILE"
+}
+trap cleanup_defaults_extra_file EXIT
+
+prepare_mysql_defaults_extra_file() {
+    MYSQL_DEFAULTS_EXTRA_FILE="$(mktemp /tmp/mysql-healthcheck-client.XXXXXX.cnf)"
+    chmod 600 "$MYSQL_DEFAULTS_EXTRA_FILE"
+    {
+        echo "[client]"
+        [[ -n "$DB_USER" ]] && printf 'user=%s\n' "$DB_USER"
+        [[ -n "$DB_PWD" ]] && printf 'password=%s\n' "$DB_PWD"
+        if [[ -n "$DB_SOCKET" ]]; then
+            printf 'socket=%s\n' "$DB_SOCKET"
+        else
+            [[ -n "$DB_HOST" ]] && printf 'host=%s\n' "$DB_HOST"
+            [[ -n "$DB_PORT" ]] && printf 'port=%s\n' "$DB_PORT"
+        fi
+    } > "$MYSQL_DEFAULTS_EXTRA_FILE"
+}
+
+build_mysql_args() {
+    MYSQL_ARGS=(--defaults-extra-file="$MYSQL_DEFAULTS_EXTRA_FILE")
+    if [[ -n "$DB_SOCKET" ]]; then
+        MYSQL_ARGS+=(--protocol=SOCKET --socket="$DB_SOCKET")
+    else
+        MYSQL_ARGS+=(--host="$DB_HOST" --port="$DB_PORT")
+    fi
+    [[ -n "$MYSQL_SSL_OPTION" ]] && MYSQL_ARGS+=("$MYSQL_SSL_OPTION")
+    MYSQL_ARGS+=(--connect-timeout=10)
+}
+
+mysql_try_login() {
+    local ssl_opt="$1"
+    local out rc
+    MYSQL_SSL_OPTION="$ssl_opt"
+    build_mysql_args
+    out=$("$EXEC_MYSQL" "${MYSQL_ARGS[@]}" -s -N -e "SELECT VERSION();" 2>&1)
+    rc=$?
+    if [[ "$rc" -eq 0 && -n "$out" ]]; then
+        DB_VERSION_FULL="$out"
+        DB_VERSION="$(printf '%s\n' "$out" | awk -F. '{print $1 "." $2}')"
+        return 0
+    fi
+    printf '%s\n' "$out"
+    return "$rc"
+}
+
+test_mysql_login_or_exit() {
+    local last_err="" err_file
+    if [[ -z "$EXEC_MYSQL" || ! -x "$EXEC_MYSQL" ]]; then
+        echo "错误：未找到可执行 mysql 客户端。请使用 --mysql-cmd 指定，或确认 mysqld basedir/bin/mysql 存在。" >&2
+        exit 1
+    fi
+
+    prepare_mysql_defaults_extra_file
+
+    err_file="$(mktemp /tmp/mysql-healthcheck-login.XXXXXX.err)"
+    for opt in "${MYSQL_SSL_OPTION:-}" "--ssl=0" ""; do
+        if mysql_try_login "$opt" >"$err_file" 2>&1; then
+            [[ -n "$opt" ]] && MYSQL_SSL_OPTION="$opt"
+            build_mysql_args
+            rm -f "$err_file"
+            return 0
+        fi
+        last_err="$(cat "$err_file" 2>/dev/null)"
+    done
+    rm -f "$err_file"
+
+    echo "错误：无法登录 MySQL，采集已终止。" >&2
+    echo "  mysql: ${EXEC_MYSQL}" >&2
+    if [[ -n "$DB_SOCKET" ]]; then
+        echo "  socket: ${DB_SOCKET}" >&2
+    else
+        echo "  host/port: ${DB_HOST}:${DB_PORT}" >&2
+    fi
+    echo "  user: ${DB_USER}" >&2
+    [[ -n "$DEFAULTS_FILE" ]] && echo "  defaults-file: ${DEFAULTS_FILE}" >&2
+    echo "  最后一次错误：" >&2
+    printf '%s\n' "$last_err" >&2
+    exit 1
+}
+
+detect_mysql_runtime
 
 # ============== 交互式补全（仅在缺关键参数时）==============
 if [[ "$NON_INTERACTIVE" -eq 0 && -z "$DB_PWD" ]]; then
@@ -64,12 +346,37 @@ if [[ "$NON_INTERACTIVE" -eq 0 && -z "$DB_PWD" ]]; then
     echo "============================================================"
     echo "  MySQL 巡检脚本 V3.0 — 连接信息确认"
     echo "============================================================"
+    [[ ${#AUTO_DETECT_NOTES[@]} -gt 0 ]] && printf '  自动发现：%s\n' "${AUTO_DETECT_NOTES[*]}"
     read -e -p "  mysql 客户端路径   [${EXEC_MYSQL}]: " _t; EXEC_MYSQL="${_t:-$EXEC_MYSQL}"
+    read -e -p "  mysqld 配置文件     [${DEFAULTS_FILE}]: " _t; DEFAULTS_FILE="${_t:-$DEFAULTS_FILE}"
     read -e -p "  用户名             [${DB_USER}]: " _t; DB_USER="${_t:-$DB_USER}"
     read -s -p "  密码               (输入隐藏): " DB_PWD; echo
-    read -e -p "  目标主机 IP        [${DB_HOST}（当前机器 $IP_ADDR）]: " _t; DB_HOST="${_t:-$DB_HOST}"
+    read -e -p "  Socket             [${DB_SOCKET}]: " _t; DB_SOCKET="${_t:-$DB_SOCKET}"
+    read -e -p "  目标主机 IP        [${DB_HOST}（当前机器 $IP_ADDR，socket 非空时优先 socket）]: " _t; DB_HOST="${_t:-$DB_HOST}"
     read -e -p "  端口               [${DB_PORT}]: " _t; DB_PORT="${_t:-$DB_PORT}"
     read -e -p "  输出目录           [${OUT_DIR}]: " _t; OUT_DIR="${_t:-$OUT_DIR}"
+fi
+
+test_mysql_login_or_exit
+
+if [[ "$TEST_LOGIN_ONLY" -eq 1 ]]; then
+    echo "MySQL 登录测试成功"
+    echo "  mysql: ${EXEC_MYSQL}"
+    [[ -n "$DEFAULTS_FILE" ]] && echo "  defaults-file: ${DEFAULTS_FILE}"
+    if [[ -n "$DB_SOCKET" ]]; then
+        echo "  socket: ${DB_SOCKET}"
+    else
+        echo "  host/port: ${DB_HOST}:${DB_PORT}"
+    fi
+    echo "  user: ${DB_USER}"
+    echo "  version: ${DB_VERSION_FULL}"
+    echo "  ssl-option: ${MYSQL_SSL_OPTION:-无}"
+    exit 0
+fi
+
+if [[ "${MYSQL_HEALTHCHECK_SKIP_COLLECTION:-0}" = "1" ]]; then
+    echo "MySQL 登录测试成功（跳过采集：MYSQL_HEALTHCHECK_SKIP_COLLECTION=1）"
+    exit 0
 fi
 
 # ============== 输出文件 ==============
@@ -86,19 +393,17 @@ exec 3>&1
 exec > "$OUT_FILE"
 
 # ============== MySQL 执行包装 ==============
-MYSQL_OPTS="-u$DB_USER -p$DB_PWD -h $DB_HOST -P $DB_PORT --connect-timeout=10"
-
 run_sql() {
     # 表格格式（默认）
-    "$EXEC_MYSQL" $MYSQL_OPTS -t -e "$1" 2>&1
+    "$EXEC_MYSQL" "${MYSQL_ARGS[@]}" -t -e "$1" 2>&1
 }
 run_sql_silent() {
     # 取单值
-    "$EXEC_MYSQL" $MYSQL_OPTS -s -N -e "$1" 2>/dev/null
+    "$EXEC_MYSQL" "${MYSQL_ARGS[@]}" -s -N -e "$1" 2>/dev/null
 }
 run_sql_vert() {
     # \G 垂直格式
-    "$EXEC_MYSQL" $MYSQL_OPTS -e "$1\G" 2>&1
+    "$EXEC_MYSQL" "${MYSQL_ARGS[@]}" -e "$1\G" 2>&1
 }
 
 # ============== 段标记 ==============
@@ -122,8 +427,8 @@ skip_module() {
 }
 
 # ============== 全局：MySQL 版本探测 ==============
-DB_VERSION=$(run_sql_silent "SELECT LEFT(VERSION(),3);")
-DB_VERSION_FULL=$(run_sql_silent "SELECT VERSION();")
+DB_VERSION=${DB_VERSION:-$(run_sql_silent "SELECT LEFT(VERSION(),3);")}
+DB_VERSION_FULL=${DB_VERSION_FULL:-$(run_sql_silent "SELECT VERSION();")}
 SLAVE_LOG_FILE=$(run_sql_silent "SELECT @@slow_query_log_file;")
 ERROR_LOG_PATH=$(run_sql_silent "SELECT @@log_error;")
 DATA_DIR=$(run_sql_silent "SELECT @@datadir;")
@@ -132,6 +437,9 @@ echo "================================================================"
 echo "  MySQL 巡检报告 V3.0"
 echo "  采集时间：$(date '+%Y-%m-%d %H:%M:%S')"
 echo "  目标实例：${DB_HOST}:${DB_PORT}"
+[[ -n "$DB_SOCKET" ]] && echo "  连接 socket：${DB_SOCKET}"
+[[ -n "$DEFAULTS_FILE" ]] && echo "  配置文件：${DEFAULTS_FILE}"
+echo "  mysql 客户端：${EXEC_MYSQL}"
 echo "  MySQL 版本：${DB_VERSION_FULL} (主版本 ${DB_VERSION})"
 echo "  本机 IP：${IP_ADDR}"
 echo "================================================================"
@@ -223,19 +531,25 @@ collect_os() {
     }
 
     section "01" "my.cnf detail"
-    if [[ -f /etc/my.cnf ]]; then
-        cat /etc/my.cnf
+    if [[ -n "$DEFAULTS_FILE" && -f "$DEFAULTS_FILE" ]]; then
+        print_cnf_redacted "$DEFAULTS_FILE"
+        print_include_cnf_files "$DEFAULTS_FILE"
+    elif [[ -f /etc/my.cnf ]]; then
+        print_cnf_redacted /etc/my.cnf
+        print_include_cnf_files /etc/my.cnf
     elif [[ -f /etc/mysql/my.cnf ]]; then
-        cat /etc/mysql/my.cnf
+        print_cnf_redacted /etc/mysql/my.cnf
+        print_include_cnf_files /etc/mysql/my.cnf
     else
-        echo "(未找到 /etc/my.cnf)"
+        echo "(未找到 MySQL 配置文件；已检查 mysqld --defaults-file、/etc/my.cnf、/etc/mysql/my.cnf)"
     fi
 
     section "01" "mysqld process"
     ps -ef 2>&1 | grep -E 'mysqld|mariadbd' | grep -v grep
 
     section "01" "mysqld process limits"
-    MYSQLD_PID=$(pgrep -of mysqld 2>/dev/null | head -1)
+    MYSQLD_PID="$MYSQLD_PID_DETECTED"
+    [[ -z "$MYSQLD_PID" ]] && MYSQLD_PID=$(ps -ef 2>/dev/null | grep -E '[ /](mysqld|mariadbd)( |$)' | grep -vE 'mysqld_safe|grep' | awk 'NR==1 {print $2}')
     if [[ -n "$MYSQLD_PID" ]]; then
         echo "mysqld pid: $MYSQLD_PID"
         cat /proc/$MYSQLD_PID/limits 2>/dev/null | head -20

@@ -138,6 +138,37 @@ bash install.sh --target ~/foo     # 自定义父目录
 
 输出：`MySQLHealthCheck_<IP>_<时间戳>.txt`（每节点一份）
 
+`mysqlHealthCheckV3.0.sh` 会在采集前先测试数据库登录，登录失败会直接退出，避免生成只有 OS 信息、DB 段全是报错的无效报告。脚本会自动从 `ps -ef` 中的 `mysqld` / `mariadbd` 进程解析 `--defaults-file`、`--basedir`、`--socket`、`--port`，优先使用实例自己的 `basedir/bin/mysql` 客户端，并通过临时 `--defaults-extra-file` 传递账号密码，避免密码出现在命令行。
+
+常用方式：
+
+```bash
+# 仅测试自动发现和登录，不生成巡检文件
+./mysqlHealthCheckV3.0.sh --test-login --non-interactive
+
+# 推荐：让脚本自动发现 mysql 客户端、配置文件、socket 和端口
+./mysqlHealthCheckV3.0.sh \
+  --user dbadmin --password 'xxx' \
+  --output-dir ./data \
+  --non-interactive
+
+# 多实例或非标准部署时，也可以显式指定
+./mysqlHealthCheckV3.0.sh \
+  --mysql-cmd /opt/mysql/bin/mysql \
+  --defaults-file /opt/mysqldata1/data1/my3306.cnf \
+  --socket /opt/mysqldata1/data1/mydata/mysql.sock \
+  --user dbadmin --password 'xxx' \
+  --output-dir ./data \
+  --non-interactive
+
+# 遇到旧实例 SSL 协议不兼容时，可显式禁用 SSL
+./mysqlHealthCheckV3.0.sh \
+  --user dbadmin --password 'xxx' \
+  --ssl-mode DISABLED \
+  --output-dir ./data \
+  --non-interactive
+```
+
 ### 3. 生成报告
 
 ```bash
