@@ -83,11 +83,31 @@ if (!args[0] || args[0].startsWith('--')) {
 }
 const dataPath = path.resolve(args[0]);
 let outPath = null;
+let validateOnly = false;
 for (let i = 1; i < args.length; i++) {
   if (args[i] === '--out') outPath = args[++i];
+  else if (args[i] === '--validate') validateOnly = true;
 }
 
 const data = JSON.parse(fs.readFileSync(dataPath, 'utf-8'));
+
+// ============== Schema 校验（Codex #5）==============
+// 渲染前快速诊断 data.json 完整性，避免运行时崩溃。
+// --validate 模式：只校验不渲染。
+let schema;
+try { schema = require('./lib/schema.js'); } catch (_) {}
+if (schema) {
+  const result = schema.validate(data);
+  schema.printReport(result);
+  if (!result.ok) {
+    console.error('✗ 数据校验失败，渲染终止。修复 data.json 或重跑 extract.js 后再试。');
+    process.exit(2);
+  }
+  if (validateOnly) {
+    console.error('--validate 模式：仅校验，不生成 docx。');
+    process.exit(0);
+  }
+}
 if (!outPath) {
   // 默认放在 data.json 同目录，文件名按项目命名
   const safeName = (data.project || 'report').replace(/[^\w一-鿿-]+/g, '_');
