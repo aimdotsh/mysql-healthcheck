@@ -26,29 +26,19 @@
 
 ---
 
-## 🤖 给 AI 智能体的远程安装指令
+## 🤖 让 AI 智能体一句话装好
 
-> 把下面这段**整段复制**发给任意支持 shell 的 AI 智能体（Claude Code / OpenClaw / Codex CLI / Cursor 等），它就会自动装好这个 skill。
+把这个仓库地址发给任意支持 shell 的 AI 智能体（**Claude Code / OpenClaw / Codex CLI / Cursor** 等）：
 
-````
-请帮我安装 mysql-healthcheck 这个 skill：
+> 帮我安装 https://github.com/aimdotsh/mysql-healthcheck 这个 skill
 
-```bash
-git clone https://github.com/aimdotsh/mysql-healthcheck.git /tmp/mysql-healthcheck-src && \
-  bash /tmp/mysql-healthcheck-src/install.sh && \
-  rm -rf /tmp/mysql-healthcheck-src
-```
+智能体会自己阅读本 README 与 SKILL.md → 按你的操作系统选合适的命令 → clone + `install.sh` 一气呵成。
 
-安装完成后回复"已就绪"。
-````
+安装完成后直接对智能体说：
 
-安装完成后，对智能体说：
+> 帮我生成 `/path/to/data-dir` 的 MySQL 巡检报告
 
-> 帮我生成 `/path/to/your/data-dir` 的 MySQL 巡检报告
-
-智能体会自动识别本 skill 的 `SKILL.md` playbook，按 2 步流程跑完，最终把 docx 报告交给你。
-
-`install.sh` 默认装到 `~/.claude/skills/mysql-healthcheck/`（Claude Code 标准位置）。可用 `--target workbuddy` 装到 workbuddy 目录，或 `--target ~/foo` 自定义父目录。
+智能体会自动识别 SKILL.md 中的 playbook，按 2 步流程跑完，把 docx 报告交给你。
 
 ---
 
