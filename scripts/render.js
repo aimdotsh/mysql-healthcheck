@@ -1546,33 +1546,43 @@ function chapterBackupRecovery(data) {
 // ============== 十六、安全合规审计（V4 新增）==============
 function chapterSecurityCompliance(data) {
   const out = [h1('十六、安全合规审计')];
-  const sa = data.securityAssessment || { items: [], pass: 0, warn: 0, fail: 0 };
+  const sa = data.securityAssessment || { items: [], pass: 0, warn: 0, fail: 0, unknown: 0 };
 
   out.push(h2('16.1 综合评估'));
+  const levelColor = sa.complianceLevel === '高' ? '548235'
+    : sa.complianceLevel === '中' ? 'BF8F00'
+    : sa.complianceLevel === '低' ? 'C00000'
+    : COLOR.muted;
   out.push(para([
     { text: '合规等级：', bold: true },
-    { text: sa.complianceLevel || '-', color: sa.complianceLevel === '高' ? '548235' : sa.complianceLevel === '中' ? 'BF8F00' : 'C00000', bold: true },
-    { text: `（PASS ${sa.pass} 项 / WARN ${sa.warn} 项 / FAIL ${sa.fail} 项 / 共 ${sa.total || sa.items.length} 项检查）` },
+    { text: sa.complianceLevel || '-', color: levelColor, bold: true },
+    { text: `（PASS ${sa.pass} / WARN ${sa.warn} / FAIL ${sa.fail} / UNKNOWN ${sa.unknown || 0} / 共 ${sa.total || sa.items.length} 项）` },
   ]));
+  if ((sa.unknown || 0) > 0) {
+    out.push(noteParagraph(`其中 ${sa.unknown} 项为 UNKNOWN（相关数据未采集），升级到 V3.0 采集脚本可获取完整合规判断。这些项不参与合规等级计算，避免「未采集」被误判为「未启用」。`));
+  }
   out.push(emptyLine());
 
-  // 安全合规结果饼图
+  // 安全合规结果饼图（含 UNKNOWN）
   if (charts) {
     const p = chartParagraph(() => charts.pie([
       { label: '通过 PASS', value: sa.pass || 0, color: charts.COLORS.good },
       { label: '告警 WARN', value: sa.warn || 0, color: charts.COLORS.warn },
       { label: '不合规 FAIL', value: sa.fail || 0, color: charts.COLORS.bad },
+      { label: '未采集 UNKNOWN', value: sa.unknown || 0, color: charts.COLORS.muted },
     ].filter(x => x.value > 0), { title: '安全合规检查结果分布', width: 480, height: 240 }),
     { width: 480, height: 240 });
     if (p) out.push(p);
   }
 
   out.push(h2('16.2 合规检查清单'));
-  const rows = (sa.items || []).map(i => [
-    i.label,
-    i.status === 'PASS' ? '✅ 通过' : i.status === 'WARN' ? '⚠️ 告警' : '❌ 不合规',
-    i.detail,
-  ]);
+  const statusLabel = (s) => ({
+    PASS: '✅ 通过',
+    WARN: '⚠️ 告警',
+    FAIL: '❌ 不合规',
+    UNKNOWN: '❓ 未采集',
+  })[s] || s;
+  const rows = (sa.items || []).map(i => [i.label, statusLabel(i.status), i.detail]);
   out.push(makeTable(['检查项', '状态', '说明'], rows, '安全合规检查项'));
   out.push(emptyLine());
 

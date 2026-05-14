@@ -881,12 +881,14 @@ function main() {
   }
 
   // ============== 自动分析与问题清单 ==============
-  const issues = analyzeIssues(nodes);
+  let issues = analyzeIssues(nodes);
+  const backupAssessment = assessBackup(nodes);
+  const securityAssessment = assessSecurity(nodes);
+  // 把备份评估 / 安全合规检查中的严重项升级到 issues[]（Codex #4）
+  issues = promoteAssessmentIssues(issues, backupAssessment, securityAssessment, nodes.length);
   const correlations = deriveCorrelations(nodes, issues);
   const paramJudgments = deriveParamDiffJudgments(nodes);
   const healthScore = computeHealthScore(nodes, issues);
-  const backupAssessment = assessBackup(nodes);
-  const securityAssessment = assessSecurity(nodes);
 
   // ============== 构造输出 ==============
   const out = {
@@ -1068,73 +1070,114 @@ function assessBackup(nodes) {
 }
 
 // ============== 安全合规评估 ==============
+// Codex #9：区分"未采集（UNKNOWN）"与"采集了但未启用（FAIL）"
+// 老版本会把 V2 采集脚本未输出的字段当成 FAIL，造成误判。
+// 现在：相关数据完全缺失 → UNKNOWN；数据存在但不合规 → FAIL；启用且合规 → PASS
 function assessSecurity(nodes) {
   const primary = nodes.find(n => n.role === 'primary') || nodes[0];
+
+  // 数据存在性检测（区分"采集了空"和"压根没采集"）
+  const has = {
+    passwordPolicy:    nodes.some(n => n.passwordPolicy != null),
+    rootWildcardData:  nodes.some(n => Array.isArray(n.users) && n.users.length > 0),
+    auditPlugin:       nodes.some(n => n.auditPlugin != null),
+    tlsConfig:         nodes.some(n => n.tlsConfig != null && Object.keys(n.tlsConfig).length > 0),
+    innodbEncryption:  nodes.some(n => n.encryptionStatus != null),
+    emptyPasswordData: nodes.some(n => n.emptyPasswordUsers != null),
+    oldAuthData:       nodes.some(n => n.oldAuthUsers != null),
+    failedLoginData:   nodes.some(n => n.failedLogins != null),
+  };
+
   const items = [
-    {
-      id: 'strong_password_policy',
-      label: '强密码策略',
-      status: primary?.hasPasswordPolicy ? 'PASS' : 'FAIL',
-      detail: primary?.hasPasswordPolicy ? '已启用 validate_password' : '未启用密码强度校验插件',
-    },
-    {
-      id: 'no_wildcard_root',
-      label: 'root 账号未开放 host=%',
-      status: !nodes.some(n => (n.users || []).some(u => u.user === 'root' && u.host === '%')) ? 'PASS' : 'FAIL',
-      detail: nodes.some(n => (n.users || []).some(u => u.user === 'root' && u.host === '%')) ? 'root@% 存在，远程入侵敞口' : '已限制 root 远程登录',
-    },
-    {
-      id: 'audit_log',
-      label: '审计日志已启用',
-      status: nodes.some(n => n.hasAuditPlugin) ? 'PASS' : 'FAIL',
-      detail: nodes.some(n => n.hasAuditPlugin) ? '检测到 audit 插件' : '未启用 audit log 插件，无法满足等保合规',
-    },
-    {
-      id: 'tls_enabled',
-      label: 'TLS 传输加密',
-      status: primary?.tlsConfig?.have_ssl === 'YES' ? 'PASS' : 'WARN',
-      detail: primary?.tlsConfig?.have_ssl === 'YES' ? `已支持 TLS（${primary?.tlsConfig?.tls_version || ''}）` : '未开启 TLS',
-    },
-    {
-      id: 'require_secure_transport',
-      label: '强制 TLS 连接',
-      status: primary?.tlsConfig?.require_secure_transport === 'ON' ? 'PASS' : 'WARN',
-      detail: primary?.tlsConfig?.require_secure_transport === 'ON' ? '已强制 TLS' : '未强制 TLS，允许明文连接',
-    },
-    {
-      id: 'innodb_encryption',
-      label: '数据 at-rest 加密',
-      status: nodes.some(n => n.hasInnodbEncryption) ? 'PASS' : 'WARN',
-      detail: nodes.some(n => n.hasInnodbEncryption) ? '已启用 InnoDB 表空间加密' : '未启用透明数据加密',
-    },
-    {
-      id: 'no_empty_password',
-      label: '无空密码账号',
-      status: !nodes.some(n => (n.emptyPasswordUsers || []).length > 0) ? 'PASS' : 'FAIL',
-      detail: nodes.some(n => (n.emptyPasswordUsers || []).length > 0) ? '发现空密码账号' : '所有账号均设置密码',
-    },
-    {
-      id: 'auth_plugin',
-      label: '认证插件 (caching_sha2_password)',
-      status: nodes.some(n => (n.oldAuthUsers || []).length > 0) ? 'WARN' : 'PASS',
-      detail: nodes.some(n => (n.oldAuthUsers || []).length > 0) ? '仍有账号使用 mysql_native_password' : '所有账号已用现代认证',
-    },
-    {
-      id: 'failed_login_baseline',
-      label: '登录失败异常监控',
-      status: nodes.some(n => (n.failedLogins || []).some(f => Number(f.connectErrors) > 100)) ? 'WARN' : 'PASS',
-      detail: nodes.some(n => (n.failedLogins || []).some(f => Number(f.connectErrors) > 100)) ? '检测到高失败次数 IP' : '采集时未见高异常失败次数',
-    },
+    mkItem('strong_password_policy', '强密码策略',
+      has.passwordPolicy, primary?.hasPasswordPolicy,
+      '已启用 validate_password', '未启用密码强度校验插件',
+      '未采集 validate_password 配置（升级到 V3.0 采集脚本可获取）'),
+
+    mkItem('no_wildcard_root', 'root 账号未开放 host=%',
+      has.rootWildcardData,
+      !nodes.some(n => (n.users || []).some(u => u.user === 'root' && u.host === '%')),
+      '已限制 root 远程登录',
+      'root@% 存在，远程入侵敞口',
+      '未采集用户清单数据'),
+
+    mkItem('audit_log', '审计日志已启用',
+      has.auditPlugin, nodes.some(n => n.hasAuditPlugin),
+      '检测到 audit 插件',
+      '未启用 audit log 插件，无法满足等保合规',
+      '未采集审计插件状态（V3.0 采集脚本会包含）'),
+
+    mkItem('tls_enabled', 'TLS 传输加密',
+      has.tlsConfig, primary?.tlsConfig?.have_ssl === 'YES',
+      `已支持 TLS（${primary?.tlsConfig?.tls_version || ''}）`,
+      '未开启 TLS', '未采集 TLS 配置', 'WARN'),
+
+    mkItem('require_secure_transport', '强制 TLS 连接',
+      has.tlsConfig, primary?.tlsConfig?.require_secure_transport === 'ON',
+      '已强制 TLS', '未强制 TLS，允许明文连接',
+      '未采集 require_secure_transport', 'WARN'),
+
+    mkItem('innodb_encryption', '数据 at-rest 加密',
+      has.innodbEncryption, nodes.some(n => n.hasInnodbEncryption),
+      '已启用 InnoDB 表空间加密',
+      '未启用透明数据加密',
+      '未采集 InnoDB 加密状态', 'WARN'),
+
+    mkItem('no_empty_password', '无空密码账号',
+      has.emptyPasswordData,
+      !nodes.some(n => (n.emptyPasswordUsers || []).length > 0),
+      '所有账号均设置密码', '发现空密码账号',
+      '未采集空密码检查'),
+
+    mkItem('auth_plugin', '认证插件 (caching_sha2_password)',
+      has.oldAuthData,
+      !nodes.some(n => (n.oldAuthUsers || []).length > 0),
+      '所有账号已用现代认证',
+      '仍有账号使用 mysql_native_password',
+      '未采集认证插件信息', 'WARN'),
+
+    mkItem('failed_login_baseline', '登录失败异常监控',
+      has.failedLoginData,
+      !nodes.some(n => (n.failedLogins || []).some(f => Number(f.connectErrors) > 100)),
+      '采集时未见高异常失败次数',
+      '检测到高失败次数 IP',
+      '未采集 performance_schema.host_cache', 'WARN'),
   ];
+
   const pass = items.filter(i => i.status === 'PASS').length;
   const fail = items.filter(i => i.status === 'FAIL').length;
   const warn = items.filter(i => i.status === 'WARN').length;
+  const unknown = items.filter(i => i.status === 'UNKNOWN').length;
+  // complianceLevel 计算：UNKNOWN 不参与（避免老 txt 误判为低合规）
+  const effectiveTotal = items.length - unknown;
+  const failRate = effectiveTotal > 0 ? fail / effectiveTotal : 0;
+  let complianceLevel;
+  if (unknown > items.length * 0.5) {
+    complianceLevel = '数据不足（建议升级 V3.0 采集脚本）';
+  } else if (fail === 0 && warn <= 1) {
+    complianceLevel = '高';
+  } else if (failRate <= 0.25) {
+    complianceLevel = '中';
+  } else {
+    complianceLevel = '低';
+  }
   return {
     items,
-    pass, fail, warn,
+    pass, fail, warn, unknown,
     total: items.length,
-    complianceLevel: fail === 0 && warn <= 1 ? '高' : fail <= 2 ? '中' : '低',
+    complianceLevel,
   };
+}
+
+// 工具函数：根据数据可用性决定 PASS/WARN/FAIL/UNKNOWN
+function mkItem(id, label, dataAvailable, passCondition, passDetail, failDetail, unknownDetail, failLevel) {
+  if (!dataAvailable) {
+    return { id, label, status: 'UNKNOWN', detail: unknownDetail || '相关数据未采集' };
+  }
+  if (passCondition) {
+    return { id, label, status: 'PASS', detail: passDetail };
+  }
+  return { id, label, status: failLevel || 'FAIL', detail: failDetail };
 }
 
 // ============== 问题自动分析（节点级 → 集群级聚合）==============
@@ -1500,6 +1543,76 @@ function analyzeIssues(nodes) {
   }
 
   return aggregateIssues(raw, nodes.length);
+}
+
+// ============== 把备份评估 / 安全合规结论提升为 issues ==============
+// Codex #4：当前 assessBackup() / assessSecurity() 的严重项只出现在
+// 第十五/十六章独立段，不进 issues[]，导致第一章问题汇总和第十七章行动
+// 计划看不到「备份缺失」这类 P0。本函数把这两类评估的严重项注入 issues。
+function promoteAssessmentIssues(issues, backup, security, totalNodes) {
+  const extras = [];
+  const nextSeq = issues.length;
+
+  // --- 备份评估 ---
+  if (backup && backup.severity && backup.severity !== 'OK') {
+    extras.push({
+      type: 'backup_capability',
+      priority: backup.severity,   // P0 / P1 / P2
+      groupKey: 'backup_capability',
+      description: `备份能力评估：${backup.assessment}`,
+      node: '全部节点',
+      action: backup.hasTool
+        ? '完善备份调度 / 制定备份策略 / 定期恢复演练'
+        : '立即安装 xtrabackup（推荐）或 mariabackup；建立全量+增量+binlog 备份策略；异地保存',
+      sql: backup.hasTool ? null : '# 安装 xtrabackup 示例\nyum install percona-xtrabackup-80 -y\n# 或: apt install xtrabackup',
+      status: '待处理',
+      scope: 'cluster',
+      source: 'backup_assessment',
+    });
+  }
+
+  // --- 安全合规：每条 FAIL 单独升级 ---
+  for (const item of (security?.items || [])) {
+    if (item.status === 'FAIL') {
+      const priority = item.id === 'no_wildcard_root' || item.id === 'no_empty_password'
+        ? 'P0'
+        : 'P1';
+      extras.push({
+        type: `compliance_fail_${item.id}`,
+        priority,
+        groupKey: `compliance_fail:${item.id}`,
+        description: `合规失败：${item.label} — ${item.detail}`,
+        node: '全部节点',
+        action: complianceAction(item.id),
+        status: '待处理',
+        scope: 'cluster',
+        source: 'security_assessment',
+      });
+    }
+  }
+
+  if (extras.length === 0) return issues;
+
+  // 重新排序 + 编号
+  const all = [...issues, ...extras];
+  const ord = { P0: 0, P1: 1, P2: 2, P3: 3 };
+  all.sort((a, b) => (ord[a.priority] - ord[b.priority]) || a.type.localeCompare(b.type));
+  all.forEach((i, idx) => { i.seq = idx + 1; });
+  return all;
+}
+
+function complianceAction(id) {
+  return ({
+    strong_password_policy: '启用 validate_password 插件，强制密码复杂度与定期改密',
+    no_wildcard_root: "立即执行：DROP USER 'root'@'%';（先确保有 root@localhost 等可用入口）",
+    audit_log: '加载 audit log 插件（如 server_audit / Audit Log 商业版）',
+    tls_enabled: '配置 ssl_cert/ssl_key/ssl_ca 启用 TLS',
+    require_secure_transport: 'SET GLOBAL require_secure_transport = ON;（确认所有客户端支持 TLS 后再开）',
+    innodb_encryption: '启用 InnoDB 透明加密（需 keyring 插件 + 重建表）',
+    no_empty_password: "ALTER USER '<user>'@'<host>' IDENTIFIED BY '<strong_password>';",
+    auth_plugin: "ALTER USER '<user>'@'<host>' IDENTIFIED WITH caching_sha2_password BY '<pwd>';",
+    failed_login_baseline: '排查高失败 IP 是否为暴力破解；考虑接入 fail2ban',
+  })[id] || '按合规框架要求整改';
 }
 
 // ============== 集群级聚合 ==============
