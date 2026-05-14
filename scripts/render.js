@@ -138,6 +138,10 @@ const COLOR = {
   p3: 'FFFFFF',
 };
 const FONT = 'Microsoft YaHei';
+const COMPANY_NAME = '云和恩墨(北京)信息技术有限公司';
+const COMPANY_SLOGAN = '实力成就卓越 技术创造价值';
+const COMPANY_SITE = 'http://www.enmotech.com';
+const DOC_EDITOR = 'Bethune';
 // A4 (11907) - 左 1800 - 右 1440 = 8667 内容宽，留 30 DXA 余量
 const TABLE_WIDTH = 8640;
 
@@ -328,48 +332,102 @@ function noteParagraph(text) {
   });
 }
 
+function simpleGridTable(rows, widths) {
+  return new Table({
+    rows: rows.map((row) => new TableRow({
+      children: row.map((cell, i) => new TableCell({
+        children: [new Paragraph({
+          children: [new TextRun({
+            text: String(cell.text == null ? '' : cell.text),
+            size: cell.size || 20,
+            font: FONT,
+            bold: !!cell.bold,
+            color: cell.color || COLOR.text,
+          })],
+          alignment: cell.align || AlignmentType.LEFT,
+        })],
+        width: { size: widths[i], type: WidthType.DXA },
+        shading: cell.fill ? { fill: cell.fill, type: ShadingType.CLEAR, color: 'auto' } : undefined,
+      })),
+    })),
+    width: { size: TABLE_WIDTH, type: WidthType.DXA },
+    columnWidths: widths,
+    layout: TableLayoutType.FIXED,
+  });
+}
+
 // ============== 章节构造器 ==============
 function chapterCover(data) {
-  const dateText = formatChineseDate(data.inspectionDate);
-  const reportText = formatChineseDate(data.reportDate);
+  const monthText = formatMonthText(data.inspectionDate);
   return [
-    emptyLine(), emptyLine(), emptyLine(),
     new Paragraph({
-      children: [new TextRun({ text: data.project, size: 52, bold: true, color: COLOR.primary, font: FONT })],
+      children: [new TextRun({ text: `${data.project} 数据库巡检报告`, size: 44, bold: true, color: '000000', font: FONT })],
       alignment: AlignmentType.CENTER,
-      spacing: { before: 200, after: 100 },
+      spacing: { before: 2200, after: 220 },
     }),
     new Paragraph({
-      children: [new TextRun({ text: 'MySQL 数据库健康巡检报告', size: 52, bold: true, color: COLOR.primary, font: FONT })],
+      children: [new TextRun({ text: `(${monthText})`, size: 24, color: '000000', font: FONT })],
       alignment: AlignmentType.CENTER,
-      spacing: { before: 100, after: 400 },
+      spacing: { before: 0, after: 2500 },
     }),
     new Paragraph({
-      children: [new TextRun({ text: `巡检日期：${dateText}`, size: 28, color: COLOR.text, font: FONT })],
+      children: [new TextRun({ text: COMPANY_NAME, size: 30, color: '000000', font: FONT })],
       alignment: AlignmentType.CENTER,
-      spacing: { before: 100, after: 80 },
+      spacing: { before: 1400, after: 120 },
     }),
     new Paragraph({
-      children: [new TextRun({ text: `报告日期：${reportText}`, size: 28, color: COLOR.text, font: FONT })],
+      children: [new TextRun({ text: COMPANY_SITE, size: 22, color: '000000', font: FONT })],
       alignment: AlignmentType.CENTER,
-      spacing: { before: 80, after: 80 },
-    }),
-    new Paragraph({
-      children: [new TextRun({ text: `集群拓扑：${data.cluster.topology}（${data.cluster.nodeCount} 节点）`, size: 28, color: COLOR.text, font: FONT })],
-      alignment: AlignmentType.CENTER,
-      spacing: { before: 80, after: 80 },
-    }),
-    new Paragraph({
-      children: [new TextRun({ text: `报告版本：v${data.reportVersion || '1.0'}`, size: 28, color: COLOR.text, font: FONT })],
-      alignment: AlignmentType.CENTER,
-      spacing: { before: 80, after: 400 },
-    }),
-    emptyLine(), emptyLine(),
-    new Paragraph({
-      border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: COLOR.rule } },
-      spacing: { before: 100, after: 200 },
+      spacing: { before: 0, after: 0 },
     }),
     new Paragraph({ children: [new PageBreak()], spacing: { before: 0, after: 0 } }),
+  ];
+}
+
+function chapterDocumentControl(data) {
+  const reportDate = data.reportDate || data.inspectionDate || '';
+  const version = `${data.reportVersion || '1.0'}版`;
+  return [
+    new Paragraph({
+      children: [new TextRun({ text: '文档控制', size: 34, bold: true, color: '000000', font: FONT })],
+      spacing: { before: 120, after: 180 },
+    }),
+    simpleGridTable([
+      [
+        { text: '序', fill: COLOR.primary, color: 'FFFFFF', bold: true, align: AlignmentType.CENTER },
+        { text: '版本号', fill: COLOR.primary, color: 'FFFFFF', bold: true, align: AlignmentType.CENTER },
+        { text: '更改人', fill: COLOR.primary, color: 'FFFFFF', bold: true, align: AlignmentType.CENTER },
+        { text: '日期', fill: COLOR.primary, color: 'FFFFFF', bold: true, align: AlignmentType.CENTER },
+        { text: '备注', fill: COLOR.primary, color: 'FFFFFF', bold: true, align: AlignmentType.CENTER },
+      ],
+      [
+        { text: '1', align: AlignmentType.CENTER },
+        { text: version, align: AlignmentType.CENTER },
+        { text: DOC_EDITOR, align: AlignmentType.CENTER },
+        { text: reportDate, align: AlignmentType.CENTER },
+        { text: '初始版本', align: AlignmentType.CENTER },
+      ],
+    ], [800, 1300, 1500, 1400, 2000]),
+    new Paragraph({ text: '', spacing: { before: 0, after: 7600 } }),
+    simpleGridTable([
+      [
+        { text: '编制', bold: true }, { text: DOC_EDITOR },
+        { text: '日期', bold: true }, { text: reportDate },
+      ],
+      [
+        { text: '校对', bold: true }, { text: '' },
+        { text: '日期', bold: true }, { text: reportDate },
+      ],
+      [
+        { text: '审核', bold: true }, { text: '' },
+        { text: '日期', bold: true }, { text: reportDate },
+      ],
+      [
+        { text: '批准', bold: true }, { text: '' },
+        { text: '日期', bold: true }, { text: reportDate },
+      ],
+    ], [1200, 2500, 1200, 2500]),
+    new Paragraph({ children: [new PageBreak()] }),
   ];
 }
 
@@ -1500,6 +1558,9 @@ function chapterBackupRecovery(data) {
     }
   }
   if (!hasCron) out.push(para('未发现备份相关 cron 任务（可能在外部调度系统中，建议人工确认）。'));
+  if ((ba.hintPaths || []).length > 0) {
+    out.push(noteParagraph(`根据 crontab 和扫描结果推断，建议重点核实以下备份目录或脚本邻近目录：${ba.hintPaths.join('、')}。`));
+  }
   out.push(emptyLine());
 
   out.push(h2('15.4 备份产物清单'));
@@ -1738,24 +1799,19 @@ function formatChineseDate(iso) {
   return `${m[1]}年${m[2]}月${m[3]}日`;
 }
 
+function formatMonthText(iso) {
+  if (!iso) return '-';
+  const m = iso.match(/^(\d{4})-(\d{2})/);
+  if (!m) return iso;
+  return `${m[1]}年${Number(m[2])}月`;
+}
+
 // ============== 文档组装 ==============
 function buildDocument(data) {
   const logoPath = path.join(__dirname, 'assets', 'logo.png');
   const logoImage = fs.existsSync(logoPath) ? fs.readFileSync(logoPath) : null;
-
-  const headerChildren = [];
-  if (logoImage) {
-    headerChildren.push(new ImageRun({
-      data: logoImage,
-      transformation: { width: 90, height: 30 },
-      type: 'png',
-    }));
-    headerChildren.push(new TextRun({ text: '  ', font: FONT }));
-  }
-  headerChildren.push(new TextRun({
-    text: `${data.project} MySQL 数据库巡检报告 （${data.cluster.ips.join(', ')}）`,
-    font: FONT, color: COLOR.light, size: 16,
-  }));
+  const headerWidths = [1900, 4700, 1800];
+  const footerWidths = [1800, 5000, 1800];
 
   return new Document({
     creator: 'mysql-healthcheck v4.1',
@@ -1779,26 +1835,83 @@ function buildDocument(data) {
       properties: { page: { margin: { top: 1440, bottom: 1440, left: 1800, right: 1440 } } },
       headers: {
         default: new Header({
-          children: [new Paragraph({
-            border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: 'AAAAAA', space: 1 } },
-            children: headerChildren,
+          children: [new Table({
+            rows: [new TableRow({
+              children: [
+                new TableCell({
+                  children: [new Paragraph({
+                    children: logoImage ? [new ImageRun({
+                      data: logoImage,
+                      transformation: { width: 100, height: 34 },
+                      type: 'png',
+                    })] : [new TextRun({ text: 'ENMOTECH', font: FONT, size: 16, color: COLOR.light })],
+                    alignment: AlignmentType.CENTER,
+                  })],
+                  width: { size: headerWidths[0], type: WidthType.DXA },
+                }),
+                new TableCell({
+                  children: [new Paragraph({
+                    children: [new TextRun({ text: `${COMPANY_NAME} 成就所托`, font: FONT, color: COLOR.light, size: 18 })],
+                    alignment: AlignmentType.CENTER,
+                  })],
+                  width: { size: headerWidths[1], type: WidthType.DXA },
+                }),
+                new TableCell({
+                  children: [new Paragraph({
+                    children: [new TextRun({ text: COMPANY_SITE, font: FONT, color: COLOR.light, size: 18 })],
+                    alignment: AlignmentType.CENTER,
+                  })],
+                  width: { size: headerWidths[2], type: WidthType.DXA },
+                }),
+              ],
+            })],
+            width: { size: TABLE_WIDTH, type: WidthType.DXA },
+            columnWidths: headerWidths,
+            layout: TableLayoutType.FIXED,
           })],
         }),
       },
       footers: {
         default: new Footer({
-          children: [new Paragraph({
-            alignment: AlignmentType.CENTER,
-            children: [
-              new TextRun({ text: '第 ', color: COLOR.muted, size: 18, font: FONT }),
-              new TextRun({ children: [PageNumber.CURRENT], color: COLOR.muted, size: 18, font: FONT }),
-              new TextRun({ text: ' 页', color: COLOR.muted, size: 18, font: FONT }),
-            ],
+          children: [new Table({
+            rows: [new TableRow({
+              children: [
+                new TableCell({
+                  children: [new Paragraph({
+                    children: [new TextRun({ text: COMPANY_SITE, color: COLOR.light, size: 16, font: FONT })],
+                    alignment: AlignmentType.CENTER,
+                  })],
+                  width: { size: footerWidths[0], type: WidthType.DXA },
+                }),
+                new TableCell({
+                  children: [new Paragraph({
+                    children: [new TextRun({ text: COMPANY_SLOGAN, color: COLOR.light, size: 16, font: FONT })],
+                    alignment: AlignmentType.CENTER,
+                  })],
+                  width: { size: footerWidths[1], type: WidthType.DXA },
+                }),
+                new TableCell({
+                  children: [new Paragraph({
+                    children: [
+                      new TextRun({ text: '-', color: COLOR.muted, size: 18, font: FONT }),
+                      new TextRun({ children: [PageNumber.CURRENT], color: COLOR.muted, size: 18, font: FONT }),
+                      new TextRun({ text: '-', color: COLOR.muted, size: 18, font: FONT }),
+                    ],
+                    alignment: AlignmentType.CENTER,
+                  })],
+                  width: { size: footerWidths[2], type: WidthType.DXA },
+                }),
+              ],
+            })],
+            width: { size: TABLE_WIDTH, type: WidthType.DXA },
+            columnWidths: footerWidths,
+            layout: TableLayoutType.FIXED,
           })],
         }),
       },
       children: [
         ...chapterCover(data),
+        ...chapterDocumentControl(data),
         ...chapterExecutiveSummary(data),
         ...chapterTOC(),
         ...chapterSummary(data),

@@ -92,6 +92,22 @@ function getSection(content, sectionName, options = {}) {
   return result.join('\n');
 }
 
+function hasSection(content, sectionName, options = {}) {
+  const { caseInsensitive = true } = options;
+  const lines = content.split(/\r?\n/);
+  const marker = '----->>>---->>>';
+  for (const line of lines) {
+    if (!line.includes(marker)) continue;
+    let after = line.split(marker)[1].trim();
+    after = after.replace(/^\[\d+\]\s*/, '');
+    const matches = caseInsensitive
+      ? after.toLowerCase().startsWith(sectionName.toLowerCase())
+      : after.startsWith(sectionName);
+    if (matches) return true;
+  }
+  return false;
+}
+
 // 解析 mysql 命令行 +----+ 表格
 function parseMysqlTable(text) {
   const lines = text.split(/\r?\n/).filter(l => l.trim());
@@ -435,17 +451,22 @@ function parseTxt(filepath) {
     node.tlsStatus = map;
   }
   const pwdPolicy = getSection(content, 'Password validation policy');
-  if (pwdPolicy) {
+  if (pwdPolicy || hasSection(content, 'Password validation policy')) {
     node.passwordPolicy = pwdPolicy.trim();
     node.hasPasswordPolicy = /validate_password/i.test(pwdPolicy) && !/未启用/.test(pwdPolicy);
   }
   const encryptSec = getSection(content, 'InnoDB encryption status');
-  if (encryptSec) {
+  if (encryptSec || hasSection(content, 'InnoDB encryption status')) {
     node.encryptionStatus = encryptSec.trim();
     node.hasInnodbEncryption = !/未启用/.test(encryptSec) && parseMysqlTable(encryptSec).rows.length > 0;
   }
+  const keyringSec = getSection(content, 'Keyring plugin');
+  if (keyringSec || hasSection(content, 'Keyring plugin')) {
+    node.keyringPlugin = keyringSec.trim();
+    node.hasKeyringPlugin = /keyring/i.test(keyringSec || '');
+  }
   const emptyPwdSec = getSection(content, 'Users with empty password');
-  if (emptyPwdSec) {
+  if (emptyPwdSec || hasSection(content, 'Users with empty password')) {
     node.emptyPasswordUsers = parseMysqlTable(emptyPwdSec).rows.map(r => ({ user: r[0], host: r[1] }));
   }
   const oldAuthSec = getSection(content, 'Users with old auth plugin');
@@ -453,7 +474,7 @@ function parseTxt(filepath) {
     node.oldAuthUsers = parseMysqlTable(oldAuthSec).rows.map(r => ({ user: r[0], host: r[1], plugin: r[2] }));
   }
   const failedLoginSec = getSection(content, 'failed login attempts');
-  if (failedLoginSec) {
+  if (failedLoginSec || hasSection(content, 'failed login attempts')) {
     node.failedLogins = parseMysqlTable(failedLoginSec).rows.slice(0, 10).map(r => ({
       ip: r[0], host: r[1], connectErrors: r[2], handshakeErrors: r[3], authErrors: r[4],
     }));
@@ -715,6 +736,10 @@ function parseReplication(text) {
   return result;
 }
 
+function inferRoleFromHostname(hostname) {
+  return canonicalRole(hostname);
+}
+
 function parseInnodbStatus(text) {
   const result = {};
   const grab = (re) => { const m = text.match(re); return m ? m[1] : null; };
@@ -786,13 +811,58 @@ function parseHtml(filepath) {
 
 // ============== 文件扫描与节点识别 ==============
 function inferRole(filename) {
-  const lower = filename.toLowerCase();
+  return canonicalRole(filename);
+}
+
+function canonicalRole(value) {
+  if (!value) return null;
+  const lower = String(value).toLowerCase();
   if (/pri|master|primary/.test(lower)) return 'primary';
-  if (/slave3/.test(lower)) return 'slave3';
-  if (/slave2/.test(lower)) return 'slave2';
-  if (/slave1/.test(lower)) return 'slave1';
   if (/slave|replica|standby/.test(lower)) return 'slave';
   return null;
+}
+
+function inferPrimaryFromConnections(node) {
+  if ((node.replication?.slaveIps || []).length > 0) return true;
+  if (Number(node.replication?.connectedSlaves || 0) > 0) return true;
+  return (node.processlist || []).some((proc) => {
+    const command = String(proc.command || '').toLowerCase();
+    const user = String(proc.user || '').toLowerCase();
+    return user === 'repl' && command.includes('binlog dump');
+  });
+}
+
+function normalizeNodeRoles(nodes) {
+  for (const node of nodes) {
+    if (node.role && node.role !== 'unknown') {
+      node.role = canonicalRole(node.role) || node.role;
+      continue;
+    }
+    if (node.replication?.isSlave) {
+      node.role = 'slave';
+      continue;
+    }
+    const hostRole = inferRoleFromHostname(node.hostname);
+    if (hostRole) {
+      node.role = hostRole;
+      continue;
+    }
+    node.role = 'unknown';
+  }
+
+  let primary = nodes.find((node) => node.role === 'primary');
+  if (!primary) {
+    primary = nodes.find((node) => !node.replication?.isSlave && inferPrimaryFromConnections(node));
+    if (primary) primary.role = 'primary';
+  }
+
+  if (primary) {
+    for (const node of nodes) {
+      if (node !== primary && node.replication?.isSlave) {
+        node.role = 'slave';
+      }
+    }
+  }
 }
 
 function inferIpFromFilename(filename) {
@@ -866,19 +936,15 @@ function main() {
     console.error(`解析节点 ${ip} ...`);
     const data = {
       ip,
-      role: entry.role || inferRole(entry.txt || '') || 'unknown',
+      role: canonicalRole(entry.role || inferRole(entry.txt || '')) || 'unknown',
     };
     if (entry.txt) Object.assign(data, parseTxt(entry.txt));
     if (entry.html) Object.assign(data, parseHtml(entry.html));
+    data.role = canonicalRole(data.role) || inferRoleFromHostname(data.hostname) || data.role || 'unknown';
     nodes.push(data);
   }
 
-  // 自动识别主库（含 Slave_UUID 表，或文件名含 pri/master）
-  let hasPrimary = nodes.some(n => n.role === 'primary');
-  if (!hasPrimary) {
-    const candidate = nodes.find(n => !n.replication?.isSlave && n.replication?.slaveIps);
-    if (candidate) candidate.role = 'primary';
-  }
+  normalizeNodeRoles(nodes);
 
   // ============== 自动分析与问题清单 ==============
   let issues = analyzeIssues(nodes);
@@ -1025,6 +1091,7 @@ function assessBackup(nodes) {
     dirs: [],
     latestBackup: null,
     binlogs: nodes.map(n => ({ ip: n.ip, info: n.binlogDirInfo || '' })),
+    hintPaths: [],
   };
   let latestTime = 0;
   for (const n of nodes) {
@@ -1046,11 +1113,15 @@ function assessBackup(nodes) {
     /mysql|backup|dump|xtrabackup/i.test(c.rootUser) ||
     /mysql|backup|dump|xtrabackup/i.test(c.system)
   );
+  result.hintPaths = collectBackupHintPaths(nodes, result.dirs);
 
   // 给出综合评估
   if (!result.hasTool) {
     result.assessment = '未检测到 mysqldump / xtrabackup / mariabackup 等备份工具';
     result.severity = 'P0';
+  } else if (!result.hasBackupArtifact && result.hasScheduledBackup) {
+    result.assessment = '检测到备份调度，但在已扫描目录未发现备份产物，需核实施路径或远端存储';
+    result.severity = 'P2';
   } else if (!result.hasBackupArtifact) {
     result.assessment = '检测到备份工具但未发现备份产物（指定路径下无备份文件）';
     result.severity = 'P1';
@@ -1069,6 +1140,47 @@ function assessBackup(nodes) {
   return result;
 }
 
+function collectBackupHintPaths(nodes, dirs) {
+  const hints = new Set();
+  for (const d of (dirs || [])) {
+    if (d && d.path) hints.add(cleanBackupPath(d.path));
+  }
+  for (const n of nodes) {
+    for (const text of [n.mysqlCrontab, n.rootCrontab, n.systemCronBackup]) {
+      for (const p of extractBackupPathsFromText(text || '')) {
+        hints.add(cleanBackupPath(p));
+      }
+    }
+  }
+  return [...hints]
+    .filter(Boolean)
+    .filter((p) => /backup|bak|dump|xtra|xbstream|maria/i.test(p))
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function cleanBackupPath(p) {
+  return String(p || '').trim().replace(/[)"'`;,\s]+$/g, '').replace(/\/+$/g, '') || null;
+}
+
+function extractBackupPathsFromText(text) {
+  const paths = new Set();
+  const matches = text.match(/\/[A-Za-z0-9._\-\/]+/g) || [];
+  for (const raw of matches) {
+    const p = cleanBackupPath(raw);
+    if (!p) continue;
+    if (/backup\.sh$/i.test(p)) {
+      const dir = path.dirname(p);
+      if (dir && dir !== '/') paths.add(dir);
+      continue;
+    }
+    if (/mysqlop\.py$/i.test(p)) {
+      continue;
+    }
+    paths.add(p);
+  }
+  return [...paths];
+}
+
 // ============== 安全合规评估 ==============
 // Codex #9：区分"未采集（UNKNOWN）"与"采集了但未启用（FAIL）"
 // 老版本会把 V2 采集脚本未输出的字段当成 FAIL，造成误判。
@@ -1082,7 +1194,7 @@ function assessSecurity(nodes) {
     rootWildcardData:  nodes.some(n => Array.isArray(n.users) && n.users.length > 0),
     auditPlugin:       nodes.some(n => n.auditPlugin != null),
     tlsConfig:         nodes.some(n => n.tlsConfig != null && Object.keys(n.tlsConfig).length > 0),
-    innodbEncryption:  nodes.some(n => n.encryptionStatus != null),
+    innodbEncryption:  nodes.some(n => n.encryptionStatus != null || n.keyringPlugin != null),
     emptyPasswordData: nodes.some(n => n.emptyPasswordUsers != null),
     oldAuthData:       nodes.some(n => n.oldAuthUsers != null),
     failedLoginData:   nodes.some(n => n.failedLogins != null),
@@ -1578,13 +1690,13 @@ function promoteAssessmentIssues(issues, backup, security, totalNodes) {
         ? 'P0'
         : 'P1';
       extras.push({
-        type: `compliance_fail_${item.id}`,
-        priority,
-        groupKey: `compliance_fail:${item.id}`,
-        description: `合规失败：${item.label} — ${item.detail}`,
-        node: '全部节点',
-        action: complianceAction(item.id),
-        status: '待处理',
+      type: `compliance_fail_${item.id}`,
+      priority,
+      groupKey: `compliance_fail:${item.id}`,
+      description: complianceFailureDescription(item),
+      node: '全部节点',
+      action: complianceAction(item.id),
+      status: '待处理',
         scope: 'cluster',
         source: 'security_assessment',
       });
@@ -1599,6 +1711,10 @@ function promoteAssessmentIssues(issues, backup, security, totalNodes) {
   all.sort((a, b) => (ord[a.priority] - ord[b.priority]) || a.type.localeCompare(b.type));
   all.forEach((i, idx) => { i.seq = idx + 1; });
   return all;
+}
+
+function complianceFailureDescription(item) {
+  return `合规失败：${item.detail}`;
 }
 
 function complianceAction(id) {
