@@ -23,6 +23,32 @@
 
 ---
 
+## 🤖 给 AI 智能体的远程安装指令
+
+> 把下面这段**整段复制**发给任意支持 shell 的 AI 智能体（Claude Code / OpenClaw / Codex CLI / Cursor 等），它就会自动装好这个 skill。
+
+````
+请帮我安装 mysql-healthcheck 这个 skill：
+
+```bash
+git clone <YOUR_GIT_URL> /tmp/mysql-healthcheck-src && \
+  bash /tmp/mysql-healthcheck-src/install.sh && \
+  rm -rf /tmp/mysql-healthcheck-src
+```
+
+安装完成后回复"已就绪"。
+````
+
+安装完成后，对智能体说：
+
+> 帮我生成 `/path/to/your/data-dir` 的 MySQL 巡检报告
+
+智能体会自动识别本 skill 的 `SKILL.md` playbook，按 2 步流程跑完，最终把 docx 报告交给你。
+
+`install.sh` 默认装到 `~/.claude/skills/mysql-healthcheck/`（Claude Code 标准位置）。可用 `--target workbuddy` 装到 workbuddy 目录，或 `--target ~/foo` 自定义父目录。
+
+---
+
 ## 💡 是什么
 
 `mysql-healthcheck` 是一套**面向 DBA / 架构师 / 客户交付场景**的 MySQL 巡检报告自动化工具链：
@@ -93,15 +119,19 @@
 ### 1. 克隆 & 安装
 
 ```bash
-git clone <your-repo-url> mysql-healthcheck
+git clone <YOUR_GIT_URL> mysql-healthcheck
 cd mysql-healthcheck
-bash install.sh
+bash install.sh                    # 默认装到 ~/.claude/skills/
+# 或：
+bash install.sh --target workbuddy # 装到 ~/.workbuddy/skills/
+bash install.sh --target ~/foo     # 自定义父目录
 ```
 
 `install.sh` 会自动：
-1. 检查 Node 版本
-2. 拷贝到 `~/.workbuddy/skills/mysql-healthcheck/`
+1. 检查 Node 版本（≥16）
+2. 拷贝到 `~/.claude/skills/mysql-healthcheck/`（或指定目标）
 3. 安装 npm 依赖（`docx` + `@resvg/resvg-js`）
+4. 如目标已存在，自动备份为 `.bak.<时间戳>`
 
 ### 2. 在 MySQL 主机上采集数据
 
