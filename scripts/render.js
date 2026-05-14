@@ -93,7 +93,7 @@ if (!outPath) {
   const safeName = (data.project || 'report').replace(/[^\w一-鿿-]+/g, '_');
   outPath = path.join(
     path.dirname(dataPath),
-    `${safeName}_MySQL数据库巡检报告_详细版_v4.0.docx`,
+    `${safeName}_MySQL健康巡检报告_v${data.reportVersion || '1.0'}.docx`,
   );
 }
 
@@ -320,7 +320,7 @@ function chapterCover(data) {
       spacing: { before: 200, after: 100 },
     }),
     new Paragraph({
-      children: [new TextRun({ text: 'MySQL 数据库巡检报告（详细版）', size: 52, bold: true, color: COLOR.primary, font: FONT })],
+      children: [new TextRun({ text: 'MySQL 数据库健康巡检报告', size: 52, bold: true, color: COLOR.primary, font: FONT })],
       alignment: AlignmentType.CENTER,
       spacing: { before: 100, after: 400 },
     }),
@@ -340,7 +340,7 @@ function chapterCover(data) {
       spacing: { before: 80, after: 80 },
     }),
     new Paragraph({
-      children: [new TextRun({ text: '版本：v4.0', size: 28, color: COLOR.text, font: FONT })],
+      children: [new TextRun({ text: `报告版本：v${data.reportVersion || '1.0'}`, size: 28, color: COLOR.text, font: FONT })],
       alignment: AlignmentType.CENTER,
       spacing: { before: 80, after: 400 },
     }),
@@ -1728,8 +1728,8 @@ function buildDocument(data) {
   }));
 
   return new Document({
-    creator: 'MySQL Inspection Skill v4.0',
-    title: `${data.project} MySQL 数据库巡检报告（详细版）`,
+    creator: 'mysql-healthcheck v4.1',
+    title: `${data.project} MySQL 数据库健康巡检报告`,
     styles: {
       default: { document: { run: { font: FONT, size: 22 } } },
       paragraphStyles: [

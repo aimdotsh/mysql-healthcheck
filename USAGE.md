@@ -25,17 +25,17 @@
 
 ### 2.2 拷贝技能目录
 
-技能默认安装路径：`~/.workbuddy/skills/mysql-inspection-report-detailed/`。
+技能默认安装路径：`~/.workbuddy/skills/mysql-healthcheck/`。
 如已存在则跳过；首次安装可从压缩包或仓库拷过来：
 
 ```bash
 mkdir -p ~/.workbuddy/skills
-# 把整个 mysql-inspection-report-detailed/ 目录放进去
+# 把整个 mysql-healthcheck/ 目录放进去
 ```
 
 最终文件结构：
 ```
-~/.workbuddy/skills/mysql-inspection-report-detailed/
+~/.workbuddy/skills/mysql-healthcheck/
 ├── SKILL.md
 ├── USAGE.md          ← 本文档
 └── scripts/
@@ -48,7 +48,7 @@ mkdir -p ~/.workbuddy/skills
 ### 2.3 安装 docx 依赖
 
 ```bash
-cd ~/.workbuddy/skills/mysql-inspection-report-detailed/scripts
+cd ~/.workbuddy/skills/mysql-healthcheck/scripts
 npm install
 ```
 
@@ -87,7 +87,7 @@ npm install
 ### Step 1：提取数据
 
 ```bash
-cd ~/.workbuddy/skills/mysql-inspection-report-detailed/scripts
+cd ~/.workbuddy/skills/mysql-healthcheck/scripts
 node extract.js <数据目录> --project "<项目名称>"
 ```
 
@@ -183,7 +183,7 @@ node render.js ~/projects/clientA/2026-04-inspect/data.json
 - 确认文件名形如 `MySQLHealthCheck_<IP>_<时间戳>.txt`
 
 ### 报错 "未找到可用的 docx 依赖"
-- 漏装依赖。执行 `cd ~/.workbuddy/skills/mysql-inspection-report-detailed/scripts && npm install`
+- 漏装依赖。执行 `cd ~/.workbuddy/skills/mysql-healthcheck/scripts && npm install`
 
 ### docx 打开后只是封面没正文
 - 极可能是依赖损坏。删除 `scripts/node_modules` 后 `npm install` 重装
@@ -206,11 +206,11 @@ node render.js ~/projects/clientA/2026-04-inspect/data.json
 ## 8. 升级 / 卸载
 
 ### 升级
-直接覆盖 `~/.workbuddy/skills/mysql-inspection-report-detailed/` 目录即可，依赖仍在。
+直接覆盖 `~/.workbuddy/skills/mysql-healthcheck/` 目录即可，依赖仍在。
 
 ### 卸载
 ```bash
-rm -rf ~/.workbuddy/skills/mysql-inspection-report-detailed
+rm -rf ~/.workbuddy/skills/mysql-healthcheck
 ```
 
 ---
@@ -220,8 +220,8 @@ rm -rf ~/.workbuddy/skills/mysql-inspection-report-detailed
 为方便日常使用，可在 `~/.zshrc` 或 `~/.bashrc` 中加：
 
 ```bash
-alias mysql-report='cd ~/.workbuddy/skills/mysql-inspection-report-detailed/scripts && node extract.js'
-alias mysql-render='node ~/.workbuddy/skills/mysql-inspection-report-detailed/scripts/render.js'
+alias mysql-report='cd ~/.workbuddy/skills/mysql-healthcheck/scripts && node extract.js'
+alias mysql-render='node ~/.workbuddy/skills/mysql-healthcheck/scripts/render.js'
 ```
 
 之后只需：
@@ -236,7 +236,7 @@ mysql-render ~/projects/clientA/2026-04-inspect/data.json
 
 ```bash
 # 1. 一次性安装
-cd ~/.workbuddy/skills/mysql-inspection-report-detailed/scripts
+cd ~/.workbuddy/skills/mysql-healthcheck/scripts
 npm install
 
 # 2. 准备数据目录

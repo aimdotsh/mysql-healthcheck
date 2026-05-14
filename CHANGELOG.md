@@ -4,6 +4,42 @@
 
 ---
 
+## [4.1.0] - 2026-05-14
+
+**重命名与版本号解耦**。
+
+### ⚠️ 重命名（Breaking）
+
+| 项 | 旧 | 新 |
+|---|---|---|
+| skill 名称 | `mysql-inspection-report` | `mysql-healthcheck` |
+| GitHub 仓库 / 发行包 | `mysql-inspection-report` | `mysql-healthcheck` |
+| 安装目录 | `~/.workbuddy/skills/mysql-inspection-report/` | `~/.workbuddy/skills/mysql-healthcheck/` |
+| Claude Code skill | `~/.claude/skills/mysql-inspection-report/` | `~/.claude/skills/mysql-healthcheck/` |
+| package.json name | `mysql-inspection-report-detailed` | `mysql-healthcheck` |
+
+新名字与采集脚本 `mysqlHealthCheckV3.0.sh` 命名一脉相承，整个工具链统一。
+
+### 🆕 报告版本与工具版本解耦
+
+之前 docx 封面和文件名沿用 skill 版本号（v4.0），容易混淆「工具版本」与「报告版本」。从 v4.1 起：
+
+- **报告版本**（写在 docx 文件名和封面）默认 `v1.0`，每次给客户递交一份就是 v1.0；如果同一份报告反复修订，可改为 v1.1 / v1.2
+- **工具版本**（v4.1）仅写在 docx 元数据（`creator` 字段）和 README/CHANGELOG
+- `extract.js` 新增 `--report-version` 参数；`data.json` 新增 `reportVersion` 字段
+
+### 🎨 docx 文案调整
+
+- 封面主标题：「MySQL 数据库巡检报告（详细版）」→ **「MySQL 数据库健康巡检报告」**
+- 文件名：`<项目>_MySQL数据库巡检报告_详细版_v4.0.docx` → **`<项目>_MySQL健康巡检报告_v1.0.docx`**
+- 封面版本行：`版本：v4.0` → **`报告版本：v<reportVersion>`**
+
+### 🐛 修复
+
+- 清理所有「8 章精简版」相关描述，仅保留单一主线（v4.1）
+
+---
+
 ## [4.0.0] - 2026-05-13
 
 **商业可交付级**升级。结构从 13 章扩展到 **17 章**，增加图表、目录、执行摘要、健康度评分等高级 DBA 报告必备元素。

@@ -1,5 +1,5 @@
 ---
-name: mysql-inspection-report
+name: mysql-healthcheck
 description: 为 MySQL 数据库集群生成商业可交付级巡检报告（.docx）。当用户提供包含 MySQLHealthCheck_*.txt 的数据目录并要求「生成巡检报告」「整理巡检数据」「写月度巡检」「健康评估」「上线评估」「故障复盘」「合规自查」「商业交付级报告」等任务时使用。产物含 17 章详细分析 + 执行摘要 + 自动目录 + 六维度健康度评分 + TOP SQL 治理 + 备份评估 + 等保/PCI/GDPR/SOX 合规对照表 + 7 类专业图表。
 ---
 
@@ -43,7 +43,7 @@ description: 为 MySQL 数据库集群生成商业可交付级巡检报告（.do
 ### Step 1：解析数据
 
 ```bash
-cd ~/.workbuddy/skills/mysql-inspection-report/scripts
+cd ~/.workbuddy/skills/mysql-healthcheck/scripts
 node extract.js <数据目录> --project "<项目正式名>"
 ```
 
@@ -73,7 +73,7 @@ node render.js <数据目录>/data.json
 成功输出形如：
 ```
 ✓ 占位符校验通过：未发现残留 {…} 模板字符串
-生成成功：<数据目录>/<项目>_MySQL数据库巡检报告_详细版_v4.0.docx
+生成成功：<数据目录>/<项目>_MySQL健康巡检报告_v1.0.docx
 ```
 
 ### Step 3（可选）：润色 data.json 后重渲染
@@ -100,7 +100,7 @@ node render.js <数据目录>/data.json
 如果脚本目录不存在或 `npm install` 未执行：
 
 ```bash
-cd <发行包解压路径>/mysql-inspection-report
+cd <发行包解压路径>/mysql-healthcheck
 bash install.sh                                    # 装到 ~/.workbuddy/skills/
 ```
 
@@ -111,7 +111,7 @@ bash install.sh                                    # 装到 ~/.workbuddy/skills/
 ## 输出命名
 
 ```
-<项目名>_MySQL数据库巡检报告_详细版_v4.0.docx
+<项目名>_MySQL健康巡检报告_v1.0.docx
 ```
 
 项目名中的特殊字符会被替换为 `_`。
@@ -175,7 +175,7 @@ collectors/mysqlHealthCheckV3.0.sh \
 ## 关键文件
 
 ```
-~/.workbuddy/skills/mysql-inspection-report/
+~/.workbuddy/skills/mysql-healthcheck/
 ├── SKILL.md                       # 本文档（agent 协议）
 ├── USAGE.md                       # 完整使用说明（人类视角）
 ├── CHANGELOG.md                   # 版本变更

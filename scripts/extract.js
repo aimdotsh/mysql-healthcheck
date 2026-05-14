@@ -3,7 +3,7 @@
  * MySQL 巡检数据提取器
  *
  * 用法：
- *   node extract.js <数据目录> [--project "项目名"] [--out data.json]
+ *   node extract.js <数据目录> [--project "项目名"] [--report-version 1.0] [--out data.json]
  *
  * 输入：目录下的 MySQLHealthCheck_<IP>_<时间戳>.txt（必须）
  *      和 <IP>_<项目>_<角色>-<日期>.html（可选，用于 ibtmp1/容量补充）
@@ -18,13 +18,14 @@ const path = require('path');
 // ============== CLI 参数解析 ==============
 const args = process.argv.slice(2);
 if (!args[0] || args[0].startsWith('--')) {
-  console.error('用法: node extract.js <数据目录> [--project "项目名"] [--out data.json]');
+  console.error('用法: node extract.js <数据目录> [--project "项目名"] [--report-version 1.0] [--out data.json]');
   process.exit(1);
 }
 const dataDir = path.resolve(args[0]);
-const opts = { project: null, out: null };
+const opts = { project: null, reportVersion: '1.0', out: null };
 for (let i = 1; i < args.length; i++) {
   if (args[i] === '--project') opts.project = args[++i];
+  else if (args[i] === '--report-version') opts.reportVersion = args[++i];
   else if (args[i] === '--out') opts.out = args[++i];
 }
 
@@ -891,6 +892,7 @@ function main() {
   const out = {
     schemaVersion: 3,
     project,
+    reportVersion: opts.reportVersion,
     inspectionDate,
     reportDate: new Date().toISOString().slice(0, 10),
     cluster: {
