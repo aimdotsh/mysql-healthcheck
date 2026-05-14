@@ -4,6 +4,46 @@
 
 ---
 
+## [4.2.0] - 2026-05-14
+
+**专业化加固轮次**，主要应对 Codex 代码评审给出的反馈。
+
+### 🆕 新增
+
+- **采集脚本 auto-detect mysql runtime**（`collectors/mysqlHealthCheckV3.0.sh`）
+  - 从 `ps -ef` 自动解析 `mysqld --defaults-file/--basedir/--socket/--port`
+  - 自动读取 my.cnf `[client]` 段的 user/password
+  - 优先使用 `basedir/bin/mysql` 客户端
+  - 用 `--defaults-extra-file` 临时文件传密码（密码不再出现在 ps 输出）
+  - 新增 `--test-login`、`--socket`、`--defaults-file`、`--ssl-mode` 参数
+  - 登录失败直接 exit 1，避免生成无效报告
+- **回归测试**：新增 `tests/collector_autodiscovery_test.sh`
+- **优化 backlog**：`references/optimization-backlog.md` 列出 10 项后续优化方向
+- **AGENTS.md**：给 AI 智能体的开发规范
+- **`npm run build`**：封装 extract + render 两步流程，支持参数透传
+
+### 🐛 修复 / 改进（响应 Codex 代码评审）
+
+- **Codex #1**：`npm run build` 改为 `node build.js`，解决参数无法传给两端的问题
+- **Codex #2**：USAGE.md 从 v4.0 / 13 章过期描述升级到 v4.2 / 17 章
+- **Codex #4**：`assessBackup()` / `assessSecurity()` 严重风险自动注入 `issues[]`
+  - 备份缺失 → P0 进第一章问题汇总和第十七章行动计划
+  - `root@%` / 空密码 → P0；其它合规 FAIL → P1
+  - 实测 4 节点集群：issues 27 → 29，P0 1 → 3
+- **Codex #9**：安全合规结论新增 `UNKNOWN` 状态
+  - 区分「未采集」与「采集了但未启用」
+  - `complianceLevel` 排除 UNKNOWN，UNKNOWN >50% 时输出「数据不足」
+- **Codex #10**：归档 `scripts/gen_report.js` → `legacy/gen_report.js`
+
+### 📋 后续待办（详见 `references/optimization-backlog.md`）
+
+- Codex #5：schema 校验 + collector 版本识别
+- Codex #6：解析器升级（collector 改 TSV/JSON 输出）
+- Codex #7：拆分超大脚本到 lib/parser、lib/rules 等模块
+- Codex #8：补足 fixtures 与回归测试
+
+---
+
 ## [4.1.0] - 2026-05-14
 
 **重命名与版本号解耦**。
