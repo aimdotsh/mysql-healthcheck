@@ -10,7 +10,8 @@
   "scripts": {
     "extract": "node extract.js",
     "render": "node render.js",
-    "build": "node extract.js && node render.js"
+    "build": "node build.js",
+    "test": "bash ../tests/collector_autodiscovery_test.sh"
   },
   "dependencies": {
     "@resvg/resvg-js": "^2.6.2",
