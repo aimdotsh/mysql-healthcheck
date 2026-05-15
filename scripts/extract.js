@@ -760,14 +760,34 @@ function analyzeErrorLog(text) {
 }
 
 // ============== 备份目录解析 ==============
+// 评审 #9 (v4.4) 修复：原逻辑遇到 "[--] /path 不存在" 时会**覆盖** current 指针，
+// 导致前一个正在累积的目录（含真实备份文件）被丢弃。
+// 实测影响：172.16.7.4 节点 /data/backup 下有 93GB 真实备份产物
+// （tbl_order_detail_20240729.sql 48GB / tbl_order_20240724.sql 13GB /
+// tbl_topup_20240718.sql 36GB），但报告显示"未发现备份产物"。
+// 修复策略：碰到不存在行时先 flush 已累积的 current，再 push exists:false 条目。
 function parseBackupDirs(text) {
   const dirs = [];
   let current = null;
+  const flushCurrent = () => {
+    if (current) {
+      dirs.push(current);
+      current = null;
+    }
+  };
   for (const line of text.split(/\r?\n/)) {
+    // header 形式：===== /path =====
     const headMatch = line.match(/^=====\s+(.+?)\s+=====$/);
     if (headMatch) {
-      if (current) dirs.push(current);
-      current = { path: headMatch[1], totalSize: '-', files: [] };
+      flushCurrent();
+      current = { path: headMatch[1], exists: true, totalSize: '-', files: [] };
+      continue;
+    }
+    // 不存在行：[--] /path 不存在
+    const notExistMatch = line.match(/\[--\]\s+(\S+)\s+不存在/);
+    if (notExistMatch) {
+      flushCurrent();   // 先保留前一个正在累积的目录
+      dirs.push({ path: notExistMatch[1], exists: false, totalSize: '-', files: [] });
       continue;
     }
     if (!current) continue;
@@ -782,13 +802,8 @@ function parseBackupDirs(text) {
         path: fileMatch[3],
       });
     }
-    if (/不存在/.test(line)) {
-      current = { path: line.match(/\[--\]\s+(\S+)/)?.[1] || line, exists: false, totalSize: '-', files: [] };
-      dirs.push(current);
-      current = null;
-    }
   }
-  if (current) dirs.push(current);
+  flushCurrent();
   return dirs;
 }
 
