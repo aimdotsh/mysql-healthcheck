@@ -182,10 +182,20 @@ function parseTxt(filepath) {
   const diskMount = getSection(content, 'disk mount');
   node.disks = parseDiskMount(diskMount);
 
-  // resource limit
+  // resource limit（评审反馈 #2：仅作为 OS 端参考值，MySQL 生效值应从 SHOW VARIABLES 读）
   const resLimit = getSection(content, 'resource limit');
   const openFilesMatch = resLimit.match(/open files\s+\([^)]+\)\s+(\d+)/i);
-  node.openFilesLimit = openFilesMatch ? Number(openFilesMatch[1]) : null;
+  node.openFilesLimitOs = openFilesMatch ? Number(openFilesMatch[1]) : null;
+
+  // mysqld 进程实际 limits（V3 采集脚本会写入 mysqld process limits 段）
+  const procLimits = getSection(content, 'mysqld process limits');
+  if (procLimits) {
+    const procOpenFiles = procLimits.match(/Max open files\s+(\d+)/i);
+    if (procOpenFiles) node.openFilesLimitProcess = Number(procOpenFiles[1]);
+  }
+  // 最终 openFilesLimit：优先 MySQL 进程 limits（最准），再 MySQL Variables，再 OS ulimit
+  // node.variables.open_files_limit 由 parseVariables 处理
+  node.openFilesLimit = node.openFilesLimitProcess || null; // 后续 main() 会用 variables 补全
 
   // -------- MySQL 版本 / Uptime --------
   const mysqlVer = getSection(content, 'MySQL Database Version');
@@ -499,6 +509,16 @@ function parseTxt(filepath) {
       schema: r[0], table: r[1], column: r[2],
       autoIncrement: r[3], rate: parseFloat(r[4]) || 0,
     })).filter(x => x.rate > 0.5);
+  }
+
+  // 评审反馈 #2：openFilesLimit 优先级 mysqld 进程 limits > MySQL Variables > OS ulimit
+  // OS ulimit (1024) 在 mysqld 被 systemd LimitNOFILE 或 ulimit -n 提升后已不再准确
+  if (!node.openFilesLimit) {
+    const fromVars = Number(node.variables?.open_files_limit);
+    if (fromVars) node.openFilesLimit = fromVars;
+  }
+  if (!node.openFilesLimit) {
+    node.openFilesLimit = node.openFilesLimitOs;
   }
 
   return node;
@@ -1247,10 +1267,8 @@ function assessSecurity(nodes) {
       '未启用 audit log 插件，无法满足等保合规',
       '未采集审计插件状态（V3.0 采集脚本会包含）'),
 
-    mkItem('tls_enabled', 'TLS 传输加密',
-      has.tlsConfig, primary?.tlsConfig?.have_ssl === 'YES',
-      `已支持 TLS（${primary?.tlsConfig?.tls_version || ''}）`,
-      '未开启 TLS', '未采集 TLS 配置', 'WARN'),
+    // 评审反馈 #8：TLS 含 TLSv1 / TLSv1.1 弱协议时不应判 PASS
+    tlsItem(has.tlsConfig, primary?.tlsConfig),
 
     mkItem('require_secure_transport', '强制 TLS 连接',
       has.tlsConfig, primary?.tlsConfig?.require_secure_transport === 'ON',
@@ -1318,6 +1336,39 @@ function mkItem(id, label, dataAvailable, passCondition, passDetail, failDetail,
     return { id, label, status: 'PASS', detail: passDetail };
   }
   return { id, label, status: failLevel || 'FAIL', detail: failDetail };
+}
+
+// 评审反馈 #8：TLS 检查智能判定（区分弱协议）
+function tlsItem(dataAvailable, tlsConfig) {
+  if (!dataAvailable) {
+    return { id: 'tls_enabled', label: 'TLS 传输加密', status: 'UNKNOWN', detail: '未采集 TLS 配置' };
+  }
+  const haveSsl = tlsConfig?.have_ssl === 'YES';
+  if (!haveSsl) {
+    return { id: 'tls_enabled', label: 'TLS 传输加密', status: 'WARN', detail: '未开启 TLS' };
+  }
+  const versions = tlsConfig?.tls_version || '';
+  const hasWeak = /TLSv1(?:[^.\d]|$)|TLSv1\.1/i.test(versions);
+  const hasStrong = /TLSv1\.[23]/i.test(versions);
+  if (hasWeak) {
+    return {
+      id: 'tls_enabled', label: 'TLS 传输加密',
+      status: 'WARN',
+      detail: `已支持 TLS 但含弱协议 TLSv1/1.1（${versions}）— NIST/RFC 已于 2021 年废弃，等保 2.0 三级要求禁用`,
+    };
+  }
+  if (!hasStrong) {
+    return {
+      id: 'tls_enabled', label: 'TLS 传输加密',
+      status: 'WARN',
+      detail: `已开启 TLS 但版本异常（${versions || '未知'}）— 建议仅保留 TLSv1.2+`,
+    };
+  }
+  return {
+    id: 'tls_enabled', label: 'TLS 传输加密',
+    status: 'PASS',
+    detail: `已支持 TLS（${versions}）`,
+  };
 }
 
 // ============== 问题自动分析（节点级 → 集群级聚合）==============
@@ -1935,7 +1986,23 @@ function deriveParamDiffJudgments(nodes) {
         ? { ok: true, reason: '正常（主写 0 / 从读 1）' }
         : { ok: false, reason: '异常：主从角色与 read_only 不匹配' };
     }
-    if (key === 'expire_logs_days') return { ok: false, reason: '异常：节点间 binlog 保留策略不一致，影响 PITR 一致性' };
+    if (key === 'expire_logs_days') {
+      // 评审反馈 #3：从库保留更长 binlog 是合理的 PITR 设计，不应一律报异常
+      const numeric = vals.map(v => Number(v)).filter(v => !isNaN(v));
+      const primaryVal = Number(primary?.variables?.expire_logs_days);
+      const slaveVals = (slaves || []).map(n => Number(n.variables?.expire_logs_days)).filter(v => !isNaN(v));
+      const anyZero = numeric.includes(0);
+      if (anyZero) {
+        return { ok: false, reason: '异常：存在节点 expire_logs_days=0（永不过期），binlog 持续累积有打爆磁盘风险' };
+      }
+      // 从库均 ≥ 主库 → 合理 PITR 设计
+      if (slaveVals.length > 0 && !isNaN(primaryVal)
+          && slaveVals.every(v => v >= primaryVal)
+          && (Math.max(...slaveVals) - primaryVal) <= 30) {
+        return { ok: true, reason: `合理：主库 ${primaryVal} 天，从库保留更长（${Math.max(...slaveVals)} 天）可支持 PITR 回溯，若属设计意图可忽略` };
+      }
+      return { ok: false, reason: '异常：节点间 binlog 保留策略不一致，影响 PITR 一致性' };
+    }
     if (key === 'long_query_time') return { ok: false, reason: '异常：慢日志阈值不一致，影响 SQL 治理基准' };
     if (key === 'slow_query_log') return { ok: false, reason: '异常：部分节点未开启慢日志' };
     if (['innodb_buffer_pool_size_in_mb', 'max_connections', 'innodb_log_file_size_in_mb'].includes(key)) {

@@ -306,8 +306,13 @@ function makePriorityTable(headers, issues, title) {
     trs.push(emptyRowSpan(headers.length, '本次巡检未发现需上报的问题', widths));
   } else {
     for (const i of issues) {
+      // 评审反馈 #13：needsConfirmation 的 issue 在描述前加 🔍 标记
+      const descPrefix = i.needsConfirmation ? '🔍 [需人工确认] ' : '';
+      // 评审反馈 #6：dualTrigger 在级别后加 ⚡ 标识（一条 issue 命中多个维度）
+      const lvlSuffix = (i.dualTrigger && i.dualTrigger.length > 1) ? ' ⚡' : '';
       trs.push(priorityRow(
-        [i.seq, `${i.priority} ${priorityLabel(i.priority)}`, i.description, i.node, i.action, i.status],
+        [i.seq, `${i.priority} ${priorityLabel(i.priority)}${lvlSuffix}`,
+         descPrefix + i.description, i.node, i.action, i.status],
         i.priority,
         widths,
       ));
