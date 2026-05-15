@@ -444,13 +444,14 @@ function parseTxt(filepath) {
   }
 
   // -------- TOP SQL by latency (V3 新增) --------
+  // 评审 #5/#17 (v4.4)：过滤 SHOW / DESC / INFORMATION_SCHEMA 等元数据查询噪声
   const topSqlLat = getSection(content, 'TOP 20 SQL by total latency');
   if (topSqlLat) {
     node.topSqlByLatency = parseMysqlTable(topSqlLat).rows.map(r => ({
       query: r[0], db: r[1], execCount: r[2], totalLatency: r[3],
       avgLatency: r[4], maxLatency: r[5], rowsExamined: r[6], rowsSent: r[7],
       digest: r[r.length - 1],
-    }));
+    })).filter(s => !isMetadataQuery(s.query, s.db));
   }
 
   // -------- TOP SQL by exec count --------
@@ -458,7 +459,7 @@ function parseTxt(filepath) {
   if (topSqlExec) {
     node.topSqlByExec = parseMysqlTable(topSqlExec).rows.map(r => ({
       query: r[0], db: r[1], execCount: r[2], totalLatency: r[3], avgLatency: r[4],
-    }));
+    })).filter(s => !isMetadataQuery(s.query, s.db));
   }
 
   // -------- TOP SQL by avg latency --------
@@ -466,7 +467,7 @@ function parseTxt(filepath) {
   if (topSqlAvg) {
     node.topSqlByAvg = parseMysqlTable(topSqlAvg).rows.map(r => ({
       query: r[0], db: r[1], execCount: r[2], avgLatency: r[3], totalLatency: r[4],
-    }));
+    })).filter(s => !isMetadataQuery(s.query, s.db));
   }
 
   // -------- SQL no good index --------
@@ -475,7 +476,7 @@ function parseTxt(filepath) {
     node.sqlNoGoodIndex = parseMysqlTable(sqlNoIdx).rows.map(r => ({
       query: r[0], db: r[1], execCount: r[2], totalLatency: r[3],
       noIndexCount: r[4], noGoodIndexCount: r[5], noIndexPct: r[6],
-    }));
+    })).filter(s => !isMetadataQuery(s.query, s.db));
   }
 
   // -------- SQL with temp tables --------
@@ -484,7 +485,7 @@ function parseTxt(filepath) {
     node.sqlWithTmp = parseMysqlTable(sqlTmp).rows.map(r => ({
       query: r[0], db: r[1], execCount: r[2], totalLatency: r[3],
       memoryTmp: r[4], diskTmp: r[5], diskPct: r[6],
-    }));
+    })).filter(s => !isMetadataQuery(s.query, s.db));
   }
 
   // -------- Schema unused indexes --------
@@ -991,6 +992,25 @@ function isDrNode(node) {
   if (node.role === 'dr') return true;
   const hint = (node.hostname || '') + ' ' + (node._file || '');
   return /\bdr[-_]|disaster|standby/i.test(hint);
+}
+
+// 评审反馈 #5/#17 (v4.4)：元数据查询识别（用于过滤 SQL 治理章节噪声）
+// 这些查询来自 mysql 客户端 / Navicat / 监控工具，不是业务 SQL，
+// 之前在 14.4「全表扫描」/14.5「使用临时表」TOP 列表里挤占了真实业务慢 SQL 的位置。
+function isMetadataQuery(queryText, dbName) {
+  if (!queryText) return false;
+  const q = String(queryText).trim();
+  // 1. SHOW / DESC / EXPLAIN 类元数据查询
+  if (/^(SHOW|DESC|DESCRIBE|EXPLAIN)\s/i.test(q)) return true;
+  // 2. 直接访问系统库（information_schema / performance_schema / mysql / sys）
+  if (/\b(information_schema|performance_schema|mysql\.|sys\.)/i.test(q)) return true;
+  // 3. DB 为 NULL 且查询是元数据探测（如 SELECT NOW(), SYSTEM_USER()）
+  if ((dbName == null || dbName === 'NULL' || dbName === '') && /^SELECT\s+(NOW|SYSTEM_USER|VERSION|DATABASE|USER|CURRENT_USER|CONNECTION_ID)\s*\(/i.test(q)) return true;
+  // 4. SET / USE 类会话控制语句
+  if (/^(SET|USE|RESET)\s/i.test(q)) return true;
+  // 5. 单独的事务控制语句
+  if (/^(COMMIT|ROLLBACK|BEGIN|START\s+TRANSACTION)\s*$/i.test(q)) return true;
+  return false;
 }
 
 // 评审反馈 #7 + #4 (v4.4)：临时 / 历史 / 备份 / 工具表识别（用于过滤无主键告警噪声）
