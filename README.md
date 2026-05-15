@@ -17,7 +17,7 @@
   <a href="https://github.com/aimdotsh/mysql-healthcheck/issues"><img alt="GitHub issues" src="https://img.shields.io/github/issues/aimdotsh/mysql-healthcheck?style=flat-square&logo=github"></a>
   <a href="https://github.com/aimdotsh/mysql-healthcheck/commits/main"><img alt="GitHub last commit" src="https://img.shields.io/github/last-commit/aimdotsh/mysql-healthcheck?style=flat-square&logo=github"></a>
   <img alt="Tests" src="https://img.shields.io/badge/tests-passing-43853d?style=flat-square&logo=githubactions&logoColor=white">
-  <img alt="Version" src="https://img.shields.io/badge/version-v4.4-1F4E79?style=flat-square">
+  <img alt="Version" src="https://img.shields.io/badge/version-v4.5-1F4E79?style=flat-square">
   <img alt="Node" src="https://img.shields.io/badge/node-%E2%89%A516-43853d?style=flat-square&logo=node.js">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square">
   <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey?style=flat-square">

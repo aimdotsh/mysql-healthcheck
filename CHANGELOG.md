@@ -4,6 +4,50 @@
 
 ---
 
+## [4.5.0] - 2026-05-15
+
+**单节点 / 仅主库采集场景适配轮次**。基于某项目 8 套独立主库（每库一个 .txt）的真实数据反馈，发现并修复 3 类严重的角色误判，并让"仅采集主库"场景下的报告体验合理化。
+
+### 🐛 角色识别修复
+
+- **self-referencing slave 残留 → primary**：v4.4 仍把 `SHOW SLAVE STATUS` 的 `Master_Host` 指向本机自身的节点误判为「从库」。这是历史从库被提升为主后未执行 `RESET SLAVE ALL` 留下的元数据残留。新增 `refineSelfReferencingSlave()`：识别 Master_Host == 本机 IP / hostname / localhost / 127.0.0.1，把 `isSlave` 置回 false，并保留 `selfReferencingSlaveResidue` 元数据。
+- **standalone primary 兑底**：v4.4 把 `read_only=0 + log_bin 启用 + 无 binlog dump 线程` 的独立主库标为 `unknown`。新增 `inferStandalonePrimary()`：
+  - `standalone_rw`: read_only=0/OFF + 无远端 master → primary
+  - `standalone_readonly`: read_only=1/ON + log_bin 启用 → primary + `needsConfirmation`（典型场景：监控后端库 / 报表只读库 / 备机配置）
+  - 单节点采集兜底：`nodes.length=1` 且仍为 unknown → 强制 primary + `needsConfirmation`
+- **强信号优先**：`normalizeNodeRoles` 循环顶部新增 `inferPrimaryFromConnections` 强信号判定 — 只要有 Binlog Dump 线程 / connected slaves / slaveIps，即使存在 self-loop slave 残留也直接标 primary。
+
+### 📋 新增 issue & 调级
+
+- **新增 P2 issue `self_ref_slave_residue`**：引导 DBA 用 `STOP SLAVE; RESET SLAVE ALL;` 清理残留复制元数据，避免误导监控/巡检工具。
+- **`master_readonly` 智能调级**：`source=standalone_readonly` 时降级为 P3 + `needsConfirmation`，避免监控后端 / 报表只读库被误报 P1；常规主库 read_only=1 仍是 P1。
+
+### 🎨 单节点场景渲染优化
+
+- **chapter 2.1**：单节点时标题从「集群拓扑」→「节点拓扑」；描述措辞调整；`needsConfirmation` 节点角色加 🔍 标识 + 推断来源说明（如「节点 X（主库）：只读主库（read_only=1 + log_bin 启用）」）。
+- **chapter 12**：
+  - 单节点顶部加显式提示，说明「如该集群实际配置了主从复制，建议补充采集从库 txt 后重新出报告」。
+  - self-ref slave 残留：12.2 改为「SHOW SLAVE STATUS 残留详情」表，列出节点 IP / 残留 Master_Host / IO/SQL 线程状态 / 清理 SQL，替代原本误导的"从库复制状态"空表。
+  - 仅当存在真从库时才渲染 12.2 从库状态表。
+- **拓扑图 (`charts.topology`)**：单节点 → 居中单节点框 + 副标题「单节点 · 未配置主从复制（或仅采集到主库）」；存在 self-ref 残留时图上加红色警告；多节点时每个非主库节点按真实角色（dr/slave/未知）配色与标签（之前 DR 节点会被画成"从库"色）。
+
+### 📊 v4.4 → v4.5 关键差异（实测样本 8 节点）
+
+| 指标 | v4.4 | v4.5 |
+|---|---|---|
+| 角色识别 | 3 误判从库 + 2 unknown + 3 ok | **8/8 主库正确** |
+| 单节点 chapter 12 | 空"从库复制状态"表 | **「单节点 / 残留清理 SQL」指引** |
+| 拓扑图（单节点） | 左主右"未识别从库"占位 | **居中单节点 + 简洁副标题** |
+| 只读主（监控库典型场景） | 报 P1 master_readonly | **P3 + 推断说明 + 🔍 确认** |
+| self-ref 残留指引 | 无 | **新增 P2 issue + RESET SLAVE ALL SQL** |
+
+### 🧪 回归测试
+
+- `tests/report_regression_test.js` + `tests/collector_autodiscovery_test.sh` 全绿。
+- 多节点回归集（含 DR 节点）依旧正确：dr 标签、灾备角色、复制拓扑图、issue 链路无回归。
+
+---
+
 ## [4.4.0] - 2026-05-15
 
 **v4.3 报告评审反馈轮次**。基于真实 4 节点 2.2TB 集群的 v4.3 巡检报告评审，针对 17 项问题落地 9 项核心修复。
