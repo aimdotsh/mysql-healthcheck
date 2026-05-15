@@ -1634,6 +1634,29 @@ function analyzeIssues(nodes) {
       });
     }
 
+    // ----- 从库并行复制未启用（评审反馈 #1）-----
+    // 大数据量集群必须启用并行复制，否则单线程应用 binlog 在大事务下会延迟积压
+    if (n.role !== 'primary' && n.replication?.isSlave) {
+      const parW = Number(v.slave_parallel_workers || 0);
+      // 估算节点数据量（取主库 dbTotalSizeGB；不存在时用本节点）
+      const primary = nodes.find(nn => nn.role === 'primary');
+      const dataSizeGB = Number(primary?.dbTotalSizeGB || n.dbTotalSizeGB || 0);
+      if (parW === 0 && dataSizeGB >= 100) {
+        // 100GB 以上集群一律告警
+        const priority = dataSizeGB >= 500 ? 'P1' : 'P2';
+        push({
+          type: 'slave_parallel_workers_zero',
+          priority,
+          groupKey: 'slave_parallel_workers_zero',
+          description: `slave_parallel_workers = 0（并行复制未启用，集群数据量约 ${dataSizeGB.toFixed(0)} GB，大事务可能导致从库延迟积压）`,
+          node: nodeLabel(n),
+          action: '建议设为 8-16 + slave_parallel_type = LOGICAL_CLOCK（需 binlog_format=ROW，已满足）',
+          sql: 'SET GLOBAL slave_parallel_type = LOGICAL_CLOCK;\nSET GLOBAL slave_parallel_workers = 16;\n# 然后 STOP SLAVE; START SLAVE; 生效',
+          scope: 'cluster',
+        });
+      }
+    }
+
     // ----- MySQL 版本 EOL 告警（评审反馈 #11）-----
     const eolInfo = mysqlVersionEolStatus(n.mysqlVersion);
     if (eolInfo && eolInfo.status !== 'supported') {
