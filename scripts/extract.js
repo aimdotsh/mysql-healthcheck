@@ -1024,6 +1024,12 @@ function inferPrimaryFromConnections(node) {
 
 function normalizeNodeRoles(nodes) {
   for (const node of nodes) {
+    // 评审 #2 (v4.4)：优先识别 dr 灾备角色（基于 hostname / 文件名），
+    // 否则后续的 isSlave 判断会把 dr 误标为 'slave'，导致第二章 / 第十二章渲染错误。
+    if (isDrNode(node)) {
+      node.role = 'dr';
+      continue;
+    }
     if (node.role && node.role !== 'unknown') {
       node.role = canonicalRole(node.role) || node.role;
       continue;
@@ -1049,7 +1055,10 @@ function normalizeNodeRoles(nodes) {
   if (primary) {
     for (const node of nodes) {
       if (node !== primary && node.replication?.isSlave) {
-        node.role = 'slave';
+        // 保留已识别的 dr 角色（评审 #2 v4.4），仅把未分类的 isSlave 节点标为 slave
+        if (node.role !== 'dr') {
+          node.role = 'slave';
+        }
       }
     }
   }
