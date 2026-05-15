@@ -27,6 +27,7 @@
 
 - **#13 needsConfirmation**：描述前加 🔍 `[需人工确认]`
 - **#6 dualTrigger**：级别后加 ⚡ 标识
+- **图表更新**：新增 MySQL 拓扑图、连接使用率图、Processlist 分布图；当前报告最多包含 10 张嵌入图表
 
 ### 📋 Backlog
 
@@ -146,7 +147,7 @@
 
 ### 🔧 内部架构
 
-- `scripts/lib/charts.js` —— 纯 SVG 图表生成器（gauge / pie / hbar / vbar / radar）
+- `scripts/lib/charts.js` —— 纯 SVG 图表生成器（gauge / pie / hbar / vbar / radar；v4.3 增加 topology）
 - `@resvg/resvg-js` —— SVG → PNG 转换（预编译二进制，跨平台无需 native 编译）
 - `extract.js` 新增字段：`healthScore`（六维度评分）/ `backupAssessment` / `securityAssessment` / `topSqlByLatency` / `unusedIndexes` / `redundantIndexes` / `autoIncrementUsage` / `slowLogAnalysis` / `errorLogAnalysis` 等
 

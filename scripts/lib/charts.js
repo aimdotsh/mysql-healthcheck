@@ -1,5 +1,5 @@
 // SVG 图表生成 + PNG 转换
-// 6 类图：donut（健康度仪表）/ pie（饼图）/ hbar（横向柱）/ vbar（纵向柱）/ radar（雷达）/ gauge（速度表）
+// 6 类图形组件：gauge（健康度仪表）/ radar（雷达）/ pie（饼图）/ hbar（横向柱）/ vbar（纵向柱）/ topology（拓扑图）
 'use strict';
 const path = require('path');
 
