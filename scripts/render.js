@@ -1125,13 +1125,29 @@ function chapterStorage(data) {
     fragRows,
     '显著高碎片表清单（已过滤 <100MB 小表噪声）',
   ));
+  const fragTotalGB = sigFrags.reduce((s, t) => s + Number(t.dataFree), 0) / 1073741824;
   if (sigFrags.length === 0) {
     out.push(noteParagraph('未发现需关注的高碎片大表。'));
   } else {
-    const totalFree = sigFrags.reduce((s, t) => s + Number(t.dataFree), 0);
-    out.push(noteParagraph(`重建后可回收约 ${(totalFree / 1073741824).toFixed(1)} GB 空间。大表（≥10GB）推荐 pt-online-schema-change 在线重建，避免锁表。`));
+    out.push(noteParagraph(`重建后可回收约 ${fragTotalGB.toFixed(1)} GB 空间。大表（≥10GB）推荐 pt-online-schema-change 在线重建，避免锁表。`));
   }
   out.push(emptyLine());
+
+  // 评审 #12 (v4.4)：可释放空间汇总（碎片 + 历史归档），帮助客户快速看到清理收益
+  const archiveTotalGB = archives.reduce((s, t) => s + Number(t.sizeGB || 0), 0);
+  const releasableGB = fragTotalGB + archiveTotalGB;
+  if (releasableGB >= 1) {
+    const dbTotalGB = Number(refNode.dbTotalSizeGB) || 0;
+    const pctText = dbTotalGB > 0
+      ? `，相当于主库当前数据量（${dbTotalGB.toFixed(0)} GB）的约 ${((releasableGB / dbTotalGB) * 100).toFixed(0)}%`
+      : '';
+    out.push(para([
+      { text: '💡 可释放空间汇总：', bold: true, color: '1F6FEB' },
+      { text: `本次巡检识别可释放空间合计约 ${releasableGB.toFixed(0)} GB（其中碎片可回收 ${fragTotalGB.toFixed(0)} GB + 历史归档表可清理 ${archiveTotalGB.toFixed(0)} GB）${pctText}。`, bold: true },
+    ]));
+    out.push(noteParagraph('建议优先级：① 高优先级重建碎片大表（≥10GB） → ② 评估历史归档表导出冷存或改造分区 → ③ 评估清理后扩容时间窗的延后效应。'));
+    out.push(emptyLine());
+  }
 
   out.push(h2('7.4 无主键表'));
   const noPkSummary = summarizeTableCategories(refNode.noPkTables || []);
