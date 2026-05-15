@@ -2451,6 +2451,7 @@ function deriveRecommendations(nodes, issues) {
 function roleLabel(role) {
   if (!role) return '未知';
   if (role === 'primary') return '主库';
+  if (role === 'dr') return '灾备';
   if (/^slave/.test(role)) return '从库';
   return role;
 }

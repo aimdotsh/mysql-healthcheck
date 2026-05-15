@@ -32,7 +32,8 @@ const byIp = Object.fromEntries(data.nodes.map((node) => [node.ip, node]));
 assert.strictEqual(data.nodes[0].ip, '172.16.7.2', 'primary node should be listed first for all report tables and charts');
 assert.strictEqual(data.cluster.topology, '一主3从（异步复制）', 'cluster topology should identify one primary and three replicas');
 assert.strictEqual(byIp['172.16.7.2'].role, 'primary', '172.16.7.2 should be inferred as the primary node');
-assert.strictEqual(byIp['172.16.128.101'].role, 'slave', '172.16.128.101 should be inferred as a replica node');
+// v4.4 评审 #2：dr-mysql 灾备节点应识别为 'dr' 而非 'slave'，避免在第二章 / 12.2 显示错误
+assert.strictEqual(byIp['172.16.128.101'].role, 'dr', '172.16.128.101 (dr-mysql) should be inferred as a DR (灾备) node, not a regular slave');
 assert.strictEqual(byIp['172.16.7.3'].role, 'slave', '172.16.7.3 should be inferred as a replica node');
 assert.strictEqual(byIp['172.16.7.4'].role, 'slave', '172.16.7.4 should be inferred as a replica node');
 
@@ -50,11 +51,12 @@ assert.strictEqual(hllIssue.node, '172.16.7.2（主库）', 'HLL issue should po
 
 const readOnlyJudgment = data.paramJudgments.find((item) => item.key === 'read_only');
 assert(readOnlyJudgment, 'read_only parameter difference should be reported');
-assert(readOnlyJudgment.valueMap.includes('172.16.128.101（从库）=0'), 'parameter difference should map values back to nodes');
+// v4.4 评审 #2：dr-mysql 灾备节点角色应反映为 灾备 而非 从库
+assert(readOnlyJudgment.valueMap.includes('172.16.128.101（灾备）=0'), 'parameter difference should map values back to nodes (灾备 role)');
 assert(readOnlyJudgment.reason.includes('从库未只读：172.16.128.101'), 'read_only judgment should identify writable replica as the actual risk');
 
 const longQueryJudgment = data.paramJudgments.find((item) => item.key === 'long_query_time');
-assert(longQueryJudgment.valueMap.includes('172.16.128.101（从库）=10'), 'long_query_time difference should identify the outlier node');
+assert(longQueryJudgment.valueMap.includes('172.16.128.101（灾备）=10'), 'long_query_time difference should identify the outlier node (灾备 role)');
 
 const auditIssue = data.issues.find((issue) => issue.type === 'compliance_fail_audit_log');
 assert(auditIssue, 'audit compliance issue should be promoted into issues');
@@ -66,26 +68,30 @@ assert.strictEqual(
 
 const backupIssue = data.issues.find((issue) => issue.type === 'backup_capability');
 assert(backupIssue, 'backup assessment issue should be promoted into issues');
-assert.strictEqual(
-  data.backupAssessment.assessment,
-  '检测到备份调度，但在已扫描目录未发现备份产物，需核实施路径或远端存储',
-  'backup assessment should distinguish missing scan hits from confirmed absence of backups'
+// v4.4 评审 #9：parseBackupDirs flushCurrent 修复后，172.16.7.4 /data/backup 的真实 93GB 备份
+// （tbl_order_detail_20240729.sql 等）能被正确识别，因此 v3 测试集现在能正确判定为「备份过旧」P0
+// 而非旧版本错误的「未发现备份产物」。"655 天" 是相对当前日期计算的，用 startsWith 兼容。
+assert(
+  data.backupAssessment.assessment.startsWith('最近备份已 ') && data.backupAssessment.assessment.endsWith('天前，存在数据丢失风险'),
+  'backup assessment should detect the 2024-07 stale backup recovered by parseBackupDirs flushCurrent fix (v4.4 #9)'
 );
-assert.strictEqual(data.backupAssessment.severity, 'P2', 'backup assessment should be downgraded when a schedule exists but artifacts were not found locally');
-assert.strictEqual(
-  backupIssue.description,
-  '备份能力评估：检测到备份调度，但在已扫描目录未发现备份产物，需核实施路径或远端存储',
-  'promoted backup issue should use the refined wording'
+assert.strictEqual(data.backupAssessment.severity, 'P0', 'stale backup (>180 days) should be P0 severity');
+assert.strictEqual(data.backupAssessment.hasBackupArtifact, true, 'parseBackupDirs flushCurrent fix should now recover real backup artifacts on 172.16.7.4 (v4.4 #9)');
+assert.strictEqual(data.backupAssessment.latestBackup?.ip, '172.16.7.4', 'latest backup should be located on 172.16.7.4');
+assert(data.backupAssessment.latestBackup?.path?.includes('tbl_order_detail_20240729.sql'), 'latest backup should be the 48GB tbl_order_detail file');
+assert(
+  backupIssue.description.startsWith('备份能力评估：最近备份已 '),
+  'promoted backup issue should reflect the stale-backup wording after parseBackupDirs fix'
 );
-assert.deepStrictEqual(
-  data.backupAssessment.hintPaths,
-  ['/data/mysql/backup', '/opt/backup', '/opt/db_bak/bak_dir'],
-  'backup assessment should surface candidate backup paths inferred from scheduling and scans'
-);
+// hintPaths 现在合并了所有扫描路径 + crontab 推断路径
+const hintSet = new Set(data.backupAssessment.hintPaths);
+['/data/mysql/backup', '/opt/backup', '/opt/db_bak/bak_dir', '/data/backup'].forEach(p => {
+  assert(hintSet.has(p), `backup hintPaths should include ${p}`);
+});
 
 const writableReplicaIssue = data.issues.find((issue) => issue.type === 'slave_writable' || issue.type === 'dr_writable');
 assert(writableReplicaIssue, 'writable replica or DR exception issue should still be reported');
-assert.strictEqual(writableReplicaIssue.node, '172.16.128.101（从库）', 'node labels should use inferred replica roles');
+assert.strictEqual(writableReplicaIssue.node, '172.16.128.101（灾备）', 'node labels should use inferred 灾备 role for DR exceptions (v4.4 #2)');
 
 assert.strictEqual(byIp['172.16.7.2'].ibtmp1CollectionStatus, 'collected', 'ibtmp1 current usage should be parsed from innodb_tablespaces when collector returns the row');
 assert.strictEqual(byIp['172.16.7.2'].ibtmp1.source, 'txt:innodb_tablespaces', 'ibtmp1 data should record the TXT collection source');
@@ -146,7 +152,7 @@ assert(bodyText.includes('CentOS release 6.9 (Final)'), 'server chapter should s
 assert(bodyText.includes('操作系统版本已停止维护'), 'server chapter should explain OS EOL risk');
 assert(bodyText.includes('Swap 使用率'), 'memory section should include swap usage ratio');
 assert(bodyText.includes('连接使用率'), 'connection chapter should include connection usage visualization or metric');
-assert(bodyText.includes('172.16.128.101（从库）=10'), 'parameter difference table should map values to nodes');
+assert(bodyText.includes('172.16.128.101（灾备）=10'), 'parameter difference table should map values to nodes with 灾备 role (v4.4 #2)');
 assert(bodyText.includes('无主键表分类汇总'), 'no primary key section should summarize business/history/temp table counts');
 assert(bodyText.includes('V3 采集脚本已采集 innodb_tablespaces'), 'ibtmp1 section should explain data source and collection coverage');
 assert(bodyText.includes('采集脚本已采集 INNODB LOCKS / INNODB LOCK WAITS / INNODB TRX / Metadata locks'), 'lock section should reflect actual collector coverage');
