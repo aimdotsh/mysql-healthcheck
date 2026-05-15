@@ -4,6 +4,46 @@
 
 ---
 
+## [4.3.0] - 2026-05-15
+
+**专家评审反馈轮次**。回应一位资深 DBA 对 v4.2 报告的 11 条质量反馈，10 项已落地。
+
+### 🆕 新增规则
+
+- **#11 MySQL 版本 EOL 告警**：5.7 触发 P1，含升级路径 SQL hint
+- **#1 `slave_parallel_workers=0` 大集群告警**：≥500 GB → P1，100-500 GB → P2
+- **#10 ghost 表识别**：识别 gh-ost / pt-osc 残留，≥1 GB 单独 P2，加 `needsConfirmation`
+
+### 🐛 修复 / 改进
+
+- **#6 root@% 双触发去重**：合并 `wildcard_critical` + `compliance_fail_no_wildcard_root` → 单条 P0 含 `dualTrigger` ⚡
+- **#5 DR 灾备节点识别**：新增 `dr` 角色；DR `read_only=0` 从 P1 → P3 + `needsConfirmation`
+- **#7 无主键表过滤**：`isTempOrHistoryTable()` 识别 `tmp_/temp_/_bak/_20YYMMDD`，55 张 → 28 张业务表
+- **#8 TLS 弱协议 PASS → WARN**：检测 `tls_version` 含 TLSv1/1.1，提示 NIST 已废弃
+- **#2 `open_files_limit` 修正**：优先级 mysqld /proc/PID/limits > SHOW VARIABLES > OS ulimit
+- **#3 `expire_logs_days` 智能解读**：从库 ≥ 主库且差距 ≤30 天 → ✓ 合理 PITR
+
+### 🎨 渲染
+
+- **#13 needsConfirmation**：描述前加 🔍 `[需人工确认]`
+- **#6 dualTrigger**：级别后加 ⚡ 标识
+
+### 📋 Backlog
+
+- #4 HLL 联合告警（易误报）
+- #9 备份注释 cron 解析（边界复杂）
+
+### 📊 v4.2 → v4.3 关键差异
+
+| 指标 | v4.2 | v4.3 |
+|---|---|---|
+| P0 项 | 2 | **1**（去重）|
+| 无主键表描述 | "最多 55 张" | **"业务表 28 张（27 临时表过滤）"** |
+| TLS（含 TLSv1） | PASS | **WARN** |
+| EOL/parallel/ghost 新规则 | 0 | **3 项新 issue** |
+
+---
+
 ## [4.2.0] - 2026-05-14
 
 **专业化加固轮次**，主要应对 Codex 代码评审给出的反馈。
