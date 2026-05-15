@@ -302,21 +302,31 @@ function topology(nodes, opts = {}) {
 <text x="${x}" y="${y - 4}" text-anchor="middle" font-size="13" font-weight="bold" fill="#FFFFFF">${escapeXml(node.ip || '-')}</text>
 <text x="${x}" y="${y + 16}" text-anchor="middle" font-size="11" fill="#FFFFFF">${escapeXml(role)} · server_id=${escapeXml(node.variables?.server_id || '-')}</text>`;
 
-  // v4.5：单节点拓扑 — 居中展示单个节点 + "单节点 / 未配置主从复制" 副标题
+  // v4.5/v4.6：单节点拓扑 — 居中展示单个节点 + 副标题 + 可选警告
+  // v4.6 修复：之前 H=180 导致 box(y=74-126) / 副标题(y=135) / 警告(y=150) 三者间距过小，
+  // 在 docx 中渲染时文字看起来"压"在 box 边缘。重新按从上到下的固定锚点布局：
+  //   - title:   y = 24            (font 16)
+  //   - box:     y center = 80     (top=54, bottom=106, height 52)
+  //   - subtitle:y = 130            (24px below box bottom, font 12)
+  //   - warn:    y = 158            (28px below subtitle, font 11)
+  // 不带警告时 H=160；带警告时 H=190。
   if (nodes.length === 1) {
-    const H = opts.height || 180;
+    const hasSelfRefWarn = !!primary?.replication?.selfReferencingSlaveResidue;
+    const H = opts.height || (hasSelfRefWarn ? 190 : 160);
     const cx = W / 2;
-    const cy = H / 2 + 10;
-    const selfRefHint = primary?.replication?.selfReferencingSlaveResidue
-      ? `<text x="${cx}" y="${cy + 50}" text-anchor="middle" font-size="11" fill="#C00000">⚠️ 存在 SHOW SLAVE STATUS 残留（Master_Host 指向自身），建议 RESET SLAVE ALL</text>`
-      : '';
+    const boxCy = 80;
+    const subtitleY = 130;
+    const warnY = 158;
     const subtitle = primary?.replication?.isSlave
       ? `复制角色未配置或异常`
       : `单节点 · 未配置主从复制（或仅采集到主库）`;
+    const selfRefHint = hasSelfRefWarn
+      ? `<text x="${cx}" y="${warnY}" text-anchor="middle" font-size="11" fill="#C00000">⚠ 存在 SHOW SLAVE STATUS 残留（Master_Host 指向自身），建议 RESET SLAVE ALL</text>`
+      : '';
     const body = `
 ${title}
-${nodeBox(cx, cy, primary || {}, roleLabel(primary), COLORS.primary)}
-<text x="${cx}" y="${cy + 35}" text-anchor="middle" font-size="12" fill="${COLORS.muted}">${escapeXml(subtitle)}</text>
+${nodeBox(cx, boxCy, primary || {}, roleLabel(primary), COLORS.primary)}
+<text x="${cx}" y="${subtitleY}" text-anchor="middle" font-size="12" fill="${COLORS.muted}">${escapeXml(subtitle)}</text>
 ${selfRefHint}`;
     return svgWrap(W, H, body);
   }
