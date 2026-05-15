@@ -1134,18 +1134,19 @@ function chapterStorage(data) {
   out.push(emptyLine());
 
   out.push(h2('7.4 无主键表'));
+  const noPkSummary = summarizeTableCategories(refNode.noPkTables || []);
   const noPkRows = (refNode.noPkTables || []).map(t => [
-    t.schema, t.table,
-    /^(tmp|temp|test|_)/i.test(t.table) ? '临时/测试' : '业务表',
-    '补充自增主键或唯一索引',
+    t.schema, t.table, tableCategory(t.table).label,
+    tableCategory(t.table).key === 'business' ? '补充自增主键或唯一索引' : '确认归档/清理策略',
   ]);
+  out.push(noteParagraph(`无主键表分类汇总：业务表 ${noPkSummary.business} 张，历史/归档表 ${noPkSummary.history} 张，临时/测试表 ${noPkSummary.temp} 张。`));
   out.push(makeTable(
     ['库名', '表名', '类型', '建议'],
     noPkRows,
     `无主键表清单（共 ${(refNode.noPkTables||[]).length} 张）`,
   ));
   out.push(emptyLine());
-  out.push(noteParagraph('无主键表在 ROW 格式复制下从库需全表扫描匹配行，复制效率极低且无法 MTS 并行复制。表名含 tmp/temp/test/_ 前缀的可保留，正式业务表建议补充主键。'));
+  out.push(noteParagraph('无主键表在 ROW 格式复制下从库需全表扫描匹配行，复制效率极低且无法 MTS 并行复制。正式业务表建议补充主键；历史、临时、测试类表建议确认是否仍被业务访问，满足条件后归档或清理。'));
   out.push(emptyLine());
 
   out.push(h2('7.5 非 utf8 表'));
@@ -1163,14 +1164,16 @@ function chapterStorage(data) {
 function chapterIbtmp1(data) {
   const out = [h1('八、临时表空间（ibtmp1）分析'), h2('8.1 当前状态')];
   out.push(para('各节点 ibtmp1 配置与实际占用：'));
+  out.push(noteParagraph('V3 采集脚本已采集 innodb_tablespaces（含 ibtmp1）。当前占用来自 innodb_tablespaces 返回的 ibtmp1 行；若显示未返回，表示采集时该查询未返回 ibtmp1 记录或权限/版本视图受限，并非渲染错误。'));
   out.push(emptyLine());
   out.push(makeTable(
-    ['节点 IP', '角色', '当前占用', '初始大小', '自动扩展', '配置 (innodb_temp_data_file_path)'],
+    ['节点 IP', '角色', '当前占用', '初始大小', '自动扩展', '采集状态', '配置 (innodb_temp_data_file_path)'],
     data.nodes.map(n => [
       n.ip, roleLabel(n.role),
       n.ibtmp1?.sizeFormatted || '-',
       n.ibtmp1?.initialSize || '-',
       n.ibtmp1?.autoExtendSize || '-',
+      ibtmp1StatusLabel(n),
       n.variables?.innodb_temp_data_file_path || '-',
     ]),
     'ibtmp1 临时表空间使用',
@@ -1272,9 +1275,34 @@ function chapterTransactions(data) {
   out.push(emptyLine());
 
   out.push(h2('10.3 锁等待说明'));
-  out.push(para('本次采集脚本未单独导出 innodb_lock_waits 视图。如需排查锁等待，建议在线上执行：'));
-  out.push(code('SELECT * FROM information_schema.innodb_lock_waits;'));
-  out.push(code('SELECT * FROM sys.innodb_lock_waits;  -- MySQL 5.7+'));
+  out.push(para('采集脚本已采集 INNODB LOCKS / INNODB LOCK WAITS / INNODB TRX / Metadata locks，并补充 Lock status counters 累计指标。'));
+  const waitRows = [];
+  const counterRows = [];
+  for (const n of data.nodes) {
+    const waits = (n.innodbLockWaits || []).length + (n.innodbLockDetails || []).length;
+    const metadata = (n.metadataLocks || []).length;
+    if (waits > 0 || metadata > 0) {
+      waitRows.push([n.ip, waits, metadata, '存在锁等待，需结合 SQL 与事务线程定位阻塞源']);
+    }
+    const c = n.lockStatusCounters || {};
+    counterRows.push([
+      n.ip,
+      c.Innodb_row_lock_current_waits ?? '-',
+      c.Innodb_row_lock_waits ?? '-',
+      c.Innodb_row_lock_time_avg ?? '-',
+      c.Table_locks_waited ?? '-',
+    ]);
+  }
+  out.push(makeTable(
+    ['节点 IP', '当前行锁等待', '累计行锁等待', '平均等待(ms)', '累计表锁等待'],
+    counterRows,
+    '锁等待累计指标',
+  ));
+  if (waitRows.length > 0) {
+    out.push(makeTable(['节点 IP', '行锁等待记录', '元数据锁记录', '建议'], waitRows, '采集时刻锁等待明细汇总'));
+  } else {
+    out.push(noteParagraph('本次采集时 INNODB LOCKS / INNODB LOCK WAITS / LOCK DETAILS / Metadata locks 未返回等待记录，说明采集瞬间未发现阻塞；该结论不代表历史上没有发生过锁等待，历史趋势需结合监控或错误日志判断。'));
+  }
   return out;
 }
 
@@ -1439,12 +1467,14 @@ function chapterSchemaDesignAudit(data) {
   out.push(h2('13.2 未使用索引（Schema Unused Indexes）'));
   const unused = refNode.unusedIndexes || [];
   if (unused.length > 0) {
+    const unusedSummary = summarizeTableCategories(unused);
     out.push(para([{ text: `检测到 ${unused.length} 个长期未使用的索引（自 MySQL 启动以来从未被读取），占用空间且拖慢写入：`, bold: true }]));
-    const rows = unused.slice(0, 30).map(u => [u.schema, u.table, u.index]);
-    out.push(makeTable(['库名', '表名', '索引名'], rows, `Top 30 未使用索引（共 ${unused.length}）`));
+    out.push(noteParagraph(`未使用索引分类汇总：业务表索引 ${unusedSummary.business} 个，历史/归档表索引 ${unusedSummary.history} 个，临时/测试表索引 ${unusedSummary.temp} 个。`));
+    const rows = unused.slice(0, 30).map(u => [u.schema, u.table, tableCategory(u.table).label, u.index]);
+    out.push(makeTable(['库名', '表名', '类型', '索引名'], rows, `Top 30 未使用索引（共 ${unused.length}）`));
     out.push(emptyLine());
     out.push(code(`-- 示例：DROP INDEX ${unused[0].index} ON ${unused[0].schema}.${unused[0].table};`));
-    out.push(noteParagraph('Schema_unused_indexes 视图依赖 performance_schema，结果只反映 MySQL 运行期间未被使用的索引。删除前建议至少观察一个完整业务周期（含月底/月初/促销）。'));
+    out.push(noteParagraph('Schema_unused_indexes 视图依赖 performance_schema，结果只反映 MySQL 运行期间未被使用的索引。业务表索引删除前建议至少观察一个完整业务周期；历史、临时、测试类表建议先评估归档、清理或下线策略，再决定是否单独删索引。'));
   } else {
     out.push(para('未检测到未使用索引（或采集源不含该数据）。'));
   }
@@ -1453,9 +1483,16 @@ function chapterSchemaDesignAudit(data) {
   out.push(h2('13.3 冗余索引'));
   const redundant = refNode.redundantIndexes || [];
   if (redundant.length > 0) {
+    const redundantSummary = summarizeTableCategories(redundant);
     out.push(para(`检测到 ${redundant.length} 组冗余索引（左前缀重复或完全覆盖），可考虑删除被覆盖的索引。`));
-    const rows = redundant.slice(0, 15).map(r => r.slice(0, 6));
-    out.push(makeTable(['库.表', '冗余索引', '主索引', '冗余列', '主列', '主索引唯一'].slice(0, rows[0]?.length || 6), rows, '冗余索引（前 15 组）'));
+    out.push(noteParagraph(`冗余索引分类汇总：业务表索引 ${redundantSummary.business} 组，历史/归档表索引 ${redundantSummary.history} 组，临时/测试表索引 ${redundantSummary.temp} 组。`));
+    const rows = redundant.slice(0, 15).map(r => [
+      r.schema || '-', r.table || '-', tableCategory(r.table).label,
+      r.redundantIndex || '-', r.dominantIndex || '-',
+      truncate(r.redundantColumns, 36), truncate(r.dominantColumns, 36),
+    ]);
+    out.push(makeTable(['库名', '表名', '类型', '冗余索引', '覆盖索引', '冗余列', '覆盖列'], rows, '冗余索引（前 15 组）'));
+    out.push(noteParagraph('冗余索引建议优先处理正式业务表；历史/临时表上的冗余索引应与表归档、清理动作合并评估，避免对已准备下线的数据对象做重复优化。'));
   } else {
     out.push(para('未检测到明显冗余索引。'));
   }
@@ -1852,6 +1889,36 @@ function chapterConclusion(data) {
 }
 
 // ============== 辅助 ==============
+function tableCategory(tableName) {
+  const t = String(tableName || '');
+  if (/^tmp_|^temp_|^test_|_tmp$|_temp$|_test$|tmp|temp|test/i.test(t)) {
+    return { key: 'temp', label: '临时/测试表' };
+  }
+  if (/_bak$|_bak_|_backup$|_old$|_archive$|_his$|_history$|history|archive/i.test(t)
+      || /_\d{8}$|_\d{6}$|_\d{4}-\d{2}|_\d{4}_\d{2}/.test(t)
+      || /^_gho_|^_ghc_|^_(gho|ghc|del)_/i.test(t)) {
+    return { key: 'history', label: '历史/归档表' };
+  }
+  if (/^_/i.test(t)) return { key: 'temp', label: '临时/测试表' };
+  return { key: 'business', label: '业务表' };
+}
+
+function summarizeTableCategories(items) {
+  const summary = { business: 0, history: 0, temp: 0 };
+  for (const item of items || []) {
+    const category = tableCategory(item.table || item.tableName || item.name);
+    summary[category.key] = (summary[category.key] || 0) + 1;
+  }
+  return summary;
+}
+
+function ibtmp1StatusLabel(node) {
+  if (node.ibtmp1?.source) return '已采集';
+  if (node.ibtmp1CollectionStatus === 'collected_no_row') return '已采集但未返回 ibtmp1 行';
+  if (node.ibtmp1CollectionStatus === 'collected') return '已采集';
+  return '未采集';
+}
+
 function roleLabel(role) {
   if (!role) return '未知';
   if (role === 'primary') return '主库';

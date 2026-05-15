@@ -67,7 +67,7 @@ npm install
 ├── MySQLHealthCheck_172.16.7.2_202604301023.txt    ← 必需（主库）
 ├── MySQLHealthCheck_172.16.7.3_202604301027.txt    ← 每个节点一份
 ├── MySQLHealthCheck_172.16.7.4_202604301025.txt
-├── 172.16.7.2_apple_pri-2026-04-30.html            ← 可选（用于 ibtmp1 精确大小）
+├── 172.16.7.2_apple_pri-2026-04-30.html            ← 可选（兼容历史 ibtmp1 补充数据）
 └── 172.16.7.3_apple_slave1-2026-04-30.html
 ```
 
@@ -80,7 +80,7 @@ npm install
 | html 中 `pri`/`master`/`primary` 关键字 | 识别主库 | `172.16.7.2_apple_pri-...html` → 主库 |
 | html 中 `slave`/`replica` 关键字 | 识别从库 | `..._slave1-...html` |
 
-只有 txt 没有 html 也能生成，只是 ibtmp1 大小可能为 `-`。
+V3 TXT 已包含 `innodb_tablespaces (含 ibtmp1)`，通常可直接解析 ibtmp1 当前占用；只有该段未返回 ibtmp1 行时才会显示为 `-` 并在报告中标注采集状态。HTML 仅作为历史兼容输入。
 
 ---
 

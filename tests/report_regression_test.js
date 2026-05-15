@@ -51,6 +51,7 @@ assert.strictEqual(hllIssue.node, '172.16.7.2（主库）', 'HLL issue should po
 const readOnlyJudgment = data.paramJudgments.find((item) => item.key === 'read_only');
 assert(readOnlyJudgment, 'read_only parameter difference should be reported');
 assert(readOnlyJudgment.valueMap.includes('172.16.128.101（从库）=0'), 'parameter difference should map values back to nodes');
+assert(readOnlyJudgment.reason.includes('从库未只读：172.16.128.101'), 'read_only judgment should identify writable replica as the actual risk');
 
 const longQueryJudgment = data.paramJudgments.find((item) => item.key === 'long_query_time');
 assert(longQueryJudgment.valueMap.includes('172.16.128.101（从库）=10'), 'long_query_time difference should identify the outlier node');
@@ -85,6 +86,14 @@ assert.deepStrictEqual(
 const writableReplicaIssue = data.issues.find((issue) => issue.type === 'slave_writable' || issue.type === 'dr_writable');
 assert(writableReplicaIssue, 'writable replica or DR exception issue should still be reported');
 assert.strictEqual(writableReplicaIssue.node, '172.16.128.101（从库）', 'node labels should use inferred replica roles');
+
+assert.strictEqual(byIp['172.16.7.2'].ibtmp1CollectionStatus, 'collected', 'ibtmp1 current usage should be parsed from innodb_tablespaces when collector returns the row');
+assert.strictEqual(byIp['172.16.7.2'].ibtmp1.source, 'txt:innodb_tablespaces', 'ibtmp1 data should record the TXT collection source');
+assert(Array.isArray(byIp['172.16.7.2'].innodbLockWaits), 'lock wait section should be parsed even when empty');
+assert.strictEqual(byIp['172.16.7.2'].lockCollectionStatus, 'collected', 'collector lock sections should be recognized');
+assert(byIp['172.16.7.2'].lockStatusCounters.Innodb_row_lock_current_waits === '0', 'lock status counters should be parsed');
+assert(byIp['172.16.7.2'].redundantIndexes[0].table, 'redundant index rows should expose table names');
+assert(byIp['172.16.7.2'].redundantIndexes[0].redundantIndex, 'redundant index rows should expose redundant index names');
 
 const securityItems = Object.fromEntries(data.securityAssessment.items.map((item) => [item.id, item]));
 assert.strictEqual(securityItems.strong_password_policy.status, 'FAIL', 'empty password policy section should be treated as collected evidence of missing validate_password enforcement');
@@ -138,5 +147,10 @@ assert(bodyText.includes('操作系统版本已停止维护'), 'server chapter s
 assert(bodyText.includes('Swap 使用率'), 'memory section should include swap usage ratio');
 assert(bodyText.includes('连接使用率'), 'connection chapter should include connection usage visualization or metric');
 assert(bodyText.includes('172.16.128.101（从库）=10'), 'parameter difference table should map values to nodes');
+assert(bodyText.includes('无主键表分类汇总'), 'no primary key section should summarize business/history/temp table counts');
+assert(bodyText.includes('V3 采集脚本已采集 innodb_tablespaces'), 'ibtmp1 section should explain data source and collection coverage');
+assert(bodyText.includes('采集脚本已采集 INNODB LOCKS / INNODB LOCK WAITS / INNODB TRX / Metadata locks'), 'lock section should reflect actual collector coverage');
+assert(bodyText.includes('未使用索引分类汇总'), 'unused index section should summarize table categories');
+assert(bodyText.includes('冗余索引分类汇总'), 'redundant index section should summarize table categories');
 
 console.log('report regression test passed');

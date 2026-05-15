@@ -130,6 +130,55 @@ function parseMysqlTable(text) {
   return { headers: headers || [], rows };
 }
 
+function rowObject(headers, row) {
+  const obj = {};
+  headers.forEach((header, idx) => {
+    obj[header] = row[idx];
+  });
+  return obj;
+}
+
+function numberOrNull(value) {
+  if (value == null) return null;
+  const s = String(value).trim();
+  if (!s || /^NULL$/i.test(s) || s === '-') return null;
+  const n = Number(s.replace(/,/g, ''));
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseIbtmp1FromTablespaces(text, configValue) {
+  const table = parseMysqlTable(text || '');
+  const row = table.rows.find((r) => {
+    const joined = r.join(' ').toLowerCase();
+    return joined.includes('ibtmp') || joined.includes('innodb_temporary');
+  });
+  if (!row) return null;
+  const obj = rowObject(table.headers, row);
+  const totalExtents = numberOrNull(obj.TOTAL_EXTENTS);
+  const extentSize = numberOrNull(obj.EXTENT_SIZE);
+  const fileSize = numberOrNull(obj.FILE_SIZE);
+  const allocatedSize = numberOrNull(obj.ALLOCATED_SIZE);
+  const initialSize = numberOrNull(obj.INITIAL_SIZE);
+  const autoExtendSize = numberOrNull(obj.AUTOEXTEND_SIZE);
+  const dataFree = numberOrNull(obj.DATA_FREE);
+  const sizeBytes = fileSize
+    ?? allocatedSize
+    ?? (totalExtents != null && extentSize != null ? totalExtents * extentSize : null)
+    ?? initialSize
+    ?? dataFree;
+  const cfg = String(configValue || '');
+  const cfgInitial = (cfg.match(/ibtmp1:([^:]+)(?::|$)/i) || [])[1];
+  const cfgAuto = /autoextend/i.test(cfg) ? 'autoextend' : '-';
+  return {
+    sizeBytes,
+    dataFreeBytes: dataFree,
+    sizeFormatted: fmtBytes(sizeBytes),
+    initialSize: initialSize != null ? fmtBytes(initialSize) : (cfgInitial || '-'),
+    autoExtendSize: autoExtendSize != null ? fmtBytes(autoExtendSize) : cfgAuto,
+    source: 'txt:innodb_tablespaces',
+  };
+}
+
 function stripCollectorBanner(text) {
   return String(text || '').split(/\r?\n/).filter((line) => {
     if (/^\|\+{5,}\|$/.test(line.trim())) return false;
@@ -299,6 +348,17 @@ function parseTxt(filepath) {
   const totalRow = parseMysqlTable(dbSize).rows.find(r => r[0] === 'DATABASE TOTAL SIZE');
   if (totalRow) node.dbTotalSizeGB = totalRow[1];
 
+  // -------- innodb_tablespaces（含 ibtmp1）--------
+  const tablespaceSec = getSection(content, 'innodb_tablespaces');
+  node.ibtmp1CollectionStatus = hasSection(content, 'innodb_tablespaces') ? 'collected_no_row' : 'not_collected';
+  if (tablespaceSec) {
+    const ibtmp1 = parseIbtmp1FromTablespaces(tablespaceSec, node.variables?.innodb_temp_data_file_path);
+    if (ibtmp1) {
+      node.ibtmp1 = ibtmp1;
+      node.ibtmp1CollectionStatus = 'collected';
+    }
+  }
+
   // -------- TOP10 大表 --------
   const top10 = getSection(content, 'Top 10 Tables');
   node.topTables = parseMysqlTable(top10).rows.map(r => ({
@@ -438,8 +498,37 @@ function parseTxt(filepath) {
   // -------- Schema redundant indexes --------
   const redundantIdx = getSection(content, 'Schema redundant indexes');
   if (redundantIdx) {
-    node.redundantIndexes = parseMysqlTable(redundantIdx).rows.slice(0, 30);
+    const parsed = parseMysqlTable(redundantIdx);
+    node.redundantIndexes = parsed.rows.slice(0, 200).map((r) => {
+      const o = rowObject(parsed.headers, r);
+      return {
+        schema: o.table_schema || r[0],
+        table: o.table_name || r[1],
+        redundantIndex: o.redundant_index_name || r[2],
+        redundantColumns: o.redundant_index_columns || r[3],
+        redundantNonUnique: o.redundant_index_non_unique || r[4],
+        dominantIndex: o.dominant_index_name || r[5],
+        dominantColumns: o.dominant_index_columns || r[6],
+        dominantNonUnique: o.dominant_index_non_unique || r[7],
+        sqlDrop: o.sql_drop_index || r[9],
+      };
+    });
   }
+
+  // -------- 锁等待与锁统计 --------
+  node.lockCollectionStatus = [
+    'INNODB LOCKS',
+    'INNODB LOCK WAITS',
+    'INNODB TRX',
+    'LOCK DETAILS',
+    'Metadata locks',
+  ].some(name => hasSection(content, name)) ? 'collected' : 'not_collected';
+  node.innodbLocks = parseMysqlTable(getSection(content, 'INNODB LOCKS')).rows;
+  node.innodbLockWaits = parseMysqlTable(getSection(content, 'INNODB LOCK WAITS')).rows;
+  node.innodbLockDetails = parseMysqlTable(getSection(content, 'LOCK DETAILS')).rows;
+  node.metadataLocks = parseMysqlTable(getSection(content, 'Metadata locks')).rows;
+  const lockCounterTable = parseMysqlTable(getSection(content, 'Lock status counters'));
+  node.lockStatusCounters = Object.fromEntries(lockCounterTable.rows.map(r => [r[0], r[1]]));
 
   // -------- 慢日志 tail --------
   const slowLogStatus = getSection(content, 'Slow query log status');
@@ -875,6 +964,7 @@ function parseHtml(filepath) {
         sizeFormatted: fmtBytes(fileBytes),
         initialSize: fmtBytes(initialSize),
         autoExtendSize: fmtBytes(autoExtendSize),
+        source: 'html:innodb_tablespaces',
       };
     }
   }
@@ -2119,12 +2209,23 @@ function deriveParamDiffJudgments(nodes) {
   const judge = (key, vals, primary, slaves) => {
     if (key === 'server_id') return { ok: true, reason: '正常（各节点必须唯一）' };
     if (key === 'read_only') {
-      const ro = nodes.map(n => ({ role: n.role, v: n.variables?.read_only }));
-      const masterOk = ro.find(x => x.role === 'primary')?.v === '0';
-      const slavesOk = ro.filter(x => x.role !== 'primary').every(x => x.v === '1');
-      return masterOk && slavesOk
+      const primaryNodes = nodes.filter(n => n.role === 'primary');
+      const replicaNodes = nodes.filter(n => n.role !== 'primary');
+      const primaryReadonly = primaryNodes.filter(n => n.variables?.read_only !== '0');
+      const writableReplicas = replicaNodes.filter(n => n.variables?.read_only !== '1');
+      if (primaryReadonly.length === 0 && writableReplicas.length === 0) {
+        return { ok: true, reason: '正常（主库 read_only=0 / 从库 read_only=1，主从取值不同是预期行为）' };
+      }
+      const details = [];
+      if (primaryReadonly.length > 0) {
+        details.push(`主库异常只读：${primaryReadonly.map(n => `${n.ip}=${n.variables?.read_only ?? '-'}`).join('、')}`);
+      }
+      if (writableReplicas.length > 0) {
+        details.push(`从库未只读：${writableReplicas.map(n => `${n.ip}=${n.variables?.read_only ?? '-'}`).join('、')}`);
+      }
+      return details.length === 0
         ? { ok: true, reason: '正常（主写 0 / 从读 1）' }
-        : { ok: false, reason: '异常：主从角色与 read_only 不匹配' };
+        : { ok: false, reason: `异常：${details.join('；')}。主库 read_only=0、从库 read_only=1 才符合常规复制安全基线` };
     }
     if (key === 'expire_logs_days') {
       // 评审反馈 #3：从库保留更长 binlog 是合理的 PITR 设计，不应一律报异常

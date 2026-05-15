@@ -68,6 +68,8 @@ txt 文件
 | `node.swapUsed` / `node.swapUsagePct` | `mem info` | 二章 |
 | `node.partitionTables` | `PARTITIONS table` | 十三章 |
 | `node.routines` | `ROUTINES OBJECTS` | 十三章 |
+| `node.ibtmp1` / `node.ibtmp1CollectionStatus` | `innodb_tablespaces` | 八章 |
+| `node.innodbLocks` / `node.innodbLockWaits` / `node.metadataLocks` / `node.lockStatusCounters` | `INNODB LOCKS` / `INNODB LOCK WAITS` / `Metadata locks` / `Lock status counters` | 十章 |
 | `node.unusedIndexes` | `Schema unused indexes` | 十三章 |
 | `node.redundantIndexes` | `Schema redundant indexes` | 十三章 |
 | `node.autoIncrementUsage` | `auto_increment usage` | 十三章 |
