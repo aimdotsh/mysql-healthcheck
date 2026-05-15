@@ -1633,6 +1633,23 @@ function analyzeIssues(nodes) {
         scope: 'cluster',
       });
     }
+
+    // ----- MySQL 版本 EOL 告警（评审反馈 #11）-----
+    const eolInfo = mysqlVersionEolStatus(n.mysqlVersion);
+    if (eolInfo && eolInfo.status !== 'supported') {
+      push({
+        type: `mysql_version_${eolInfo.status}`,
+        priority: eolInfo.priority,
+        groupKey: `mysql_version_${eolInfo.major}`,
+        description: `MySQL ${eolInfo.major} 已${eolInfo.statusLabel}（${eolInfo.eolDate}）— 当前实例 ${n.mysqlVersion}`,
+        node: nodeLabel(n),
+        action: eolInfo.action,
+        sql: eolInfo.status === 'eol'
+          ? '# 升级路径示例（5.7 → 8.0）：\n# 1. 备份全量数据\n# 2. 用 mysql_upgrade_checker 检查兼容性\n# 3. 滚动升级从库 → 主从切换 → 升级旧主库'
+          : null,
+        scope: 'cluster',
+      });
+    }
   }
 
   // ----- 集群级：参数一致性 -----
@@ -1958,6 +1975,41 @@ function roleLabel(role) {
   if (role === 'primary') return '主库';
   if (/^slave/.test(role)) return '从库';
   return role;
+}
+
+// ============== MySQL 版本 EOL 状态表（评审反馈 #11）==============
+// 数据来源：https://endoflife.date/mysql / Oracle / MariaDB 官方公告
+const MYSQL_EOL_TABLE = [
+  { match: /^5\.5/,           major: '5.5',  status: 'eol',        eolDate: '2018-12 EOL',          priority: 'P0' },
+  { match: /^5\.6/,           major: '5.6',  status: 'eol',        eolDate: '2021-02 EOL',          priority: 'P0' },
+  { match: /^5\.7/,           major: '5.7',  status: 'eol',        eolDate: '2023-10 EOL',          priority: 'P1' },
+  { match: /^8\.0/,           major: '8.0',  status: 'security',   eolDate: '2026-04 仅安全更新',    priority: 'P3' },
+  { match: /^8\.4/,           major: '8.4',  status: 'supported',  eolDate: '至 2032-04（LTS）',      priority: null },
+  { match: /^9\./,            major: '9.x',  status: 'supported',  eolDate: '创新版（短期支持）',      priority: null },
+  { match: /^10\.\d/,         major: 'MariaDB 10.x', status: 'eol', eolDate: '具体子版本另查',         priority: 'P2' },
+  { match: /^11\.[0-3]/,      major: 'MariaDB 11.0-11.3', status: 'eol', eolDate: '具体子版本另查',    priority: 'P2' },
+];
+
+function mysqlVersionEolStatus(versionStr) {
+  if (!versionStr) return null;
+  // 提取 major.minor.patch 前缀
+  const m = versionStr.match(/(\d+\.\d+\.\d+)/);
+  if (!m) return null;
+  const ver = m[1];
+  for (const row of MYSQL_EOL_TABLE) {
+    if (row.match.test(ver)) {
+      const statusLabel = row.status === 'eol' ? 'EOL（不再提供安全更新）'
+        : row.status === 'security' ? '进入仅安全更新阶段'
+        : '在支持期内';
+      const action = row.status === 'eol'
+        ? `规划升级到 8.0 或 8.4 LTS（${row.major} 不再发布安全补丁，无法满足等保合规对供应商支持的要求）`
+        : row.status === 'security'
+          ? '关注 EOL 时间点，提前规划升级到 8.4 LTS'
+          : '保持持续小版本升级';
+      return { major: row.major, status: row.status, statusLabel, eolDate: row.eolDate, priority: row.priority, action };
+    }
+  }
+  return null;
 }
 
 main();
