@@ -818,8 +818,36 @@ function canonicalRole(value) {
   if (!value) return null;
   const lower = String(value).toLowerCase();
   if (/pri|master|primary/.test(lower)) return 'primary';
-  if (/slave|replica|standby/.test(lower)) return 'slave';
+  // DR 灾备节点：hostname/文件名含 dr-/dr_/disaster/standby/backup-
+  if (/^dr[-_]|[-_]dr[-_]|disaster|standby|backup[-_]?(mysql|db)/.test(lower)) return 'dr';
+  if (/slave|replica/.test(lower)) return 'slave';
   return null;
+}
+
+// 判定节点是否为 DR 灾备角色（综合 hostname + 文件名）
+function isDrNode(node) {
+  if (node.role === 'dr') return true;
+  const hint = (node.hostname || '') + ' ' + (node._file || '');
+  return /\bdr[-_]|disaster|standby/i.test(hint);
+}
+
+// 评审反馈 #7：临时 / 历史 / 备份表识别（用于过滤无主键告警噪声）
+function isTempOrHistoryTable(tableName) {
+  if (!tableName) return false;
+  const t = String(tableName);
+  return /^tmp_|^temp_|^test_|_tmp$|_temp$|_test$/i.test(t)        // 临时表
+      || /_bak$|_bak_|_backup$|_old$/i.test(t)                       // 备份表
+      || /_\d{8}$|_\d{6}$|_\d{4}-\d{2}/.test(t)                      // 日期后缀（_20230101 / _202301 / _2023-01）
+      || /^_gho_|^_ghc_|^_(gho|ghc|del)_/i.test(t);                  // gh-ost 中间表
+}
+
+// 评审反馈 #10：gh-ost / pt-osc 在线 DDL 残留 ghost 表识别
+function isGhostTable(tableName) {
+  if (!tableName) return false;
+  const t = String(tableName);
+  return /^_gho_|^_ghc_|^_(gho|ghc|del)_/i.test(t)                  // gh-ost 中间表
+      || /^_.*_new$|^_.*_old$/i.test(t)                              // pt-osc 通用模式
+      || (/^_[a-z]/i.test(t) && t.length > 4);                       // 任何以 _ 开头的表（保守识别 — render 时仅在大表中提醒）
 }
 
 function inferPrimaryFromConnections(node) {
@@ -1378,14 +1406,44 @@ function analyzeIssues(nodes) {
     }
 
     // ----- 数据规范（节点级；同集群通常一致，会被聚合）-----
+    // 评审反馈 #7：区分业务表和临时/历史表 — 临时表无主键不重要，业务表无主键才是问题
     if ((n.noPkTables || []).length > 0) {
+      const businessNoPk = n.noPkTables.filter(t => !isTempOrHistoryTable(t.table));
+      const tempNoPk = n.noPkTables.length - businessNoPk.length;
+      if (businessNoPk.length > 0) {
+        push({
+          type: 'no_pk_tables', priority: 'P2', groupKey: `no_pk_tables`,
+          description: `存在业务表无主键 ${businessNoPk.length} 张${tempNoPk > 0 ? `（另有 ${tempNoPk} 张临时/历史表已过滤）` : ''}，TOP：${businessNoPk.slice(0,3).map(t=>`${t.schema}.${t.table}`).join('、')}`,
+          node: nodeLabel(n),
+          action: '评估补充自增主键或唯一索引；ROW 复制下无主键表全表扫描匹配，且无法 MTS 并行复制',
+          sql: `-- 示例：ALTER TABLE ${businessNoPk[0].schema}.${businessNoPk[0].table} ADD COLUMN id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY FIRST;`,
+          scope: 'cluster',
+        });
+      } else if (tempNoPk > 0) {
+        // 全部是临时表 — 降级为 P3
+        push({
+          type: 'no_pk_tables_temp_only', priority: 'P3', groupKey: 'no_pk_tables_temp_only',
+          description: `存在无主键表 ${tempNoPk} 张，但均为临时/历史/备份表（tmp_/temp_/test_/_bak/_20YYMMDD 等），可忽略或随归档清理`,
+          node: nodeLabel(n),
+          action: '若临时表已无业务引用，建议 DROP 清理',
+          scope: 'cluster',
+        });
+      }
+    }
+
+    // 评审反馈 #10：ghost 表（gh-ost / pt-osc 在线 DDL 残留）识别
+    const ghostTables = (n.fragTables || []).filter(t => isGhostTable(t.table));
+    const bigGhost = ghostTables.filter(t => Number(t.dataFree || 0) + Number(t.dataLength || 0) >= 1073741824);
+    if (bigGhost.length > 0) {
+      const totalGB = bigGhost.reduce((s, t) => s + (Number(t.dataLength || 0) + Number(t.dataFree || 0)) / 1073741824, 0);
       push({
-        type: 'no_pk_tables', priority: 'P2', groupKey: `no_pk_tables`,
-        description: `存在无主键表（最多节点 ${n.noPkTables.length} 张，TOP：${n.noPkTables.slice(0,3).map(t=>`${t.schema}.${t.table}`).join('、')}）`,
+        type: 'ghost_tables', priority: 'P2', groupKey: 'ghost_tables',
+        description: `疑似在线 DDL 残留 ghost 表 ${bigGhost.length} 张，合计 ~${totalGB.toFixed(1)} GB（${bigGhost.slice(0,3).map(t=>`${t.schema}.${t.table}`).join('、')}）`,
         node: nodeLabel(n),
-        action: '评估补充自增主键或唯一索引；ROW 复制下无主键表会全表扫描匹配行',
-        sql: "-- 示例：ALTER TABLE pioneer_db.calendar ADD COLUMN id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY FIRST;",
+        action: 'gh-ost / pt-osc 操作未正常清理；确认无业务引用后可 DROP 直接释放空间',
+        sql: `-- 先确认无引用：\nSELECT * FROM information_schema.statistics WHERE table_name = '${bigGhost[0].table}';\n-- 确认后执行：\nDROP TABLE ${bigGhost[0].schema}.${bigGhost[0].table};`,
         scope: 'cluster',
+        needsConfirmation: true,
       });
     }
 
@@ -1540,12 +1598,22 @@ function analyzeIssues(nodes) {
       });
     }
     if (n.role !== 'primary' && n.replication?.isSlave && v.read_only === '0') {
+      // 评审反馈 #5：DR 灾备节点 read_only=0 可能是切换设计预留，降级提示
+      const isDr = isDrNode(n);
       push({
-        type: 'slave_writable', priority: 'P1', groupKey: `slave_writable:${n.ip}`,
-        description: `从库 read_only = 0（可写入，存在数据漂移风险）`,
-        node: nodeLabel(n), action: '从库应设为只读',
-        sql: 'SET GLOBAL read_only = 1; SET GLOBAL super_read_only = 1;',
+        type: isDr ? 'dr_writable' : 'slave_writable',
+        priority: isDr ? 'P3' : 'P1',
+        groupKey: `slave_writable:${n.ip}`,
+        description: isDr
+          ? `灾备节点 ${n.hostname || n.ip} read_only = 0（疑似 DR 切换设计预留）`
+          : `从库 read_only = 0（可写入，存在数据漂移风险）`,
+        node: nodeLabel(n),
+        action: isDr
+          ? '若属灾备快切设计，请确认并文档化该例外；常态下仍建议 read_only=1，切换时再放开'
+          : '从库应设为只读',
+        sql: isDr ? null : 'SET GLOBAL read_only = 1; SET GLOBAL super_read_only = 1;',
         scope: 'node',
+        needsConfirmation: isDr,
       });
     }
 
@@ -1745,12 +1813,27 @@ function promoteAssessmentIssues(issues, backup, security, totalNodes) {
 
   if (extras.length === 0) return issues;
 
+  // 评审反馈 #6：root@% 在 wildcard_critical 和 compliance_fail_no_wildcard_root 中重复触发，
+  // 同一问题两条 P0 会让客户误以为是独立两个问题。合并为单条 P0，标注双维度命中。
+  let all = mergeDuplicateRootWildcard([...issues, ...extras]);
+
   // 重新排序 + 编号
-  const all = [...issues, ...extras];
   const ord = { P0: 0, P1: 1, P2: 2, P3: 3 };
   all.sort((a, b) => (ord[a.priority] - ord[b.priority]) || a.type.localeCompare(b.type));
   all.forEach((i, idx) => { i.seq = idx + 1; });
   return all;
+}
+
+// 合并 root@% 的双触发（评审反馈 #6）
+function mergeDuplicateRootWildcard(items) {
+  const wildcard = items.find(i => i.type === 'wildcard_critical' && /root/i.test(i.description || ''));
+  const compliance = items.find(i => i.type === 'compliance_fail_no_wildcard_root');
+  if (!wildcard || !compliance) return items;
+  // 用 wildcard_critical 作为主条目（更具体），补充合规维度信息
+  wildcard.description = `存在 host=% 的最高危用户 root（合规 + 安全双维度均触发：远程入侵敞口）`;
+  wildcard.action = `${wildcard.action}\n（同时触发等保合规检查项：root 账号未限制 host=%）`;
+  wildcard.dualTrigger = ['security_assessment', 'wildcard_user_check'];
+  return items.filter(i => i !== compliance);
 }
 
 function complianceFailureDescription(item) {
