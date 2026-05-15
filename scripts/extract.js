@@ -1033,8 +1033,10 @@ function isMetadataQuery(queryText, dbName) {
 function isTempOrHistoryTable(tableName) {
   if (!tableName) return false;
   const t = String(tableName);
-  // 1. 极短可疑表名（≤3 字符，常见于测试残留：dd, pp, pp1, t, t1, t12）
-  if (/^[a-z]{1,3}$|^[a-z]\d{1,2}$/i.test(t)) return true;
+  // 1. 极短可疑表名（≤3 字符，含 1-2 位数字后缀的，常见于测试残留：dd, pp, pp1, t, t1, t12, abc1）
+  if (/^[a-z]{1,3}\d{0,2}$/i.test(t)) return true;
+  // 1b. 单独的 test 表（pioneer_db.test 之类的）
+  if (/^test\d*$/i.test(t)) return true;
   // 2. 日期 / 时间字典表（t_year/t_month/calendar 等业务工具表）
   if (/^t_(year|month|day|date|hour|minute|second|calendar|bit|byte)([_0-9]|$)/i.test(t)) return true;
   if (/^(calendar|dim_date|dim_time|date_dim|time_dim|nums|numbers|sequence)$/i.test(t)) return true;
