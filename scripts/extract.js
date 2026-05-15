@@ -130,6 +130,47 @@ function parseMysqlTable(text) {
   return { headers: headers || [], rows };
 }
 
+function stripCollectorBanner(text) {
+  return String(text || '').split(/\r?\n/).filter((line) => {
+    if (/^\|\+{5,}\|$/.test(line.trim())) return false;
+    if (/^\|\s+\[\d+\]\s+.+\|$/.test(line.trim())) return false;
+    return true;
+  }).join('\n');
+}
+
+function parseOsRelease(text) {
+  if (!text) return '';
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const meaningful = lines.find(l => !/^cat: /.test(l));
+  if (!meaningful) return '';
+  const pretty = meaningful.match(/^PRETTY_NAME=(.+)$/);
+  if (pretty) return pretty[1].replace(/^["']|["']$/g, '');
+  return meaningful;
+}
+
+const OS_EOL_TABLE = [
+  { match: /CentOS(?: Linux)? release 6\b|CentOS Linux 6\b/i, major: 'CentOS 6', eolDate: '2020-11-30', priority: 'P1' },
+  { match: /CentOS(?: Linux)? release 7\b|CentOS Linux 7\b/i, major: 'CentOS 7', eolDate: '2024-06-30', priority: 'P2' },
+  { match: /CentOS(?: Linux)? release 8\b|CentOS Linux 8\b/i, major: 'CentOS 8', eolDate: '2021-12-31', priority: 'P2' },
+];
+
+function osEolStatus(release) {
+  if (!release) return null;
+  for (const row of OS_EOL_TABLE) {
+    if (row.match.test(release)) {
+      return {
+        major: row.major,
+        status: 'eol',
+        statusLabel: '已停止维护',
+        eolDate: row.eolDate,
+        priority: row.priority,
+        action: `规划迁移到受支持的企业 Linux 发行版；${row.major} 已无官方安全补丁，需纳入主机安全整改`,
+      };
+    }
+  }
+  return { status: 'unknown', statusLabel: '需人工确认生命周期', priority: 'P3' };
+}
+
 // ============== txt 解析器 ==============
 function parseTxt(filepath) {
   const content = fs.readFileSync(filepath, 'utf-8');
@@ -141,6 +182,9 @@ function parseTxt(filepath) {
 
   const kernel = getSection(content, 'os kernal') || getSection(content, 'os kernel');
   node.osKernel = (kernel.trim().split('\n')[0] || '').trim();
+  const osReleaseSec = getSection(content, 'os release');
+  node.osRelease = parseOsRelease(osReleaseSec);
+  node.osEolStatus = osEolStatus(node.osRelease);
 
   // 内存
   const memInfo = getSection(content, 'mem info');
@@ -164,8 +208,16 @@ function parseTxt(filepath) {
     node.memUsed = fmtKB(total - free - buf - cache);
   }
   if (swapTotalMatch) {
-    node.swapTotal = fmtKB(Number(swapTotalMatch[1]));
-    node.swapFree = swapFreeMatch ? fmtKB(Number(swapFreeMatch[1])) : '-';
+    const total = Number(swapTotalMatch[1]);
+    const free = swapFreeMatch ? Number(swapFreeMatch[1]) : null;
+    const used = free == null ? null : Math.max(0, total - free);
+    node.swapTotalKB = total;
+    node.swapFreeKB = free;
+    node.swapUsedKB = used;
+    node.swapTotal = fmtKB(total);
+    node.swapFree = free == null ? '-' : fmtKB(free);
+    node.swapUsed = used == null ? '-' : fmtKB(used);
+    node.swapUsagePct = total > 0 && used != null ? (used / total * 100).toFixed(1) : '0.0';
   }
 
   // CPU
@@ -437,7 +489,7 @@ function parseTxt(filepath) {
   }
   const binlogDir = getSection(content, 'Binlog directory');
   if (binlogDir) {
-    node.binlogDirInfo = binlogDir.trim();
+    node.binlogDirInfo = stripCollectorBanner(binlogDir).trim();
   }
 
   // -------- 安全配置 --------
@@ -913,6 +965,18 @@ function normalizeNodeRoles(nodes) {
   }
 }
 
+function sortNodesPrimaryFirst(nodes) {
+  nodes.sort((a, b) => {
+    if (a.role === 'primary' && b.role !== 'primary') return -1;
+    if (b.role === 'primary' && a.role !== 'primary') return 1;
+    return ipSortKey(a.ip).localeCompare(ipSortKey(b.ip));
+  });
+}
+
+function ipSortKey(ip) {
+  return String(ip || '').split('.').map(p => String(Number(p) || 0).padStart(3, '0')).join('.');
+}
+
 function inferIpFromFilename(filename) {
   const m = filename.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/);
   return m ? m[1] : null;
@@ -993,6 +1057,7 @@ function main() {
   }
 
   normalizeNodeRoles(nodes);
+  sortNodesPrimaryFirst(nodes);
 
   // ============== 自动分析与问题清单 ==============
   let issues = analyzeIssues(nodes);
@@ -1074,11 +1139,11 @@ function computeHealthScore(nodes, issues) {
     const t = i.type || '';
     // 按规则类型扣对应维度的分
     if (/disk|repl_thread|repl_delay|mem_high/.test(t)) dim.availability -= penalty;
-    else if (/wildcard|empty_password|old_auth|pwd_/.test(t)) dim.security -= penalty;
-    else if (/slow|bp_hit|long_query|sql_/.test(t)) dim.performance -= penalty;
+    else if (/wildcard|empty_password|old_auth|pwd_|tls_weak/.test(t)) dim.security -= penalty;
+    else if (/slow|bp_hit|long_query|sql_|hll|long_running_session/.test(t)) dim.performance -= penalty;
     else if (/no_pk|non_utf8|heavy_frag|unused_index|redundant_index|lct_/.test(t)) dim.dataDesign -= penalty;
     else if (/flush_log|sync_binlog|gtid|ibtmp1|swap|master_readonly|slave_writable|expire_logs/.test(t)) dim.durability -= penalty;
-    else if (/param_inconsistent|backup|slow_log_off/.test(t)) dim.operations -= penalty;
+    else if (/param_inconsistent|backup|slow_log_off|os_version/.test(t)) dim.operations -= penalty;
     else {
       // 默认拆分给 availability
       dim.availability -= penalty / 2;
@@ -1371,6 +1436,26 @@ function tlsItem(dataAvailable, tlsConfig) {
   };
 }
 
+function tlsWeakProtocolDetail(tlsConfig) {
+  const versions = tlsConfig?.tls_version || '';
+  if (!versions) return null;
+  return /TLSv1(?:[^.\d]|$)|TLSv1\.1/i.test(versions) ? versions : null;
+}
+
+function businessLongSessions(node) {
+  const isSlaveThread = (p) => {
+    if (p.user === 'system user') return true;
+    const st = p.state || '';
+    return /Waiting for master|Queueing master event|Slave has read all|Reading event from the relay log|Has read all relay log/i.test(st);
+  };
+  return (node.processlist || [])
+    .filter(p => Number(p.time) >= 60)
+    .filter(p => (p.command || '').toLowerCase() !== 'sleep')
+    .filter(p => !/binlog/i.test(p.command || ''))
+    .filter(p => !isSlaveThread(p))
+    .sort((a, b) => Number(b.time) - Number(a.time));
+}
+
 // ============== 问题自动分析（节点级 → 集群级聚合）==============
 function analyzeIssues(nodes) {
   const raw = [];
@@ -1390,6 +1475,18 @@ function analyzeIssues(nodes) {
       });
     }
 
+    if (n.osEolStatus?.status === 'eol') {
+      push({
+        type: 'os_version_eol',
+        priority: n.osEolStatus.priority || 'P2',
+        groupKey: `os_version_eol:${n.osEolStatus.major}`,
+        description: `操作系统版本已停止维护：${n.osEolStatus.major}（${n.osRelease || '-'}，EOL ${n.osEolStatus.eolDate}）`,
+        node: nodeLabel(n),
+        action: n.osEolStatus.action,
+        scope: 'cluster',
+      });
+    }
+
     if (n.swapTotal && n.swapFree && n.swapTotal !== n.swapFree) {
       const sm = parseFloat((n.swapTotal.match(/[\d.]+/) || [])[0]);
       const sfm = parseFloat((n.swapFree.match(/[\d.]+/) || [])[0]);
@@ -1403,6 +1500,36 @@ function analyzeIssues(nodes) {
           scope: 'node',
         });
       }
+    }
+
+    const hll = Number(n.innodb?.historyListLength);
+    if (hll > 10000) {
+      push({
+        type: 'innodb_hll_high',
+        priority: hll >= 50000 ? 'P1' : 'P2',
+        groupKey: `innodb_hll_high:${n.ip}`,
+        description: `History List Length = ${hll.toLocaleString()}（超过 10000 预警线，undo 历史清理滞后）`,
+        node: nodeLabel(n),
+        action: '排查长事务/长查询和 purge 线程压力；优先确认 PROCESSLIST 与 INNODB TRX 中是否存在长期未提交事务',
+        sql: 'SHOW ENGINE INNODB STATUS\\G\nSELECT * FROM information_schema.INNODB_TRX\\G\nSHOW FULL PROCESSLIST;',
+        scope: 'node',
+      });
+    }
+
+    const longSessions = businessLongSessions(n);
+    if (longSessions.length > 0) {
+      const top = longSessions[0];
+      push({
+        type: 'long_running_session',
+        priority: Number(top.time) >= 600 ? 'P2' : 'P3',
+        groupKey: `long_running_session:${n.ip}`,
+        description: `存在长时间运行会话：${top.user}@${top.host || '-'} ${top.time}s，状态 ${top.state || '-'}${top.db ? `，库 ${top.db}` : ''}`,
+        node: nodeLabel(n),
+        action: '先确认业务影响和 SQL 内容；若阻塞、消耗资源或确认异常，再由 DBA 执行 KILL CONNECTION',
+        sql: `SHOW FULL PROCESSLIST;\n-- 确认异常后：KILL CONNECTION ${top.id};`,
+        scope: 'node',
+        needsConfirmation: true,
+      });
     }
 
     for (const d of (n.disks || [])) {
@@ -1584,6 +1711,19 @@ function analyzeIssues(nodes) {
         action: '配置 innodb_temp_data_file_path 上限，维护窗口重启回收',
         sql: '-- my.cnf:\ninnodb_temp_data_file_path = ibtmp1:12M:autoextend:max:50G\n-- 重启 MySQL 后生效',
         scope: 'node',
+      });
+    }
+
+    const weakTls = tlsWeakProtocolDetail(n.tlsConfig);
+    if (weakTls) {
+      push({
+        type: 'tls_weak_protocol',
+        priority: 'P2',
+        groupKey: 'tls_weak_protocol',
+        description: `TLS 配置包含已废弃协议：${weakTls}`,
+        node: nodeLabel(n),
+        action: '禁用 TLSv1/TLSv1.1，仅保留 TLSv1.2+；同时确认业务客户端驱动版本兼容',
+        scope: 'cluster',
       });
     }
 
@@ -2032,7 +2172,10 @@ function deriveParamDiffJudgments(nodes) {
     const uniq = [...new Set(vals.filter(v => v != null))];
     if (uniq.length > 1) {
       const j = judge(k, vals, nodes.find(n=>n.role==='primary'), nodes.filter(n=>n.role!=='primary'));
-      out.push({ key: k, values: vals, unique: uniq, ...j });
+      const valueMap = nodes
+        .map((n, idx) => `${n.ip}（${roleLabel(n.role)}）=${vals[idx] == null ? '-' : vals[idx]}`)
+        .join('；');
+      out.push({ key: k, values: vals, unique: uniq, valueMap, ...j });
     }
   }
   return out;

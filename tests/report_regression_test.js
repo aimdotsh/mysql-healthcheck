@@ -29,11 +29,31 @@ if (run.status !== 0) {
 const data = JSON.parse(fs.readFileSync(outPath, 'utf8'));
 const byIp = Object.fromEntries(data.nodes.map((node) => [node.ip, node]));
 
+assert.strictEqual(data.nodes[0].ip, '172.16.7.2', 'primary node should be listed first for all report tables and charts');
 assert.strictEqual(data.cluster.topology, '一主3从（异步复制）', 'cluster topology should identify one primary and three replicas');
 assert.strictEqual(byIp['172.16.7.2'].role, 'primary', '172.16.7.2 should be inferred as the primary node');
 assert.strictEqual(byIp['172.16.128.101'].role, 'slave', '172.16.128.101 should be inferred as a replica node');
 assert.strictEqual(byIp['172.16.7.3'].role, 'slave', '172.16.7.3 should be inferred as a replica node');
 assert.strictEqual(byIp['172.16.7.4'].role, 'slave', '172.16.7.4 should be inferred as a replica node');
+
+assert.strictEqual(byIp['172.16.7.2'].osRelease, 'CentOS release 6.9 (Final)', 'OS release should be parsed from collector output');
+assert.strictEqual(byIp['172.16.7.2'].osEolStatus.status, 'eol', 'CentOS 6 should be identified as EOL');
+assert(!byIp['172.16.7.2'].binlogDirInfo.includes('[12] 安全与合规'), 'binlog section should strip collector module banners');
+
+const osIssue = data.issues.find((issue) => issue.type === 'os_version_eol');
+assert(osIssue, 'OS EOL issue should be promoted into issues');
+assert(osIssue.description.includes('CentOS 6'), 'OS EOL issue should name the unsupported OS major version');
+
+const hllIssue = data.issues.find((issue) => issue.type === 'innodb_hll_high');
+assert(hllIssue, 'high History List Length should be promoted into issues');
+assert.strictEqual(hllIssue.node, '172.16.7.2（主库）', 'HLL issue should point to the primary node');
+
+const readOnlyJudgment = data.paramJudgments.find((item) => item.key === 'read_only');
+assert(readOnlyJudgment, 'read_only parameter difference should be reported');
+assert(readOnlyJudgment.valueMap.includes('172.16.128.101（从库）=0'), 'parameter difference should map values back to nodes');
+
+const longQueryJudgment = data.paramJudgments.find((item) => item.key === 'long_query_time');
+assert(longQueryJudgment.valueMap.includes('172.16.128.101（从库）=10'), 'long_query_time difference should identify the outlier node');
 
 const auditIssue = data.issues.find((issue) => issue.type === 'compliance_fail_audit_log');
 assert(auditIssue, 'audit compliance issue should be promoted into issues');
@@ -62,9 +82,9 @@ assert.deepStrictEqual(
   'backup assessment should surface candidate backup paths inferred from scheduling and scans'
 );
 
-const slaveWritableIssue = data.issues.find((issue) => issue.type === 'slave_writable');
-assert(slaveWritableIssue, 'writable replica issue should still be reported');
-assert.strictEqual(slaveWritableIssue.node, '172.16.128.101（从库）', 'node labels should use inferred replica roles');
+const writableReplicaIssue = data.issues.find((issue) => issue.type === 'slave_writable' || issue.type === 'dr_writable');
+assert(writableReplicaIssue, 'writable replica or DR exception issue should still be reported');
+assert.strictEqual(writableReplicaIssue.node, '172.16.128.101（从库）', 'node labels should use inferred replica roles');
 
 const securityItems = Object.fromEntries(data.securityAssessment.items.map((item) => [item.id, item]));
 assert.strictEqual(securityItems.strong_password_policy.status, 'FAIL', 'empty password policy section should be treated as collected evidence of missing validate_password enforcement');
@@ -112,5 +132,11 @@ const bodyText = parseText(path.join(unzipDir, 'word', 'document.xml'));
 assert(bodyText.includes('文档控制'), 'document should include the control page from the requested cover style');
 assert(bodyText.includes('v32V4doc 数据库巡检报告'), 'cover should use the requested formal title style');
 assert(bodyText.includes('编制'), 'document control page should include the approval matrix');
+assert(bodyText.includes('MySQL 复制拓扑图'), 'server chapter should include a MySQL topology diagram caption/title');
+assert(bodyText.includes('CentOS release 6.9 (Final)'), 'server chapter should show OS release, not only kernel');
+assert(bodyText.includes('操作系统版本已停止维护'), 'server chapter should explain OS EOL risk');
+assert(bodyText.includes('Swap 使用率'), 'memory section should include swap usage ratio');
+assert(bodyText.includes('连接使用率'), 'connection chapter should include connection usage visualization or metric');
+assert(bodyText.includes('172.16.128.101（从库）=10'), 'parameter difference table should map values to nodes');
 
 console.log('report regression test passed');

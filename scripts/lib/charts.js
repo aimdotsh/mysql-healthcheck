@@ -282,6 +282,45 @@ function radar(dims, opts = {}) {
   return svgWrap(W, H, body);
 }
 
+// ============== MySQL 复制拓扑图 ==============
+function topology(nodes, opts = {}) {
+  const W = opts.width || 620;
+  const H = opts.height || Math.max(220, 120 + Math.max(0, nodes.length - 1) * 42);
+  const primary = nodes.find(n => n.role === 'primary') || nodes[0];
+  const replicas = nodes.filter(n => n !== primary);
+  const title = opts.title ? `<text x="${W/2}" y="24" text-anchor="middle" font-size="16" font-weight="bold" fill="${COLORS.primary}">${escapeXml(opts.title)}</text>` : '';
+  const px = 150;
+  const py = H / 2;
+  const rx = W - 190;
+  const startY = H / 2 - ((replicas.length - 1) * 42) / 2;
+
+  const nodeBox = (x, y, node, role, color) => `
+<rect x="${x - 95}" y="${y - 26}" width="190" height="52" rx="8" fill="${color}" stroke="${COLORS.primary}" stroke-width="1.5"/>
+<text x="${x}" y="${y - 4}" text-anchor="middle" font-size="13" font-weight="bold" fill="#FFFFFF">${escapeXml(node.ip || '-')}</text>
+<text x="${x}" y="${y + 16}" text-anchor="middle" font-size="11" fill="#FFFFFF">${escapeXml(role)} · server_id=${escapeXml(node.variables?.server_id || '-')}</text>`;
+
+  const arrows = replicas.map((n, i) => {
+    const y = startY + i * 42;
+    return `
+<line x1="${px + 100}" y1="${py}" x2="${rx - 100}" y2="${y}" stroke="${COLORS.secondary}" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="${(px + rx) / 2}" y="${y - 6}" text-anchor="middle" font-size="10" fill="${COLORS.muted}">async replication</text>`;
+  }).join('');
+
+  const replicaBoxes = replicas.map((n, i) => nodeBox(rx, startY + i * 42, n, '从库', COLORS.secondary)).join('');
+  const empty = replicas.length === 0
+    ? `<text x="${rx}" y="${py}" text-anchor="middle" font-size="12" fill="${COLORS.muted}">未识别从库</text>`
+    : '';
+
+  const body = `
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="${COLORS.secondary}"/></marker></defs>
+${title}
+${nodeBox(px, py, primary || {}, '主库', COLORS.primary)}
+${arrows}
+${replicaBoxes}
+${empty}`;
+  return svgWrap(W, H, body);
+}
+
 // ============== SVG → PNG ==============
 function svgToPng(svg, opts = {}) {
   const resvg = loadResvg();
@@ -308,5 +347,6 @@ module.exports = {
   hbar,
   vbar,
   radar,
+  topology,
   svgToPng,
 };

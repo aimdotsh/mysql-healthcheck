@@ -236,14 +236,23 @@ function dataRow(cells, shade, headers, widths) {
       if (/表名|table[_ ]?name|sql|info|建议|action|描述|description|error|措施|配置|os|内容|备注|说明|cpu型号|事务详情|配置项/.test(hkey)) {
         align = AlignmentType.LEFT;
       }
-      const text = c == null || c === '' ? '-' : String(c);
+      const cell = c && typeof c === 'object' && !Array.isArray(c) ? c : { text: c };
+      const text = cell.text == null || cell.text === '' ? '-' : String(cell.text);
       return new TableCell({
         children: [new Paragraph({
-          children: [new TextRun({ text, size: 20, font: FONT })],
+          children: [new TextRun({
+            text,
+            size: cell.size || 20,
+            font: FONT,
+            color: cell.color || COLOR.text,
+            bold: !!cell.bold,
+          })],
           alignment: align,
         })],
         width: { size: widths[i], type: WidthType.DXA },
-        shading: shade
+        shading: cell.fill
+          ? { fill: cell.fill, type: ShadingType.CLEAR, color: 'auto' }
+          : shade
           ? { fill: COLOR.shadeRow, type: ShadingType.CLEAR, color: 'auto' }
           : undefined,
       });
@@ -616,6 +625,16 @@ function chapterServers(data) {
   const out = [h1('二、服务器与拓扑概况'), h2('2.1 集群拓扑')];
   out.push(para(`本集群采用「${data.cluster.topology}」结构，节点角色及基础配置如下：`));
   out.push(emptyLine());
+  if (charts) {
+    out.push(para([{ text: 'MySQL 复制拓扑图', bold: true, color: COLOR.secondary }]));
+    const h = Math.max(220, 120 + (data.nodes.length - 1) * 42);
+    const p = chartParagraph(() => charts.topology(data.nodes, {
+      title: 'MySQL 复制拓扑图',
+      width: 620,
+      height: h,
+    }), { width: 620, height: h });
+    if (p) out.push(p);
+  }
 
   out.push(makeTable(
     ['节点 IP', '主机名', '角色', 'MySQL 版本', 'server_id', 'Uptime'],
@@ -632,9 +651,11 @@ function chapterServers(data) {
 
   out.push(h2('2.2 操作系统与硬件'));
   out.push(makeTable(
-    ['节点 IP', 'OS 内核', 'CPU 型号', '核心数', '内存总量', '内存使用率'],
+    ['节点 IP', '操作系统版本', '生命周期', 'OS 内核', 'CPU 型号', '核心数', '内存总量', '内存使用率'],
     data.nodes.map(n => [
       n.ip,
+      n.osRelease || '-',
+      osLifecycleLabel(n),
       truncate(n.osKernel, 50),
       truncate(n.cpuModel, 40),
       n.cpuCores != null ? `${n.cpuCores} 核` : '-',
@@ -643,15 +664,28 @@ function chapterServers(data) {
     ]),
     'OS / 硬件配置',
   ));
+  const eolNodes = data.nodes.filter(n => n.osEolStatus?.status === 'eol');
+  if (eolNodes.length > 0) {
+    out.push(noteParagraph(`操作系统版本已停止维护：${eolNodes.map(n => `${n.ip} ${n.osEolStatus.major}`).join('、')}。EOL 系统不再获得官方安全补丁，建议纳入主机升级或替换计划。`));
+  }
   out.push(emptyLine());
 
   out.push(h2('2.3 内存与 Swap'));
   out.push(makeTable(
-    ['节点 IP', '内存总量', '内存空闲', '内存已用', 'Swap 总量', 'Swap 空闲'],
-    data.nodes.map(n => [
-      n.ip, n.memTotal || '-', n.memFree || '-', n.memUsed || '-',
-      n.swapTotal || '-', n.swapFree || '-',
-    ]),
+    ['节点 IP', '内存总量', '内存已用', '内存使用率', 'Swap 总量', 'Swap 已用', 'Swap 使用率'],
+    data.nodes.map(n => {
+      const swapPct = Number(n.swapUsagePct || 0);
+      const swapWarn = swapPct > 0;
+      return [
+        n.ip,
+        n.memTotal || '-',
+        n.memUsed || '-',
+        n.memUsagePct ? `${n.memUsagePct}%` : '-',
+        n.swapTotal || '-',
+        { text: n.swapUsed || '-', color: swapWarn ? 'C00000' : COLOR.text, bold: swapWarn },
+        { text: n.swapUsagePct != null ? `${n.swapUsagePct}%` : '-', color: swapWarn ? 'C00000' : COLOR.text, bold: swapWarn },
+      ];
+    }),
     '内存使用概况',
   ));
   out.push(emptyLine());
@@ -717,6 +751,28 @@ function chapterConnections(data) {
     ]),
     '连接配置',
   ));
+  if (charts) {
+    out.push(para([{ text: '连接使用率', bold: true, color: COLOR.secondary }]));
+    const points = data.nodes.map(n => {
+      const maxConn = Number(n.variables?.max_connections || 0);
+      const used = Number(n.threadsConnected || 0);
+      const pct = maxConn > 0 ? used / maxConn * 100 : 0;
+      return {
+        label: `${n.ip}\n${roleLabel(n.role)}`,
+        value: Math.round(pct * 10) / 10,
+        color: pct >= 80 ? charts.COLORS.p0 : pct >= 60 ? charts.COLORS.p1 : charts.COLORS.good,
+      };
+    });
+    const h = Math.max(180, 60 + points.length * 34);
+    const p = chartParagraph(() => charts.hbar(points, {
+      title: '连接使用率（Threads / max_connections）',
+      max: 100,
+      format: v => `${v}%`,
+      width: 600,
+      height: h,
+    }), { width: 600, height: h });
+    if (p) out.push(p);
+  }
   out.push(emptyLine());
 
   out.push(h2('3.2 当前 Processlist 分布'));
@@ -736,6 +792,30 @@ function chapterConnections(data) {
     }),
     'Processlist 命令分布',
   ));
+  if (charts) {
+    const totals = { Sleep: 0, Query: 0, Connect: 0, 'Binlog Dump': 0, Other: 0 };
+    for (const n of data.nodes) {
+      for (const p of (n.processlist || [])) {
+        const cmd = (p.command || '').toLowerCase();
+        if (cmd === 'sleep') totals.Sleep++;
+        else if (cmd === 'query') totals.Query++;
+        else if (cmd === 'connect') totals.Connect++;
+        else if (/binlog/i.test(p.command || '')) totals['Binlog Dump']++;
+        else totals.Other++;
+      }
+    }
+    const slices = Object.entries(totals)
+      .filter(([, value]) => value > 0)
+      .map(([label, value], idx) => ({ label, value, color: charts.COLORS.series[idx % charts.COLORS.series.length] }));
+    if (slices.length > 0) {
+      const p = chartParagraph(() => charts.pie(slices, {
+        title: 'Processlist 命令分布',
+        width: 520,
+        height: 260,
+      }), { width: 520, height: 260 });
+      if (p) out.push(p);
+    }
+  }
   out.push(emptyLine());
 
   out.push(h2('3.3 长时间运行的会话 (TIME ≥ 60s)'));
@@ -766,6 +846,8 @@ function chapterConnections(data) {
   ));
   if (longRows.length === 0) {
     out.push(noteParagraph('采集时刻未发现需关注的长会话。'));
+  } else {
+    out.push(noteParagraph('长会话需先确认业务上下文。若处于 Sending data、Copying to tmp table 等状态且持续增长，可能占用 IO/CPU 或拖慢 purge；确认异常后再由 DBA 执行 KILL CONNECTION。'));
   }
   return out;
 }
@@ -861,12 +943,12 @@ function chapterParams(data) {
     out.push(emptyLine());
     const jRows = judgments.map(j => [
       j.key,
-      j.unique.join(' / '),
+      j.valueMap || j.unique.join(' / '),
       j.ok ? '✅ 正常' : '❌ 需关注',
       j.reason,
     ]);
     out.push(makeTable(
-      ['参数', '不同取值', '判断', '说明'],
+      ['参数', '节点取值', '判断', '说明'],
       jRows,
       '参数差异判断',
     ));
@@ -1775,6 +1857,13 @@ function roleLabel(role) {
   if (role === 'primary') return '主库';
   if (/^slave/.test(role)) return '从库';
   return role;
+}
+function osLifecycleLabel(n) {
+  if (n.osEolStatus?.status === 'eol') {
+    return `已停止维护（EOL ${n.osEolStatus.eolDate}）`;
+  }
+  if (n.osEolStatus?.status === 'unknown') return '生命周期需确认';
+  return '未识别';
 }
 function diskHealthLabel(pctText) {
   const pct = parseInt((pctText || '0').replace('%', ''));

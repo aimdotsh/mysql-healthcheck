@@ -19,7 +19,7 @@ txt 文件中所有段都以以下标记开头：
 
 | 模块 | 段名 | 主要字段 |
 |---|---|---|
-| 01 | hostname / os kernal / ip info / mem info / mem usage / CPU model / CPU cores / NUMA info / Top Info / ntp Info / resource limit / swap method / io scheduler / io usage / disk mount / mount options / dist type / kernel params / network connections / my.cnf detail / mysqld process / mysqld process limits | 主机基础信息 |
+| 01 | hostname / os release / os kernal / ip info / mem info / mem usage / CPU model / CPU cores / NUMA info / Top Info / ntp Info / resource limit / swap method / io scheduler / io usage / disk mount / mount options / dist type / kernel params / network connections / my.cnf detail / mysqld process / mysqld process limits | 主机基础信息 |
 | 02 | MySQL Database Version / Version details / Plugins info / Database basic info | 实例基础 |
 | 03 | MySQL Variables / Important variables / Performance schema sizing | 变量配置 |
 | 04 | MySQL Replication Info / Master status / Binary logs / GTID sets / Semi sync variables / Semi sync status / Replication threads / Replication group members / Replication connection status | 复制状态 |
@@ -64,6 +64,8 @@ txt 文件
 | extract.js 字段 | 来源段 | 渲染章节 |
 |---|---|---|
 | `node.blobColumns` | `BLOB info` | 十三章 |
+| `node.osRelease` / `node.osEolStatus` | `os release` | 二章 / 问题清单 |
+| `node.swapUsed` / `node.swapUsagePct` | `mem info` | 二章 |
 | `node.partitionTables` | `PARTITIONS table` | 十三章 |
 | `node.routines` | `ROUTINES OBJECTS` | 十三章 |
 | `node.unusedIndexes` | `Schema unused indexes` | 十三章 |

@@ -8,11 +8,14 @@
 |---|---|---|---|
 | `mem_high` | P1 | 内存使用率 `>90%` | |
 | `swap_used` | P1 | Swap 已使用（Total != Free 且差额 >0.1）| |
+| `os_version_eol` | P1/P2 | 操作系统发行版已 EOL（如 CentOS 6/7/8） | 聚合到集群级风险 |
 | `disk_critical` | P0 | 任一挂载点使用率 `≥90%` | 含 SQL hint |
 | `disk_high` | P1 | 任一挂载点使用率 `≥80%` | |
 | `repl_thread_down` | P0 | `Slave_IO_Running != Yes` 或 `Slave_SQL_Running != Yes` | |
 | `repl_delay_high` | P1 | `Seconds_Behind_Master > 300` | |
 | `repl_delay_low` | P2 | `Seconds_Behind_Master > 60` | |
+| `long_running_session` | P2/P3 | 非 Sleep/复制线程会话运行 `≥60s` | 需人工确认是否 KILL |
+| `innodb_hll_high` | P2/P1 | History List Length `>10000` / `>=50000` | 关联长事务、长查询、purge 滞后 |
 | `slow_query_abs_high` | P1 | 累计慢查询 `> 1,000,000` | 含 pt-query-digest hint |
 | `slow_query_abs_med` | P2 | 累计慢查询 `> 100,000` | |
 | `slow_log_off` | P2 | `slow_query_log = 0` | 含 SET GLOBAL hint |
@@ -39,6 +42,7 @@
 | `wildcard_critical` | P0 | host=% root / admin / dba / super 用户存在 | |
 | `wildcard_high` | P1 | host=% repl / backup 用户存在 | |
 | `wildcard_medium` | P2 | host=% 业务账号存在 | |
+| `tls_weak_protocol` | P2 | `tls_version` 包含 TLSv1 / TLSv1.1 | 同时在合规清单标为 WARN |
 | `lct_zero_linux` | P3 | Linux 上 `lower_case_table_names = 0` | |
 | `param_inconsistent` | P2 | 关键参数跨节点不一致 | 列出涉及参数名 |
 
