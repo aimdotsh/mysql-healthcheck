@@ -1150,17 +1150,39 @@ function chapterStorage(data) {
   }
 
   out.push(h2('7.4 无主键表'));
-  const noPkSummary = summarizeTableCategories(refNode.noPkTables || []);
-  const noPkRows = (refNode.noPkTables || []).map(t => [
-    t.schema, t.table, tableCategory(t.table).label,
-    tableCategory(t.table).key === 'business' ? '补充自增主键或唯一索引' : '确认归档/清理策略',
-  ]);
+  // 评审 #14 (v4.4)：v4.3 一次性列出 30+ 张无主键表（含临时/字典/历史表）噪声严重；
+  // 改为按类型分组、只展开 TOP 10 业务表，临时/历史/字典表只显示分类计数。
+  const noPkAll = refNode.noPkTables || [];
+  const noPkSummary = summarizeTableCategories(noPkAll);
   out.push(noteParagraph(`无主键表分类汇总：业务表 ${noPkSummary.business} 张，历史/归档表 ${noPkSummary.history} 张，临时/测试表 ${noPkSummary.temp} 张。`));
+  // 业务表按行数（若可得）/ 表名排序，取前 10
+  const noPkBiz = noPkAll
+    .filter(t => tableCategory(t.table).key === 'business')
+    .sort((a, b) => Number(b.rows || 0) - Number(a.rows || 0) || String(a.table).localeCompare(b.table));
+  const bizTop = noPkBiz.slice(0, 10);
+  const bizTopRows = bizTop.map(t => [
+    t.schema, t.table,
+    t.rows != null ? Number(t.rows).toLocaleString() : '-',
+    '业务表',
+    '补充自增主键或唯一索引',
+  ]);
   out.push(makeTable(
-    ['库名', '表名', '类型', '建议'],
-    noPkRows,
-    `无主键表清单（共 ${(refNode.noPkTables||[]).length} 张）`,
+    ['库名', '表名', '估算行数', '类型', '建议'],
+    bizTopRows,
+    `业务表无主键 TOP 10（按行数排序，共 ${noPkBiz.length} 张业务表）`,
   ));
+  if (noPkBiz.length > bizTop.length) {
+    out.push(noteParagraph(`另有 ${noPkBiz.length - bizTop.length} 张业务表未在表中展示，完整清单见 data.json (noPkTables) 或单独导出。`));
+  }
+  // 历史/归档表 + 临时/测试表 折叠为单行计数
+  if (noPkSummary.history > 0 || noPkSummary.temp > 0) {
+    const histExamples = noPkAll.filter(t => tableCategory(t.table).key === 'history').slice(0, 5).map(t => `${t.schema}.${t.table}`).join('、');
+    const tempExamples = noPkAll.filter(t => tableCategory(t.table).key === 'temp').slice(0, 5).map(t => `${t.schema}.${t.table}`).join('、');
+    const collapsed = [];
+    if (noPkSummary.history > 0) collapsed.push(`历史/归档表 ${noPkSummary.history} 张${histExamples ? '（示例：' + histExamples + (noPkSummary.history > 5 ? ' 等' : '') + '）' : ''}`);
+    if (noPkSummary.temp > 0) collapsed.push(`临时/测试/字典表 ${noPkSummary.temp} 张${tempExamples ? '（示例：' + tempExamples + (noPkSummary.temp > 5 ? ' 等' : '') + '）' : ''}`);
+    out.push(noteParagraph(`已折叠：${collapsed.join('；')} — 建议确认是否仍被业务访问，满足条件后归档或清理。`));
+  }
   out.push(emptyLine());
   out.push(noteParagraph('无主键表在 ROW 格式复制下从库需全表扫描匹配行，复制效率极低且无法 MTS 并行复制。正式业务表建议补充主键；历史、临时、测试类表建议确认是否仍被业务访问，满足条件后归档或清理。'));
   out.push(emptyLine());
