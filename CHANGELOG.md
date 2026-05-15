@@ -4,6 +4,63 @@
 
 ---
 
+## [4.4.0] - 2026-05-15
+
+**v4.3 报告评审反馈轮次**。基于真实 4 节点 2.2TB 集群的 v4.3 巡检报告评审，针对 17 项问题落地 9 项核心修复。
+
+### 🐛 必修级 bug 修复
+
+- **#9 parseBackupDirs flushCurrent — 恢复 93GB 备份数据**：v4.3 在测试集中错误地报告 172.16.7.4 节点「未发现备份产物」，实际该节点 /data/backup 下存有 93GB 真实备份（tbl_order_detail_20240729.sql 48GB + tbl_order_20240724.sql 13GB + tbl_topup_20240718.sql 36GB）。根因是解析逻辑遇到 `[--] /path 不存在` 行时直接覆盖正在累积的 `current` 指针。修复：引入 `flushCurrent()` 闭包，遇到 header / "不存在" 行时先 push 已累积条目再开启新条目。同时把 `exists:true/false` 字段显式化。
+- **#2 DR 角色端到端识别**：v4.3 第二章 / 12.2 仍把灾备节点显示为「从库」，与第一章节点级问题 #6 的「灾备节点 dr-mysql」描述自相矛盾。根因是 `normalizeNodeRoles` 的 `isSlave=true` 分支会无条件覆盖 `node.role = 'slave'`，吞掉 `canonicalRole` 已识别的 `dr`。修复：循环顶部优先识别 `isDrNode` → role='dr'，primary 循环保留 dr 角色；render.js + extract.js 的 `roleLabel` 同步增加 `dr → 灾备` 映射。
+
+### 🧹 噪声治理
+
+- **#4 isTempOrHistoryTable 大幅扩展**：v4.3 报告 7.4 把 `dd / pp / pp1 / t_year / t_year_month / t_month / calendar / t_bit / t_orderid_tmp` 等都标为「业务表」误导客户。扩展规则识别：极短表名（≤3 字符 + 数字后缀）、日期/时间字典表（t_year / t_month / calendar）、临时表中缀（_temp_ / _tmp_ / _test_）、_bak/_backup/_old 含数字后缀、_copy/_new/_old 副本、test 表。实测 v3 数据集 30 张 noPK 表分类从「业务 10+, 临时 18」→「业务 5, 临时 23」。
+- **#5/#17 SQL 治理过滤元数据查询**：v4.3 14.4 / 14.5 前几位被 `SELECT NOW(), SYSTEM_USER()` / `SELECT SPECIFIC_NAME FROM INFORMATION_SCHEMA...` / `SHOW PLUGINS` / `SHOW FULL FIELDS FROM ...` 占据，这些是客户端 / Navicat / 监控工具的元数据探测查询，挤占了业务慢 SQL 的位置。新增 `isMetadataQuery()` 函数，过滤 SHOW / DESC / EXPLAIN / information_schema / performance_schema / SET / COMMIT 等 5 类元数据查询，应用到 5 个 TOP SQL 段（topSqlByLatency / topSqlByExec / topSqlByAvg / sqlNoGoodIndex / sqlWithTmp）。
+
+### 📋 内容准确性
+
+- **#6 12.4 复制建议改为引用 issues**：v4.3 第一章 issue 说「slave_parallel_workers=0 建议设为 8-16」，第十二章 12.4 手写文案说「4-8」，数字冲突违反单一真相源原则。删除手写文案，改为从 `data.issues[]` 筛选复制类 issue（gtid_off / slave_parallel_workers_zero / sync_binlog_weak / repl_delay_high/low / repl_thread_down / replica_io_running_no / replica_sql_running_no）逐条展示 description+action。未来调整 8-16 之类的数字只需改 deriveIssues 一处。
+
+### 💡 缺失分析补强
+
+- **#12 第七章可释放空间汇总**：v4.3 7.2（历史归档表 GB）+ 7.3（高碎片表 GB）分别给出可释放空间但未汇总。新增彩色 callout：「本次巡检识别可释放空间合计约 X GB（碎片 Y GB + 归档 Z GB），相当于主库当前数据量的 N%」+ 清理优先级建议。
+
+### 🎨 视觉表达
+
+- **#14 7.4 无主键表 TOP 10 + 折叠**：v4.3 一次性列出 30+ 张混合表（业务/临时/字典）。改为业务表按行数排序仅展开 TOP 10，业务表 >10 张时提示「另有 N 张见 data.json」；历史/归档表 + 临时/测试表折叠为单行计数，仅显示前 5 个示例。
+- **#15 16.5 合规框架对照加「关键缺失项」列**：v4.3 只显示 等保 ❌ / PCI ⚠️ / GDPR ❌ / SOX ⚠️，未说明缺什么。新增「关键缺失项」列，从 16.2 检查项的 PASS/FAIL 自动汇总：等保 2.0 → 密码强度策略、审计日志；PCI DSS → at-rest 加密、TLS/SSL、审计日志；GDPR → 审计日志。
+
+### 🧪 回归测试
+
+- 同步更新 `tests/report_regression_test.js`：
+  - 172.16.128.101 角色断言从 `slave` → `dr`
+  - 节点标签断言从 `（从库）` → `（灾备）`
+  - backupAssessment 断言从「未发现备份产物 P2」 → 「最近备份已 X 天前 P0」（使用 startsWith 兼容日期相对性）
+  - hintPaths 使用 Set.has 兼容路径合并语义变化
+
+### 📊 v4.3 → v4.4 关键差异
+
+| 指标 | v4.3 | v4.4 |
+|---|---|---|
+| 备份产物识别 | 漏报 93GB | **正确识别 P0 备份过旧** |
+| 灾备节点显示 | 「从库」（误导） | **「灾备」** |
+| noPK 业务表数 | 30+（含字典/临时） | **5 张真实业务表** |
+| TOP SQL 元数据噪声 | 前几位被占 | **过滤 5 类元数据查询** |
+| 12.4 复制建议数字 | 4-8 vs 8-16 冲突 | **统一引用 issues** |
+| 合规框架对照 | 仅 ❌/⚠️ 状态 | **附「关键缺失项」列** |
+
+### 📋 Backlog → v5.0
+
+- #7 合规框架可配置（PCI/等保升级 FAIL）
+- #8 行动计划按业务影响二次排序
+- #10 DR buffer pool 错配关联规则
+- #11 容量趋势 / 增长预估（基于 binlog 时间差）
+- #13 业务/SLA 视角执行摘要
+- #16 上次巡检对比机制（`--compare previous_data.json`）
+
+---
+
 ## [4.3.0] - 2026-05-15
 
 **专家评审反馈轮次**。回应一位资深 DBA 对 v4.2 报告的 11 条质量反馈，10 项已落地。
