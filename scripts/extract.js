@@ -993,14 +993,29 @@ function isDrNode(node) {
   return /\bdr[-_]|disaster|standby/i.test(hint);
 }
 
-// 评审反馈 #7：临时 / 历史 / 备份表识别（用于过滤无主键告警噪声）
+// 评审反馈 #7 + #4 (v4.4)：临时 / 历史 / 备份 / 工具表识别（用于过滤无主键告警噪声）
+// 评审 v4.4 #4 扩展：dd/pp/t_year 等被误判为业务表，需要识别为工具/字典表
 function isTempOrHistoryTable(tableName) {
   if (!tableName) return false;
   const t = String(tableName);
-  return /^tmp_|^temp_|^test_|_tmp$|_temp$|_test$/i.test(t)        // 临时表
-      || /_bak$|_bak_|_backup$|_old$/i.test(t)                       // 备份表
-      || /_\d{8}$|_\d{6}$|_\d{4}-\d{2}/.test(t)                      // 日期后缀（_20230101 / _202301 / _2023-01）
-      || /^_gho_|^_ghc_|^_(gho|ghc|del)_/i.test(t);                  // gh-ost 中间表
+  // 1. 极短可疑表名（≤3 字符，常见于测试残留：dd, pp, pp1, t, t1, t12）
+  if (/^[a-z]{1,3}$|^[a-z]\d{1,2}$/i.test(t)) return true;
+  // 2. 日期 / 时间字典表（t_year/t_month/calendar 等业务工具表）
+  if (/^t_(year|month|day|date|hour|minute|second|calendar|bit|byte)([_0-9]|$)/i.test(t)) return true;
+  if (/^(calendar|dim_date|dim_time|date_dim|time_dim|nums|numbers|sequence)$/i.test(t)) return true;
+  // 3. 临时表前后缀 / 中缀
+  if (/^tmp[_0-9]|^temp[_0-9]|^test[_0-9]/i.test(t)) return true;
+  if (/_tmp\d*$|_temp\d*$|_test\d*$/i.test(t)) return true;
+  if (/_temp_|_tmp_|_test_/i.test(t)) return true;
+  // 4. 备份表
+  if (/_bak$|_bak[_0-9]|_backup$|_backup[_0-9]|_old$|_old[_0-9]/i.test(t)) return true;
+  // 5. 日期后缀（_20230101 / _202301 / _2023-01）
+  if (/_\d{8}$|_\d{6}$|_\d{4}-\d{2}/.test(t)) return true;
+  // 6. gh-ost / pt-osc 中间表
+  if (/^_gho_|^_ghc_|^_(gho|ghc|del)_/i.test(t)) return true;
+  // 7. copy / new / old 副本
+  if (/_(copy|copy\d+|new\d*|old\d*)$/i.test(t)) return true;
+  return false;
 }
 
 // 评审反馈 #10：gh-ost / pt-osc 在线 DDL 残留 ghost 表识别
