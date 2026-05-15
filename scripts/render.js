@@ -484,14 +484,15 @@ function chapterExecutiveSummary(data) {
   ));
   out.push(emptyLine());
 
-  // 关键事实表
+  // 关键事实表（v4.6：单节点时改为"节点信息"而非"集群"，避免对单点采集场景造成误导）
+  const isSingleNodeKF = data.cluster.nodeCount === 1;
   out.push(makeTable(
     ['指标', '值'],
     [
       ['项目名称', data.project],
       ['采集日期', formatChineseDate(data.inspectionDate)],
-      ['集群拓扑', `${data.cluster.topology}（${data.cluster.nodeCount} 节点）`],
-      ['集群 IP', data.cluster.ips.join('、')],
+      [isSingleNodeKF ? '采集范围' : '集群拓扑', `${data.cluster.topology}（${data.cluster.nodeCount} 节点）`],
+      [isSingleNodeKF ? '节点 IP' : '集群 IP', data.cluster.ips.join('、')],
       ['整体评估', data.overallAssessment.replace(/（健康度评分.*?）/, '')],
       ['问题分布', `P0 紧急 ${p0} 项 / P1 重要 ${p1} 项 / P2 建议 ${p2} 项 / P3 观察 ${p3} 项`],
       ['备份能力', data.backupAssessment?.assessment || '-'],
@@ -546,21 +547,27 @@ function chapterSummary(data) {
 
   const clusterIssues = data.issues.filter(i => i.node === '全部节点' || /\d\/\d+\s+节点/.test(i.node));
   const nodeIssues = data.issues.filter(i => !clusterIssues.includes(i));
+  // v4.6：单节点时不再区分"集群级 / 节点级问题"
+  const isSingleNode = data.cluster.nodeCount === 1;
 
   const out = [
     h1('一、巡检摘要'),
-    para(`本次对【${data.project}】生产环境 MySQL 集群（${data.cluster.topology}）进行月度巡检，采集日期 ${formatChineseDate(data.inspectionDate)}，覆盖 ${data.cluster.nodeCount} 个节点（${data.cluster.ips.join('、')}）。`),
+    para(isSingleNode
+      ? `本次对【${data.project}】生产环境 MySQL 实例（${data.cluster.topology}）进行月度巡检，采集日期 ${formatChineseDate(data.inspectionDate)}，覆盖 ${data.cluster.nodeCount} 个节点（${data.cluster.ips.join('、')}）。`
+      : `本次对【${data.project}】生产环境 MySQL 集群（${data.cluster.topology}）进行月度巡检，采集日期 ${formatChineseDate(data.inspectionDate)}，覆盖 ${data.cluster.nodeCount} 个节点（${data.cluster.ips.join('、')}）。`),
     para(`整体评估：${data.overallAssessment}。`),
     para([
       { text: '问题分布：', bold: true },
       { text: `P0 紧急 ${p0} 项 / P1 重要 ${p1} 项 / P2 建议 ${p2} 项 / P3 观察 ${p3} 项。` },
     ]),
-    para([
+  ];
+  if (!isSingleNode) {
+    out.push(para([
       { text: '问题分类：', bold: true },
       { text: `集群级问题 ${clusterIssues.length} 项（一次修复影响全部节点），节点级问题 ${nodeIssues.length} 项。` },
-    ]),
-    emptyLine(),
-  ];
+    ]));
+  }
+  out.push(emptyLine());
 
   // 问题分布饼图
   if (charts && data.issues.length > 0) {
@@ -574,8 +581,8 @@ function chapterSummary(data) {
     if (pieP) out.push(pieP);
   }
 
-  // 1.1 集群级问题（一次修复影响所有节点）
-  if (clusterIssues.length > 0) {
+  // 1.1 集群级问题（一次修复影响所有节点）— v4.6: 单节点跳过 cluster/node 拆分
+  if (!isSingleNode && clusterIssues.length > 0) {
     out.push(h2('1.1 集群级问题'));
     out.push(para('以下问题影响多个节点，建议作为一项任务统一处理：'));
     out.push(emptyLine());
@@ -588,14 +595,16 @@ function chapterSummary(data) {
   }
 
   // 1.2 节点级问题
-  if (nodeIssues.length > 0) {
-    out.push(h2(clusterIssues.length > 0 ? '1.2 节点级问题' : '1.1 问题汇总'));
-    out.push(para('以下问题仅影响特定节点：'));
+  if (nodeIssues.length > 0 || (isSingleNode && clusterIssues.length > 0)) {
+    // 单节点：把所有 issue 合并展示
+    const itemsToShow = isSingleNode ? [...clusterIssues, ...nodeIssues] : nodeIssues;
+    out.push(h2(isSingleNode ? '1.1 问题汇总' : (clusterIssues.length > 0 ? '1.2 节点级问题' : '1.1 问题汇总')));
+    out.push(para(isSingleNode ? '本次巡检发现的全部问题：' : '以下问题仅影响特定节点：'));
     out.push(emptyLine());
     out.push(makePriorityTable(
       ['序号', '级别', '问题描述', '节点', '建议措施', '状态'],
-      nodeIssues.map((i, idx) => ({ ...i, seq: idx + 1 })),
-      '节点级问题',
+      itemsToShow.map((i, idx) => ({ ...i, seq: idx + 1 })),
+      isSingleNode ? '问题汇总' : '节点级问题',
     ));
     out.push(emptyLine());
   }
@@ -631,7 +640,11 @@ function chapterServers(data) {
   out.push(emptyLine());
   if (charts) {
     out.push(para([{ text: isSingleNode ? '节点拓扑图' : 'MySQL 复制拓扑图', bold: true, color: COLOR.secondary }]));
-    const h = isSingleNode ? 180 : Math.max(220, 120 + (data.nodes.length - 1) * 42);
+    // v4.6：单节点时根据是否有 self-ref 警告动态决定高度（与 charts.topology 内部计算一致）
+    const hasSelfRefWarn = isSingleNode && !!(data.nodes[0]?.replication?.selfReferencingSlaveResidue);
+    const h = isSingleNode
+      ? (hasSelfRefWarn ? 190 : 160)
+      : Math.max(220, 120 + (data.nodes.length - 1) * 42);
     const p = chartParagraph(() => charts.topology(data.nodes, {
       title: isSingleNode ? '节点拓扑图' : 'MySQL 复制拓扑图',
       width: 620,
@@ -1448,7 +1461,9 @@ function chapterReplication(data) {
   const isSingleNode = data.nodes.length === 1;
   const hasNoRealSlaves = realSlaves.length === 0;
 
-  out.push(para(`集群采用 ${data.cluster.topology}，GTID 模式：${gtid}。`));
+  out.push(para(isSingleNode
+    ? `本次仅采集单节点，无主从复制配置；GTID 模式：${gtid}。`
+    : `集群采用 ${data.cluster.topology}，GTID 模式：${gtid}。`));
   if (primary?.replication?.slaveIps?.length) {
     out.push(para(`主库 ${primary.ip} 检测到从库 IP：${primary.replication.slaveIps.join('、')}`));
   }
@@ -1523,7 +1538,6 @@ function chapterReplication(data) {
 
   out.push(h2('12.4 复制风险与建议'));
   // 评审 #6 (v4.4)：从 issues[] 引用复制相关风险，消除手写文案与 issue 描述的数字冲突
-  // （之前 12.4 写「4-8」而第一章 issue 写「8-16」，违反单一真相源原则）
   const replIssueTypes = new Set([
     'gtid_off',
     'slave_parallel_workers_zero',
@@ -1533,10 +1547,14 @@ function chapterReplication(data) {
     'repl_thread_down',
     'replica_io_running_no',
     'replica_sql_running_no',
+    'self_ref_slave_residue',
   ]);
   const replIssues = (data.issues || []).filter(i => replIssueTypes.has(i.type));
   if (replIssues.length === 0) {
-    out.push(bullet('复制配置整体合理，建议持续监控 Seconds_Behind_Master 与从库报错日志'));
+    // v4.6：单节点无主从，避免误导性的"复制配置合理"措辞
+    out.push(bullet(isSingleNode
+      ? '本次仅采集单节点，无主从复制可分析；如该实例属于主从集群，建议补充采集从库 txt 后重新出报告'
+      : '复制配置整体合理，建议持续监控 Seconds_Behind_Master 与从库报错日志'));
   } else {
     for (const i of replIssues) {
       const action = i.action ? `（${i.action}）` : '';
@@ -2107,8 +2125,11 @@ function buildDocument(data) {
   const footerWidths = [1800, 5000, 1800];
 
   return new Document({
-    creator: 'mysql-healthcheck v4.1',
+    creator: 'mysql-healthcheck v4.6',
     title: `${data.project} MySQL 数据库健康巡检报告`,
+    // v4.6：让 Word/WPS 打开时自动更新目录字段，避免弹出「是否更新字段」提示
+    // settings.xml 添加 <w:updateFields w:val="true"/>
+    features: { updateFields: true },
     styles: {
       default: { document: { run: { font: FONT, size: 22 } } },
       paragraphStyles: [
