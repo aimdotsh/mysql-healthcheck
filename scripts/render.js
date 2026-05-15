@@ -1431,17 +1431,27 @@ function chapterReplication(data) {
   out.push(emptyLine());
 
   out.push(h2('12.4 复制风险与建议'));
-  const recs = [];
-  if (gtid === 'OFF') recs.push('当前 GTID 关闭：建议规划升级到 GTID 模式，便于自动 failover 与跨实例迁移');
-  const parW = primary?.variables?.slave_parallel_workers;
-  if (parW != null && Number(parW) === 0) {
-    recs.push('从库并行复制未启用 (slave_parallel_workers=0)：单线程应用 binlog 在写入高峰可能延迟，建议设为 4-8 + slave_parallel_type=LOGICAL_CLOCK');
+  // 评审 #6 (v4.4)：从 issues[] 引用复制相关风险，消除手写文案与 issue 描述的数字冲突
+  // （之前 12.4 写「4-8」而第一章 issue 写「8-16」，违反单一真相源原则）
+  const replIssueTypes = new Set([
+    'gtid_off',
+    'slave_parallel_workers_zero',
+    'sync_binlog_weak',
+    'repl_delay_high',
+    'repl_delay_low',
+    'repl_thread_down',
+    'replica_io_running_no',
+    'replica_sql_running_no',
+  ]);
+  const replIssues = (data.issues || []).filter(i => replIssueTypes.has(i.type));
+  if (replIssues.length === 0) {
+    out.push(bullet('复制配置整体合理，建议持续监控 Seconds_Behind_Master 与从库报错日志'));
+  } else {
+    for (const i of replIssues) {
+      const action = i.action ? `（${i.action}）` : '';
+      out.push(bullet(`${i.description}${action}`));
+    }
   }
-  if ((primary?.variables?.sync_binlog || '0') === '0') {
-    recs.push('主库 sync_binlog=0：主库异常宕机可能丢失 binlog 事件，建议设为 1');
-  }
-  if (recs.length === 0) recs.push('复制配置整体合理，建议持续监控 Seconds_Behind_Master 与从库报错日志');
-  recs.forEach(r => out.push(bullet(r)));
   return out;
 }
 
