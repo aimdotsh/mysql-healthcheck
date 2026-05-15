@@ -2098,36 +2098,65 @@ function analyzeIssues(nodes) {
       }
     }
 
-    // ----- 用户安全：host=% 按危险等级 -----
+    // ----- 用户安全：host=% 按危险等级（v4.6：每级聚合，避免相同告警挤占报告）-----
     const wildcards = (n.users || []).filter(u => u.host === '%');
+    const byLevel = { critical: [], high: [], medium: [] };
     for (const u of wildcards) {
       const cat = classifyWildcardUser(u.user);
-      if (cat.level === 'critical') {
-        push({
-          type: 'wildcard_critical', priority: 'P0', groupKey: `wildcard_user:${u.user}`,
-          description: `存在 host=% 的最高危用户：${u.user}（${cat.reason}）`,
-          node: nodeLabel(n),
-          action: '立即收紧：限制为内网网段或固定 IP；至少删除 \'@\'%\' 项',
-          sql: `-- 示例：\n-- 仅保留 localhost / 内网\nDROP USER '${u.user}'@'%';\nCREATE USER '${u.user}'@'10.0.0.0/255.0.0.0' IDENTIFIED BY '<原密码>';\nGRANT <原权限> ON *.* TO '${u.user}'@'10.0.0.0/255.0.0.0';`,
-          scope: 'cluster',
-        });
-      } else if (cat.level === 'high') {
-        push({
-          type: 'wildcard_high', priority: 'P1', groupKey: `wildcard_user:${u.user}`,
-          description: `存在 host=% 的高风险用户：${u.user}（${cat.reason}）`,
-          node: nodeLabel(n),
-          action: '限制到必要的主机/网段',
-          scope: 'cluster',
-        });
-      } else if (cat.level === 'medium') {
-        push({
-          type: 'wildcard_medium', priority: 'P2', groupKey: `wildcard_user:${u.user}`,
-          description: `存在 host=% 的业务用户：${u.user}（${cat.reason}）`,
-          node: nodeLabel(n),
-          action: '若业务来源固定，建议限制到具体网段以缩小攻击面',
-          scope: 'cluster',
-        });
-      }
+      if (byLevel[cat.level]) byLevel[cat.level].push({ user: u.user, reason: cat.reason });
+    }
+    const userList = (arr) => arr.map(x => x.user).join('、');
+    const sampleReason = (arr) => arr[0]?.reason || '';
+
+    if (byLevel.critical.length > 0) {
+      const list = byLevel.critical;
+      // root 类账号通常只有 1 个，但保留聚合格式以备多账号场景
+      const desc = list.length === 1
+        ? `存在 host=% 的最高危用户：${list[0].user}（${list[0].reason}）`
+        : `存在 host=% 的最高危用户 ${list.length} 个：${userList(list)}（${sampleReason(list)}）`;
+      push({
+        type: 'wildcard_critical',
+        priority: 'P0',
+        groupKey: `wildcard_critical:${n.ip}`,
+        description: desc,
+        node: nodeLabel(n),
+        action: '立即收紧：限制为内网网段或固定 IP；至少删除 \'@\'%\' 项',
+        sql: list.map(x => `DROP USER '${x.user}'@'%';\nCREATE USER '${x.user}'@'10.0.0.0/255.0.0.0' IDENTIFIED BY '<原密码>';\nGRANT <原权限> ON *.* TO '${x.user}'@'10.0.0.0/255.0.0.0';`).join('\n-- ----\n'),
+        scope: 'cluster',
+        affectedUsers: list.map(x => x.user),
+      });
+    }
+    if (byLevel.high.length > 0) {
+      const list = byLevel.high;
+      const desc = list.length === 1
+        ? `存在 host=% 的高风险用户：${list[0].user}（${list[0].reason}）`
+        : `存在 host=% 的高风险用户 ${list.length} 个：${userList(list)}（${sampleReason(list)}）`;
+      push({
+        type: 'wildcard_high',
+        priority: 'P1',
+        groupKey: `wildcard_high:${n.ip}`,
+        description: desc,
+        node: nodeLabel(n),
+        action: '限制到必要的主机/网段',
+        scope: 'cluster',
+        affectedUsers: list.map(x => x.user),
+      });
+    }
+    if (byLevel.medium.length > 0) {
+      const list = byLevel.medium;
+      const desc = list.length === 1
+        ? `存在 host=% 的业务用户：${list[0].user}（${list[0].reason}）`
+        : `存在 host=% 的业务用户 ${list.length} 个：${userList(list)}（${sampleReason(list)}）`;
+      push({
+        type: 'wildcard_medium',
+        priority: 'P2',
+        groupKey: `wildcard_medium:${n.ip}`,
+        description: desc,
+        node: nodeLabel(n),
+        action: '若业务来源固定，建议限制到具体网段以缩小攻击面',
+        scope: 'cluster',
+        affectedUsers: list.map(x => x.user),
+      });
     }
 
     // ----- lower_case_table_names = 0 on Linux -----
