@@ -1863,16 +1863,46 @@ function chapterSecurityCompliance(data) {
   out.push(emptyLine());
 
   out.push(h2('16.5 常见合规框架对照'));
+  // 评审 #15 (v4.4)：v4.3 只显示「满足/不满足」状态，未说明缺什么；
+  // 增加「关键缺失项」列，让 DBA 看完直接知道下一步要修什么。
+  const itemPassed = id => sa.items.find(i => i.id === id)?.status === 'PASS';
+  const collectMissing = (idList) => idList.filter(id => !itemPassed(id));
+  const labelOf = id => ({
+    strong_password_policy: '密码强度策略',
+    audit_log: '审计日志（audit plugin）',
+    innodb_encryption: 'InnoDB at-rest 加密',
+    tls_enabled: 'TLS/SSL 连接加密',
+    root_remote: 'root 远程登录限制',
+    weak_password: '弱口令账号',
+    user_with_grant: '高权限授予限制',
+  })[id] || id;
+  const fmtMissing = (idList) => {
+    const miss = collectMissing(idList);
+    return miss.length === 0 ? '—' : miss.map(labelOf).join('、');
+  };
+
+  const dengbaoIds = ['strong_password_policy', 'audit_log'];
+  const pciIds = ['innodb_encryption', 'tls_enabled', 'audit_log'];
+  const gdprIds = ['audit_log'];
+
+  const statusOf = (idList, partialOk = false) => {
+    const miss = collectMissing(idList);
+    if (miss.length === 0) return '✅ 满足';
+    if (partialOk && miss.length < idList.length) return '⚠️ 部分满足';
+    return '❌ 不满足';
+  };
+
   out.push(makeTable(
-    ['框架', '关键要求', '当前状态'],
+    ['框架', '关键要求', '当前状态', '关键缺失项'],
     [
-      ['等保 2.0 三级', '强密码 + 审计日志 + 操作可追溯', sa.items.find(i => i.id === 'strong_password_policy')?.status === 'PASS' && sa.items.find(i => i.id === 'audit_log')?.status === 'PASS' ? '✅ 满足' : '❌ 不满足'],
-      ['PCI DSS', '数据加密（at rest + transit） + 最小权限', sa.items.find(i => i.id === 'innodb_encryption')?.status === 'PASS' && sa.items.find(i => i.id === 'tls_enabled')?.status === 'PASS' ? '✅ 满足' : '⚠️ 部分满足'],
-      ['GDPR', '数据可删除 + 访问审计', sa.items.find(i => i.id === 'audit_log')?.status === 'PASS' ? '⚠️ 部分满足' : '❌ 不满足'],
-      ['SOX', '变更审计 + 职责分离', '⚠️ 需结合流程评估'],
+      ['等保 2.0 三级', '强密码 + 审计日志 + 操作可追溯', statusOf(dengbaoIds, false), fmtMissing(dengbaoIds)],
+      ['PCI DSS', '数据加密（at rest + transit） + 审计', statusOf(pciIds, true), fmtMissing(pciIds)],
+      ['GDPR', '数据可删除 + 访问审计', statusOf(gdprIds, true), fmtMissing(gdprIds)],
+      ['SOX', '变更审计 + 职责分离', '⚠️ 需结合流程评估', '审计日志（如未启用）、变更审批流程（DBA 手工评估）'],
     ],
     '主流合规框架对照',
   ));
+  out.push(noteParagraph('「关键缺失项」基于 16.2 检查项的 PASS/FAIL 状态自动汇总；如已在外部 KMS / 应用层实现等效控制，可在评估时人工排除。'));
 
   return out;
 }
