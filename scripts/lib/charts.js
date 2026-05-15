@@ -285,19 +285,48 @@ function radar(dims, opts = {}) {
 // ============== MySQL 复制拓扑图 ==============
 function topology(nodes, opts = {}) {
   const W = opts.width || 620;
-  const H = opts.height || Math.max(220, 120 + Math.max(0, nodes.length - 1) * 42);
   const primary = nodes.find(n => n.role === 'primary') || nodes[0];
   const replicas = nodes.filter(n => n !== primary);
   const title = opts.title ? `<text x="${W/2}" y="24" text-anchor="middle" font-size="16" font-weight="bold" fill="${COLORS.primary}">${escapeXml(opts.title)}</text>` : '';
-  const px = 150;
-  const py = H / 2;
-  const rx = W - 190;
-  const startY = H / 2 - ((replicas.length - 1) * 42) / 2;
+
+  const roleLabel = (n) => {
+    const r = n?.role;
+    if (r === 'primary') return '主库';
+    if (r === 'dr') return '灾备';
+    if (r && /^slave/.test(r)) return '从库';
+    return '未知';
+  };
 
   const nodeBox = (x, y, node, role, color) => `
 <rect x="${x - 95}" y="${y - 26}" width="190" height="52" rx="8" fill="${color}" stroke="${COLORS.primary}" stroke-width="1.5"/>
 <text x="${x}" y="${y - 4}" text-anchor="middle" font-size="13" font-weight="bold" fill="#FFFFFF">${escapeXml(node.ip || '-')}</text>
 <text x="${x}" y="${y + 16}" text-anchor="middle" font-size="11" fill="#FFFFFF">${escapeXml(role)} · server_id=${escapeXml(node.variables?.server_id || '-')}</text>`;
+
+  // v4.5：单节点拓扑 — 居中展示单个节点 + "单节点 / 未配置主从复制" 副标题
+  if (nodes.length === 1) {
+    const H = opts.height || 180;
+    const cx = W / 2;
+    const cy = H / 2 + 10;
+    const selfRefHint = primary?.replication?.selfReferencingSlaveResidue
+      ? `<text x="${cx}" y="${cy + 50}" text-anchor="middle" font-size="11" fill="#C00000">⚠️ 存在 SHOW SLAVE STATUS 残留（Master_Host 指向自身），建议 RESET SLAVE ALL</text>`
+      : '';
+    const subtitle = primary?.replication?.isSlave
+      ? `复制角色未配置或异常`
+      : `单节点 · 未配置主从复制（或仅采集到主库）`;
+    const body = `
+${title}
+${nodeBox(cx, cy, primary || {}, roleLabel(primary), COLORS.primary)}
+<text x="${cx}" y="${cy + 35}" text-anchor="middle" font-size="12" fill="${COLORS.muted}">${escapeXml(subtitle)}</text>
+${selfRefHint}`;
+    return svgWrap(W, H, body);
+  }
+
+  // 多节点拓扑：主库居左，所有非主库节点居右
+  const H = opts.height || Math.max(220, 120 + Math.max(0, replicas.length - 1) * 42);
+  const px = 150;
+  const py = H / 2;
+  const rx = W - 190;
+  const startY = H / 2 - ((replicas.length - 1) * 42) / 2;
 
   const arrows = replicas.map((n, i) => {
     const y = startY + i * 42;
@@ -306,18 +335,18 @@ function topology(nodes, opts = {}) {
 <text x="${(px + rx) / 2}" y="${y - 6}" text-anchor="middle" font-size="10" fill="${COLORS.muted}">async replication</text>`;
   }).join('');
 
-  const replicaBoxes = replicas.map((n, i) => nodeBox(rx, startY + i * 42, n, '从库', COLORS.secondary)).join('');
-  const empty = replicas.length === 0
-    ? `<text x="${rx}" y="${py}" text-anchor="middle" font-size="12" fill="${COLORS.muted}">未识别从库</text>`
-    : '';
+  const replicaBoxes = replicas.map((n, i) => {
+    // v4.5：使用每个节点真实角色（dr/slave/未知），而不是统一标为「从库」
+    const color = n.role === 'dr' ? '#8E44AD' : COLORS.secondary;
+    return nodeBox(rx, startY + i * 42, n, roleLabel(n), color);
+  }).join('');
 
   const body = `
 <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="${COLORS.secondary}"/></marker></defs>
 ${title}
 ${nodeBox(px, py, primary || {}, '主库', COLORS.primary)}
 ${arrows}
-${replicaBoxes}
-${empty}`;
+${replicaBoxes}`;
   return svgWrap(W, H, body);
 }
 

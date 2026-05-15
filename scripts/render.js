@@ -622,14 +622,18 @@ function chapterSummary(data) {
 }
 
 function chapterServers(data) {
-  const out = [h1('二、服务器与拓扑概况'), h2('2.1 集群拓扑')];
-  out.push(para(`本集群采用「${data.cluster.topology}」结构，节点角色及基础配置如下：`));
+  const isSingleNode = data.nodes.length === 1;
+  // v4.5：单节点报告章节标题改为"节点拓扑"，避免"集群"造成误导
+  const out = [h1('二、服务器与拓扑概况'), h2(isSingleNode ? '2.1 节点拓扑' : '2.1 集群拓扑')];
+  out.push(para(isSingleNode
+    ? `本次仅采集到单个节点（${data.cluster.topology}），节点角色及基础配置如下：`
+    : `本集群采用「${data.cluster.topology}」结构，节点角色及基础配置如下：`));
   out.push(emptyLine());
   if (charts) {
-    out.push(para([{ text: 'MySQL 复制拓扑图', bold: true, color: COLOR.secondary }]));
-    const h = Math.max(220, 120 + (data.nodes.length - 1) * 42);
+    out.push(para([{ text: isSingleNode ? '节点拓扑图' : 'MySQL 复制拓扑图', bold: true, color: COLOR.secondary }]));
+    const h = isSingleNode ? 180 : Math.max(220, 120 + (data.nodes.length - 1) * 42);
     const p = chartParagraph(() => charts.topology(data.nodes, {
-      title: 'MySQL 复制拓扑图',
+      title: isSingleNode ? '节点拓扑图' : 'MySQL 复制拓扑图',
       width: 620,
       height: h,
     }), { width: 620, height: h });
@@ -638,15 +642,34 @@ function chapterServers(data) {
 
   out.push(makeTable(
     ['节点 IP', '主机名', '角色', 'MySQL 版本', 'server_id', 'Uptime'],
-    data.nodes.map(n => [
-      n.ip, n.hostname || '-',
-      roleLabel(n.role),
-      n.mysqlVersion || '-',
-      n.variables?.server_id || '-',
-      n.uptimeText || '-',
-    ]),
-    '集群节点信息',
+    data.nodes.map(n => {
+      // v4.5：needsConfirmation 角色加 🔍 提示
+      const confirm = n.roleInference?.needsConfirmation;
+      const roleCell = confirm
+        ? { text: `${roleLabel(n.role)} 🔍`, color: 'BF8F00', bold: true }
+        : roleLabel(n.role);
+      return [
+        n.ip, n.hostname || '-',
+        roleCell,
+        n.mysqlVersion || '-',
+        n.variables?.server_id || '-',
+        n.uptimeText || '-',
+      ];
+    }),
+    isSingleNode ? '节点信息' : '集群节点信息',
   ));
+  // v4.5：角色推断来源说明（标 needsConfirmation 的节点）
+  const confirmNodes = data.nodes.filter(n => n.roleInference?.needsConfirmation);
+  if (confirmNodes.length > 0) {
+    const lines = confirmNodes.map(n => {
+      const src = n.roleInference.source;
+      const reason = src === 'standalone_readonly' ? '只读主库（read_only=1 + log_bin 启用）'
+        : src === 'single_node_fallback' ? '单节点采集兜底（建议确认）'
+        : src;
+      return `${n.ip}（${roleLabel(n.role)}）：${reason}`;
+    });
+    out.push(noteParagraph(`🔍 角色需人工确认：${lines.join('；')}。`));
+  }
   out.push(emptyLine());
 
   out.push(h2('2.2 操作系统与硬件'));
@@ -1420,16 +1443,32 @@ function chapterReplication(data) {
   const out = [h1('十二、主从复制状态'), h2('12.1 复制拓扑')];
   const primary = data.nodes.find(n => n.role === 'primary');
   const gtid = primary?.variables?.gtid_mode || '-';
+  // v4.5：真从库 = 实际在复制（不是 self-ref 残留）
+  const realSlaves = data.nodes.filter(n => n.replication?.isSlave);
+  const isSingleNode = data.nodes.length === 1;
+  const hasNoRealSlaves = realSlaves.length === 0;
+
   out.push(para(`集群采用 ${data.cluster.topology}，GTID 模式：${gtid}。`));
   if (primary?.replication?.slaveIps?.length) {
     out.push(para(`主库 ${primary.ip} 检测到从库 IP：${primary.replication.slaveIps.join('、')}`));
   }
+  // v4.5：单节点 / 仅采集主库场景的明确提示，避免空表误导客户
+  if (isSingleNode) {
+    out.push(noteParagraph('本次仅采集到单个节点（未提供从库 txt）。如该集群实际配置了主从复制，建议补充采集从库数据后重新出报告；如本就是独立单实例，可忽略本章节中与"从库"相关的小节。'));
+  } else if (hasNoRealSlaves) {
+    out.push(noteParagraph('本次采集的所有节点均不是从库（未发现真实复制关系）。如该集群预期存在主从复制，请确认采集是否完整。'));
+  }
+  // v4.5：self-referencing slave 残留提示
+  const selfRefNodes = data.nodes.filter(n => n.replication?.selfReferencingSlaveResidue);
+  if (selfRefNodes.length > 0) {
+    out.push(noteParagraph(`检测到 ${selfRefNodes.length} 个节点存在 SHOW SLAVE STATUS 残留（Master_Host 指向本机自身）：${selfRefNodes.map(n => n.ip).join('、')}。这通常是历史从库被提升为主后未执行 RESET SLAVE ALL 留下的元数据，不影响主库职能但建议清理。`));
+  }
   out.push(emptyLine());
 
-  out.push(h2('12.2 从库复制状态'));
-  const slaveRows = data.nodes
-    .filter(n => n.replication?.isSlave)
-    .map(n => {
+  // v4.5：只有真从库存在时才渲染 12.2 从库状态表
+  if (!hasNoRealSlaves) {
+    out.push(h2('12.2 从库复制状态'));
+    const slaveRows = realSlaves.map(n => {
       const s = n.replication.status || {};
       return [
         n.ip, s.masterHost || '-',
@@ -1440,12 +1479,26 @@ function chapterReplication(data) {
         s.secondsBehindMaster != null ? `${s.secondsBehindMaster} s` : '-',
       ];
     });
-  out.push(makeTable(
-    ['从库 IP', '主库地址', 'IO 线程', 'SQL 线程', '主库 binlog', '已读位置', '延迟'],
-    slaveRows,
-    '从库复制状态',
-  ));
-  out.push(emptyLine());
+    out.push(makeTable(
+      ['从库 IP', '主库地址', 'IO 线程', 'SQL 线程', '主库 binlog', '已读位置', '延迟'],
+      slaveRows,
+      '从库复制状态',
+    ));
+    out.push(emptyLine());
+  } else if (selfRefNodes.length > 0) {
+    // 即使没真从库，self-ref 残留细节也单独列出来便于 DBA 清理
+    out.push(h2('12.2 SHOW SLAVE STATUS 残留详情'));
+    const residueRows = selfRefNodes.map(n => {
+      const r = n.replication.selfReferencingSlaveResidue;
+      return [n.ip, r.masterHost, r.slaveIoRunning || '-', r.slaveSqlRunning || '-', 'STOP SLAVE; RESET SLAVE ALL;'];
+    });
+    out.push(makeTable(
+      ['节点 IP', 'Master_Host (指向自身)', 'IO 线程', 'SQL 线程', '建议清理 SQL'],
+      residueRows,
+      'self-referencing slave 残留',
+    ));
+    out.push(emptyLine());
+  }
 
   out.push(h2('12.3 关键复制参数'));
   const keys = [
