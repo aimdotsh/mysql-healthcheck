@@ -913,6 +913,32 @@ function parseReplication(text) {
   return result;
 }
 
+// v4.5 评审：节点 IP/hostname 已知后，对 self-referencing slave（残留配置）做后处理
+// 场景：MySQL 节点曾经是从库，后来被提升为主，但 STOP SLAVE / RESET SLAVE ALL 未执行，
+// SHOW SLAVE STATUS 仍返回 Master_Host = 本机 IP（或本机 hostname），实际并没有真的在做复制。
+// 此前 parseReplication 把 isSlave=true，导致 normalizeNodeRoles 把它错标成 'slave'。
+// 修复：识别后把 isSlave=false 并保留 selfReferencingSlaveResidue 标识，供后续告警引用。
+function refineSelfReferencingSlave(node) {
+  if (!node.replication?.isSlave) return;
+  const masterHost = node.replication.status?.masterHost || '';
+  if (!masterHost) return;
+  const selfIp = node.ip || '';
+  const selfHostname = (node.hostname || '').toLowerCase();
+  const masterLower = masterHost.toLowerCase();
+  const isSelf =
+    (selfIp && masterHost === selfIp) ||
+    (selfHostname && (masterLower === selfHostname || masterLower === selfHostname.split('.')[0])) ||
+    masterLower === 'localhost' || masterLower === '127.0.0.1' || masterLower === '::1';
+  if (!isSelf) return;
+  node.replication.isSlave = false;
+  node.replication.selfReferencingSlaveResidue = {
+    masterHost,
+    slaveIoRunning: node.replication.status?.slaveIoRunning || null,
+    slaveSqlRunning: node.replication.status?.slaveSqlRunning || null,
+    hint: '检测到 SHOW SLAVE STATUS 残留指向本机自身，可能是历史从库提升为主后未执行 RESET SLAVE ALL；不视为真从库。',
+  };
+}
+
 function inferRoleFromHostname(hostname) {
   return canonicalRole(hostname);
 }
@@ -1074,12 +1100,40 @@ function inferPrimaryFromConnections(node) {
   });
 }
 
+// v4.5：standalone primary 兑底识别 — 用于单节点采集 / 主库无从库连接的场景
+// 优先级（从强到弱）：
+//   ① 有 Binlog Dump 线程（已被 inferPrimaryFromConnections 覆盖）
+//   ② Slave_UUID 表非空（同上）
+//   ③ self-referencing slave 残留（已 refineSelfReferencingSlave 标记）
+//   ④ log_bin 启用 + 无远端 Master_Host + 不是 isSlave  → standalone primary
+//   ⑤ read_only=0 + 无远端 Master_Host                  → standalone primary (无 binlog 也算)
+//   ⑥ read_only=1 + 无远端 Master_Host + log_bin 启用  → standalone primary（只读主，加 needsConfirmation）
+function inferStandalonePrimary(node) {
+  if (node.replication?.isSlave) return null;   // 真从库直接退出
+  const v = node.variables || {};
+  const hasLogBin = !!(v.log_bin && v.log_bin !== 'OFF' && v.log_bin !== '0');
+  const readOnly = String(v.read_only ?? v.super_read_only ?? '').trim();
+  // ④ + ⑤
+  if (readOnly === '0' || readOnly === 'OFF') return { role: 'primary', source: 'standalone_rw' };
+  // ⑥ 只读但有 binlog → 只读主（zabbix/报表库典型）
+  if ((readOnly === '1' || readOnly === 'ON') && hasLogBin) {
+    return { role: 'primary', source: 'standalone_readonly', needsConfirmation: true };
+  }
+  // 其它情况让上层兜底
+  return null;
+}
+
 function normalizeNodeRoles(nodes) {
   for (const node of nodes) {
     // 评审 #2 (v4.4)：优先识别 dr 灾备角色（基于 hostname / 文件名），
     // 否则后续的 isSlave 判断会把 dr 误标为 'slave'，导致第二章 / 第十二章渲染错误。
     if (isDrNode(node)) {
       node.role = 'dr';
+      continue;
+    }
+    // v4.5：有 Binlog Dump / connected slaves / slaveIps 等强信号 → primary（即使存在 self-loop 残留）
+    if (inferPrimaryFromConnections(node)) {
+      node.role = 'primary';
       continue;
     }
     if (node.role && node.role !== 'unknown') {
@@ -1093,6 +1147,16 @@ function normalizeNodeRoles(nodes) {
     const hostRole = inferRoleFromHostname(node.hostname);
     if (hostRole) {
       node.role = hostRole;
+      continue;
+    }
+    // v4.5：兑底识别 standalone primary（read_only + log_bin 信号）
+    const standalone = inferStandalonePrimary(node);
+    if (standalone) {
+      node.role = standalone.role;
+      node.roleInference = {
+        source: standalone.source,
+        needsConfirmation: !!standalone.needsConfirmation,
+      };
       continue;
     }
     node.role = 'unknown';
@@ -1113,6 +1177,12 @@ function normalizeNodeRoles(nodes) {
         }
       }
     }
+  }
+
+  // v4.5：单节点采集场景，确保 role 不是 unknown（兜底为 primary 并标 needsConfirmation）
+  if (nodes.length === 1 && nodes[0].role === 'unknown') {
+    nodes[0].role = 'primary';
+    nodes[0].roleInference = { source: 'single_node_fallback', needsConfirmation: true };
   }
 }
 
@@ -1203,6 +1273,8 @@ function main() {
     };
     if (entry.txt) Object.assign(data, parseTxt(entry.txt));
     if (entry.html) Object.assign(data, parseHtml(entry.html));
+    // v4.5：在 ip / hostname 都已知后，对 self-referencing slave 残留做后处理（必须在 normalizeNodeRoles 前）
+    refineSelfReferencingSlave(data);
     data.role = canonicalRole(data.role) || inferRoleFromHostname(data.hostname) || data.role || 'unknown';
     nodes.push(data);
   }
@@ -1929,14 +2001,24 @@ function analyzeIssues(nodes) {
       });
     }
 
-    // 角色一致性
+    // 角色一致性 — v4.5：standalone_readonly 推断的主库降级为 P3 + needsConfirmation
+    // （常见于 zabbix 监控库 / 报表只读库 / 备机配置等"deliberate read-only primary"场景）
     if (n.role === 'primary' && v.read_only === '1') {
+      const inferredReadOnly = n.roleInference?.source === 'standalone_readonly';
       push({
-        type: 'master_readonly', priority: 'P1', groupKey: `master_readonly:${n.ip}`,
-        description: `主库 read_only = 1（无法写入）`,
-        node: nodeLabel(n), action: '核实是否被错误置为只读',
+        type: 'master_readonly',
+        priority: inferredReadOnly ? 'P3' : 'P1',
+        groupKey: `master_readonly:${n.ip}`,
+        description: inferredReadOnly
+          ? `节点 ${n.ip} 被推断为「只读主库」（read_only = 1 + log_bin 启用，常见于 zabbix/监控/报表/备机场景）`
+          : `主库 read_only = 1（无法写入）`,
+        node: nodeLabel(n),
+        action: inferredReadOnly
+          ? '若属设计预留（zabbix / 报表只读库 / 备机），请确认并文档化；如非预期，关闭 read_only'
+          : '核实是否被错误置为只读',
         sql: 'SET GLOBAL read_only = 0; SET GLOBAL super_read_only = 0;',
         scope: 'node',
+        needsConfirmation: inferredReadOnly,
       });
     }
     if (n.role !== 'primary' && n.replication?.isSlave && v.read_only === '0') {
@@ -1956,6 +2038,21 @@ function analyzeIssues(nodes) {
         sql: isDr ? null : 'SET GLOBAL read_only = 1; SET GLOBAL super_read_only = 1;',
         scope: 'node',
         needsConfirmation: isDr,
+      });
+    }
+
+    // v4.5：self-referencing slave 残留（Master_Host = 本机）— 提示清理
+    if (n.replication?.selfReferencingSlaveResidue) {
+      const residue = n.replication.selfReferencingSlaveResidue;
+      push({
+        type: 'self_ref_slave_residue',
+        priority: 'P2',
+        groupKey: `self_ref_slave_residue:${n.ip}`,
+        description: `节点 ${n.ip} 存在 SHOW SLAVE STATUS 残留（Master_Host 指向自身 ${residue.masterHost}），通常是历史从库被提升为主后未执行 RESET SLAVE ALL`,
+        node: nodeLabel(n),
+        action: '执行 STOP SLAVE; RESET SLAVE ALL; 清理残留复制元数据，避免 SHOW SLAVE STATUS 输出误导监控/巡检工具',
+        sql: 'STOP SLAVE;\nRESET SLAVE ALL;',
+        scope: 'node',
       });
     }
 
