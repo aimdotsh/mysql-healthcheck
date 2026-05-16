@@ -4,6 +4,54 @@
 
 ---
 
+## [4.7.0] - 2026-05-16
+
+**自动填充 TOC（导出即带完整目录）**。v4.6.1 通过剥离 fldChar dirty 消除了 Word 打开时的弹窗，代价是 TOC 首次打开为空，用户需手动右键 → 更新域。v4.7 在导出阶段调用本机 LibreOffice headless 自动刷新 TOC，让用户**打开 docx 立即看到含真实页码 + 超链接的完整目录**。如本机无 LibreOffice，自动降级回 v4.6.1 行为（TOC 空 + 无弹窗）。
+
+### 🆕 新功能
+
+- **`detectLibreOffice()`**：按优先级检测本机 LibreOffice 二进制路径
+  - macOS GUI: `/Applications/LibreOffice.app/Contents/MacOS/soffice`
+  - Apple Silicon Homebrew: `/opt/homebrew/bin/soffice`
+  - Linux: `/usr/bin/soffice` / `/usr/local/bin/soffice` / `/opt/libreoffice/program/soffice`
+  - 兜底：`which soffice`
+  - 环境变量覆盖：`SOFFICE` 或 `LIBREOFFICE`
+- **`refreshFieldsViaLibreOffice()`**：调用 `soffice --headless --convert-to docx` 让 LO 加载 docx → 检测到 `<w:updateFields/>` 后刷新 TOC（生成真实页码 + 内嵌 hyperlink）→ 保存。带 30 秒超时 + 用户配置隔离（`-env:UserInstallation`）。
+- **`verifyTocPopulated()`**：刷新后验证 fldChar 不再含 `dirty="true"` 且 SDT 内含 `<w:hyperlink w:anchor>` 或 `PAGEREF`，避免静默失败。
+- **CLI 新增**：
+  - `--no-toc-refresh`：强制跳过 LibreOffice 刷新，等同 v4.6.1 行为
+  - `--soffice <path>`：手动指定 LibreOffice 二进制路径（也支持 `SOFFICE` / `LIBREOFFICE` 环境变量）
+
+### 📋 降级行为矩阵
+
+| 用户机器 | --no-toc-refresh | 结果 |
+|---|---|---|
+| 装了 LibreOffice | 否 | ✓ TOC 含真实页码 + 超链接，打开无弹窗 |
+| 装了 LibreOffice | 是 | ⊘ TOC 空，stripDirtyFields 清除 dirty，无弹窗 |
+| 未装 LibreOffice | - | ⓘ 同 stripDirtyFields 行为，TOC 空但无弹窗，提示安装方法 |
+| LibreOffice 调用失败/超时/路径无效 | - | ⚠ 自动回退到 stripDirtyFields，告知用户失败原因 |
+
+**核心保证**：无论何种情况，**docx 文件总能正常生成且 Word 打开时不弹窗**。LibreOffice 仅作为锦上添花的页码生成器。
+
+### 📦 安装 LibreOffice（可选）
+
+- macOS：`brew install --cask libreoffice`
+- Ubuntu/Debian：`sudo apt install libreoffice`
+- 首次打开 LO 时 macOS 可能弹「来自互联网的应用」确认，在系统设置中允许即可
+
+### 🎨 目录页提示文案
+
+调整为同时覆盖两种场景：「本目录在导出时已自动刷新（如检测到 LibreOffice）。若 TOC 仍显示为空，请在目录上右键 → 更新域 → 更新整个目录。」
+
+### 🧪 验证
+
+- 未装 LibreOffice 环境：8 个样本报告全部正常生成，TOC 空但无弹窗，控制台打印明确提示 + 安装建议
+- 装了 LibreOffice 后：TOC 应含完整章节 + 子节 + 真实页码 + 可点击超链接
+- 失败兼容：传 `--soffice /nonexistent/path` 模拟失败 → 自动降级 + 打印警告
+- 回归测试 `npm test` 全绿
+
+---
+
 ## [4.6.1] - 2026-05-16
 
 **v4.6 Word 弹窗修复打补丁**。v4.6 通过 `features.updateFields=true` 期望 Word 静默更新 TOC，但实测在部分 Word/WPS 版本下仍然弹出「This document contains fields that may refer to other files. Do you want to update the fields?」。
