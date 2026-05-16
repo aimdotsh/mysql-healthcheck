@@ -930,31 +930,34 @@ function chapterDatabases(data) {
 }
 
 function chapterParams(data) {
+  // v4.8：单节点场景下 "主从一致"/"主 0/从 1"/"各节点唯一" 等多节点措辞需要替换
+  const isSingleNode = data.cluster.nodeCount === 1;
   const out = [h1('五、关键配置参数对比'), h2('5.1 核心参数')];
-  out.push(para('全节点关键参数对比（巡检时实际值）：'));
+  out.push(para(isSingleNode ? '本节点关键参数（巡检时实际值）：' : '全节点关键参数对比（巡检时实际值）：'));
   out.push(emptyLine());
 
+  // 默认建议（多节点）→ 单节点对应措辞
   const keys = [
-    ['MySQL 版本', 'mysqlVersion', '主从一致'],
-    ['server_id', 'server_id', '各节点唯一'],
+    ['MySQL 版本', 'mysqlVersion',                isSingleNode ? '-'                      : '主从一致'],
+    ['server_id', 'server_id',                    isSingleNode ? '本节点唯一标识'         : '各节点唯一'],
     ['innodb_buffer_pool_size (MB)', 'innodb_buffer_pool_size_in_mb', '建议为内存的 50-70%'],
     ['innodb_buffer_pool_instances', 'innodb_buffer_pool_instances', '建议 ≥8'],
     ['innodb_log_file_size (MB)', 'innodb_log_file_size_in_mb', '建议 ≥512MB'],
     ['innodb_flush_log_at_trx_commit', 'innodb_flush_log_at_trx_commit', '主库建议 1'],
-    ['sync_binlog', 'sync_binlog', '主库建议 1'],
-    ['max_connections', 'max_connections', '按业务并发设定'],
-    ['binlog_format', 'binlog_format', '建议 ROW'],
-    ['gtid_mode', 'gtid_mode', '建议 ON'],
+    ['sync_binlog', 'sync_binlog',                '主库建议 1'],
+    ['max_connections', 'max_connections',        '按业务并发设定'],
+    ['binlog_format', 'binlog_format',            '建议 ROW'],
+    ['gtid_mode', 'gtid_mode',                    '建议 ON'],
     ['enforce_gtid_consistency', 'enforce_gtid_consistency', '建议 ON'],
-    ['read_only', 'read_only', '主 0 / 从 1'],
-    ['expire_logs_days', 'expire_logs_days', '建议 7-15 天'],
-    ['long_query_time', 'long_query_time', '建议 1s'],
-    ['slow_query_log', 'slow_query_log', '建议 ON'],
+    ['read_only', 'read_only',                    isSingleNode ? '主库建议 0（除非只读主场景）' : '主 0 / 从 1'],
+    ['expire_logs_days', 'expire_logs_days',      '建议 7-15 天'],
+    ['long_query_time', 'long_query_time',        '建议 1s'],
+    ['slow_query_log', 'slow_query_log',          '建议 ON'],
     ['transaction_isolation', 'transaction_isolation', '建议 READ-COMMITTED'],
     ['innodb_flush_method', 'innodb_flush_method', '建议 O_DIRECT'],
     ['innodb_file_per_table', 'innodb_file_per_table', '建议 1'],
-    ['open_files_limit', 'open_files_limit', '建议 ≥65535'],
-    ['table_open_cache', 'table_open_cache', '建议 4000-8000'],
+    ['open_files_limit', 'open_files_limit',      '建议 ≥65535'],
+    ['table_open_cache', 'table_open_cache',      '建议 4000-8000'],
     ['default_storage_engine', 'default_storage_engine', 'InnoDB'],
   ];
 
@@ -973,30 +976,34 @@ function chapterParams(data) {
   out.push(makeTable(headers, rows, '核心配置参数对比'));
   out.push(emptyLine());
 
-  // 配置差异（带 ✅/❌ 自动判断）
+  // 配置差异（带 ✅/❌ 自动判断）— v4.8：单节点跳过节点间对比
   out.push(h2('5.2 参数差异分析'));
-  const judgments = data.paramJudgments || [];
-  if (judgments.length > 0) {
-    out.push(para('各节点间检测到以下参数差异，已自动标注是否需要统一：'));
-    out.push(emptyLine());
-    const jRows = judgments.map(j => [
-      j.key,
-      j.valueMap || j.unique.join(' / '),
-      j.ok ? '✅ 正常' : '❌ 需关注',
-      j.reason,
-    ]);
-    out.push(makeTable(
-      ['参数', '节点取值', '判断', '说明'],
-      jRows,
-      '参数差异判断',
-    ));
-    out.push(emptyLine());
-    const needFix = judgments.filter(j => !j.ok);
-    if (needFix.length > 0) {
-      out.push(para([{ text: `合计 ${needFix.length} 项需统一：`, bold: true }, { text: needFix.map(j => j.key).join('、') }]));
-    }
+  if (isSingleNode) {
+    out.push(para('本次仅采集单节点，不涉及节点间参数差异分析。如该实例属于主从集群，建议补充采集从库 txt 后重新出报告，以校验主从参数一致性。'));
   } else {
-    out.push(para('各节点核心参数完全一致。'));
+    const judgments = data.paramJudgments || [];
+    if (judgments.length > 0) {
+      out.push(para('各节点间检测到以下参数差异，已自动标注是否需要统一：'));
+      out.push(emptyLine());
+      const jRows = judgments.map(j => [
+        j.key,
+        j.valueMap || j.unique.join(' / '),
+        j.ok ? '✅ 正常' : '❌ 需关注',
+        j.reason,
+      ]);
+      out.push(makeTable(
+        ['参数', '节点取值', '判断', '说明'],
+        jRows,
+        '参数差异判断',
+      ));
+      out.push(emptyLine());
+      const needFix = judgments.filter(j => !j.ok);
+      if (needFix.length > 0) {
+        out.push(para([{ text: `合计 ${needFix.length} 项需统一：`, bold: true }, { text: needFix.map(j => j.key).join('、') }]));
+      }
+    } else {
+      out.push(para('各节点核心参数完全一致。'));
+    }
   }
 
   return out;
@@ -1402,7 +1409,7 @@ function chapterUsers(data) {
   ));
   out.push(emptyLine());
 
-  // host=% 用户按危险等级分组
+  // host=% 用户按危险等级分组（v4.8：每 (等级,原因) 聚合为 1 行，列出所有用户）
   out.push(h2('11.2 host=% 用户分级'));
   const wildcards = (primary.users || []).filter(u => u.host === '%');
   if (wildcards.length === 0) {
@@ -1417,40 +1424,71 @@ function chapterUsers(data) {
       if (/^ro|readonly/.test(u)) return { level: 'low', label: '🟢 低危', reason: '只读账号' };
       return { level: 'medium', label: '🟡 中危', reason: '业务账号' };
     };
-    const grouped = { critical: [], high: [], medium: [], low: [] };
+    // 按 (level, reason) 聚合：同等级 + 同原因的多个用户合并为一行
+    const groupKey = (c) => `${c.level}|${c.reason}`;
+    const groups = new Map();
     wildcards.forEach(u => {
       const c = classify(u.user);
-      grouped[c.level].push({ user: u.user, host: u.host, label: c.label, reason: c.reason });
+      const key = groupKey(c);
+      if (!groups.has(key)) groups.set(key, { level: c.level, label: c.label, reason: c.reason, users: [] });
+      groups.get(key).users.push(u.user);
     });
-    const rows = [];
-    for (const lvl of ['critical', 'high', 'medium', 'low']) {
-      for (const item of grouped[lvl]) {
-        rows.push([item.label, item.user, item.host, item.reason, lvl==='low'?'可保留':lvl==='medium'?'建议缩限网段':'立即收紧到具体 IP/网段']);
-      }
-    }
+    const lvlOrder = { critical: 0, high: 1, medium: 2, low: 3 };
+    const advice = (lvl) => lvl === 'low' ? '可保留' : lvl === 'medium' ? '建议缩限网段' : '立即收紧到具体 IP/网段';
+    const sortedGroups = [...groups.values()].sort((a, b) => lvlOrder[a.level] - lvlOrder[b.level]);
+    const rows = sortedGroups.map(g => [
+      g.label,
+      g.users.length === 1 ? g.users[0] : `${g.users.join('、')}（共 ${g.users.length} 个）`,
+      '%',
+      g.reason,
+      advice(g.level),
+    ]);
     out.push(makeTable(
       ['等级', '用户', '主机', '类型', '建议'],
       rows,
-      `host=% 用户清单（${wildcards.length} 个，按危险等级排序）`,
+      `host=% 用户清单（${wildcards.length} 个用户、${sortedGroups.length} 类，按危险等级排序）`,
     ));
     out.push(emptyLine());
 
-    const critCount = grouped.critical.length + grouped.high.length;
-    if (critCount > 0) {
+    // 高危/致命 警示行（仍然展示具体用户名以便修复）
+    const criticalUsers = sortedGroups.filter(g => g.level === 'critical' || g.level === 'high').flatMap(g => g.users);
+    if (criticalUsers.length > 0) {
       out.push(para([
-        { text: `⚠️ 必须立即收紧 ${critCount} 个高风险账号：`, bold: true, color: 'C00000' },
-        { text: [...grouped.critical, ...grouped.high].map(u => u.user).join('、') },
+        { text: `⚠️ 必须立即收紧 ${criticalUsers.length} 个高风险账号：`, bold: true, color: 'C00000' },
+        { text: criticalUsers.join('、') },
       ]));
     }
   }
   out.push(emptyLine());
 
+  // v4.8：11.3 安全建议 — 按实际情况条件渲染，避免「无 root@% 却建议 DROP root@%」之类无效告警
   out.push(h2('11.3 安全建议'));
-  out.push(bullet('立即清理 host=% 的 root / 管理员账号：DROP USER \'root\'@\'%\';'));
-  out.push(bullet('复制账号 repl 应限制为从库 IP 列表：CREATE USER \'repl\'@\'172.16.0.0/255.255.0.0\' ...'));
+  const criticalWildcards = wildcards.filter(u => /^root$/i.test(u.user) || /admin|dba|super/i.test(u.user));
+  const replWildcards = wildcards.filter(u => /^repl$/i.test(u.user) || /replic/i.test(u.user));
+  const backupWildcards = wildcards.filter(u => /backup|dump/i.test(u.user));
+  const isMySQL57 = /^5\.7/.test(primary.mysqlVersion || '');
+
+  if (criticalWildcards.length > 0) {
+    const sqls = criticalWildcards.map(u => `DROP USER '${u.user}'@'%';`).join(' ');
+    out.push(bullet(`立即清理 host=% 的 root / 管理员账号（${criticalWildcards.map(u => u.user).join('、')}）：${sqls}`));
+  }
+  if (replWildcards.length > 0) {
+    const name = replWildcards[0].user;
+    out.push(bullet(`复制账号 ${replWildcards.map(u => u.user).join('、')} 应限制为从库 IP 列表：CREATE USER '${name}'@'<slave_net/mask>' ...`));
+  }
+  if (backupWildcards.length > 0) {
+    out.push(bullet(`备份账号 ${backupWildcards.map(u => u.user).join('、')} 权限较广，应限制为执行备份的固定主机/网段`));
+  }
+  // 通用建议（始终展示）
   out.push(bullet('为业务账号设置 password_lifetime（强制定期改密）'));
-  out.push(bullet('MySQL 5.7 默认 mysql_native_password 插件，建议评估迁移到 caching_sha2_password'));
+  if (isMySQL57) {
+    out.push(bullet('MySQL 5.7 默认 mysql_native_password 插件，建议评估迁移到 caching_sha2_password'));
+  }
   out.push(bullet('定期审计权限，回收离职人员账号'));
+  // 如果没有任何 host=% 用户，给一句正面反馈
+  if (wildcards.length === 0) {
+    out.push(noteParagraph('本节点未发现 host=% 用户，账号策略整体合规。'));
+  }
   return out;
 }
 
