@@ -2127,9 +2127,12 @@ function buildDocument(data) {
   return new Document({
     creator: 'mysql-healthcheck v4.6',
     title: `${data.project} MySQL 数据库健康巡检报告`,
-    // v4.6：让 Word/WPS 打开时自动更新目录字段，避免弹出「是否更新字段」提示
-    // settings.xml 添加 <w:updateFields w:val="true"/>
-    features: { updateFields: true },
+    // v4.6.1：原本通过 features.updateFields=true 期望 Word 静默更新 TOC，但
+    // 实测在部分 Word/WPS 版本下反而触发「Do you want to update the fields」
+    // 弹窗。真正可靠的做法是 post-process：从 fldChar 上剥离 w:dirty="true"，
+    // 同时不在 settings.xml 写 updateFields。处理逻辑在主流程 Packer.toBuffer
+    // 之后 stripDirtyFields() 完成。
+    // （TOC 内容打开后默认为空，用户右键 → 更新域即可填充；已有提示段落引导。）
     styles: {
       default: { document: { run: { font: FONT, size: 22 } } },
       paragraphStyles: [
@@ -2280,10 +2283,30 @@ function checkPlaceholders(buf) {
   return [...new Set(matches)];
 }
 
+// v4.6.1：post-process — 从 word/document.xml 中剥离 fldChar 上的 w:dirty="true"
+// 原因：docx 库的 TableOfContents 硬编码 dirty=true，导致 Word/WPS 打开时弹出
+// 「是否更新字段」提示。剥离后字段不再标"待更新"，Word 不再询问；TOC 内容打开
+// 后为空，用户首次需在目录上右键 → 更新域 → 更新整个目录（已有提示段落引导）。
+async function stripDirtyFields(buf) {
+  const JSZip = require('jszip');
+  const zip = await JSZip.loadAsync(buf);
+  const docFile = zip.file('word/document.xml');
+  if (!docFile) return buf;
+  let xml = await docFile.async('string');
+  // 仅在 fldChar 元素上剥离 w:dirty 属性（不影响其它元素）
+  const before = xml;
+  xml = xml.replace(/<w:fldChar\s+([^/>]*?)\s+w:dirty="true"([^/>]*)\/?>/g, '<w:fldChar $1$2/>');
+  xml = xml.replace(/<w:fldChar\s+w:dirty="true"\s+([^/>]*)\/?>/g, '<w:fldChar $1/>');
+  if (xml === before) return buf;
+  zip.file('word/document.xml', xml);
+  return await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+}
+
 // ============== 主流程 ==============
 (async function main() {
   const doc = buildDocument(data);
-  const buf = await Packer.toBuffer(doc);
+  let buf = await Packer.toBuffer(doc);
+  buf = await stripDirtyFields(buf);
   fs.writeFileSync(outPath, buf);
 
   // 残留占位符校验：把 docx 当作 zip，解压 word/document.xml 后搜 {xxx}

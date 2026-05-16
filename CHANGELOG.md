@@ -4,6 +4,27 @@
 
 ---
 
+## [4.6.1] - 2026-05-16
+
+**v4.6 Word 弹窗修复打补丁**。v4.6 通过 `features.updateFields=true` 期望 Word 静默更新 TOC，但实测在部分 Word/WPS 版本下仍然弹出「This document contains fields that may refer to other files. Do you want to update the fields?」。
+
+### 🐛 修复
+
+- **真正可靠地消除 Word/WPS 弹窗**：从根上剥离 fldChar 的 `w:dirty="true"` 属性。流程：
+  1. `Packer.toBuffer(doc)` 得到 docx buffer
+  2. 用 `JSZip` 解压 buffer
+  3. 用正则把 `word/document.xml` 里 fldChar 上的 `w:dirty="true"` 全部剥离
+  4. 重新打包成 buffer 写盘
+- 同时移除 v4.6 的 `features.updateFields=true`（实测会触发弹窗，不是抑制）
+- TOC 内容打开后默认为空，用户首次需在目录上右键 → 更新域 → 更新整个目录。原有的提示段落已经引导。
+
+### 验证
+
+- `unzip -p ... word/document.xml | grep w:dirty` 返回 0 处 → 字段无 dirty 标识，Word 不再询问。
+- 回归测试 + 8 个单节点样本重生成全部正确。
+
+---
+
 ## [4.6.0] - 2026-05-16
 
 **报告体验打磨轮次**。基于 v4.5 单节点报告的用户实际查阅反馈，修复 4 个体验问题，并对单节点场景文案做整体打磨。
