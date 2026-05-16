@@ -1671,11 +1671,21 @@ function businessLongSessions(node) {
     const st = p.state || '';
     return /Waiting for master|Queueing master event|Slave has read all|Reading event from the relay log|Has read all relay log/i.test(st);
   };
+  // v4.7.2：排除 MySQL 内部守护线程（event_scheduler / event scheduler），它们的 Time
+  // 会等于 MySQL 进程 Uptime（数千万秒），但属于正常空闲守护，不是业务长事务。
+  const isInternalDaemon = (p) => {
+    const user = (p.user || '').toLowerCase();
+    const state = (p.state || '').toLowerCase();
+    if (user === 'event_scheduler' || /event[_\s]?scheduler/.test(user)) return true;
+    if (/waiting on empty queue|waiting for next activation/.test(state)) return true;
+    return false;
+  };
   return (node.processlist || [])
     .filter(p => Number(p.time) >= 60)
     .filter(p => (p.command || '').toLowerCase() !== 'sleep')
     .filter(p => !/binlog/i.test(p.command || ''))
     .filter(p => !isSlaveThread(p))
+    .filter(p => !isInternalDaemon(p))
     .sort((a, b) => Number(b.time) - Number(a.time));
 }
 
