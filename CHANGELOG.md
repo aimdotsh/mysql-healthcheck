@@ -4,6 +4,37 @@
 
 ---
 
+## [4.7.2] - 2026-05-17
+
+**报告聚焦补丁**。基于 v4.7.1 实际查阅反馈，做两处「降噪」调整：
+
+### 🐛 修复 / 调整
+
+- **#1 排除 event_scheduler 等 MySQL 内部守护线程**：v4.7.1 报告里出现「存在长时间运行会话：event_scheduler@localhost 13164257s（状态 Waiting on empty queue）」之类条目 — event_scheduler 的 Time 字段会等于 MySQL 进程 Uptime（典型几千万秒），但属于正常空闲守护，不是业务长事务。`businessLongSessions` 新增 `isInternalDaemon` 过滤：user = `event_scheduler` 或含 "event scheduler" 字样 / state = "Waiting on empty queue" / "Waiting for next activation"。
+
+- **#2 移除第十六章「安全合规审计」**：用户反馈合规检查整章（PASS/WARN/FAIL/UNKNOWN 检查项、合规等级、等保 2.0 / PCI DSS / GDPR / SOX 框架对照、TLS 加密细节、整改建议优先级等）属于咨询性 / 框架对照内容，不是日常巡检关注点。本期一并去除：
+  - render.js：移除 `chapterSecurityCompliance(data)` 调用（保留函数代码以便日后还原）；移除关键事实表「合规等级」行；章节号「十七、巡检总结与行动计划」→「十六、」（含 17.1/17.2/17.3 → 16.1/16.2/16.3）；摘要页提示「17 章详细分析」→「16 章详细分析」。
+  - extract.js：`promoteAssessmentIssues` 中停止把 `compliance_fail_*` 提升到 `issues[]`，避免第一章问题汇总 / 第十六章行动计划出现「合规失败：未启用 audit log」等条目。原代码以 `/* */` 注释保留，方便日后还原。
+  - **真正的安全风险（root@%、弱口令、复制账号 wildcard 等）依然由 `wildcard_critical` / `wildcard_high` / `wildcard_medium` 规则独立捕获，不会因此遗漏**。
+  - 回归测试 `tests/report_regression_test.js` 同步：旧断言「audit compliance issue should be promoted into issues」改为「`compliance_fail_*` 不应出现在 issues」。
+
+### 📊 v4.7.1 → v4.7.2 关键差异
+
+| 指标 | v4.7.1 | v4.7.2 |
+|---|---|---|
+| event_scheduler 长会话告警 | 报 P2 噪声 | **过滤** |
+| 第十六章「安全合规审计」 | 完整渲染（合规等级 / 框架对照） | **整章移除** |
+| 单节点报告体积 | ~158 KB | **~146 KB（-12 KB）** |
+| 第一章问题汇总中合规失败 issue | 出现 | **不再出现** |
+| 章节总数 | 17 | **16** |
+
+### 🧪 回归测试
+
+- `npm test`（collector_autodiscovery + report_regression）全绿。
+- 多节点 v3 测试集无回归，新断言「compliance_fail_* 不应出现」通过。
+
+---
+
 ## [4.7.1] - 2026-05-16
 
 **单节点报告语义打磨补丁**。基于 v4.7 单节点实际查阅反馈，第五章与第十一章仍残留 3 处多节点假设的措辞 / 建议。
