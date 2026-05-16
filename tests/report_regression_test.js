@@ -58,12 +58,12 @@ assert(readOnlyJudgment.reason.includes('从库未只读：172.16.128.101'), 're
 const longQueryJudgment = data.paramJudgments.find((item) => item.key === 'long_query_time');
 assert(longQueryJudgment.valueMap.includes('172.16.128.101（灾备）=10'), 'long_query_time difference should identify the outlier node (灾备 role)');
 
-const auditIssue = data.issues.find((issue) => issue.type === 'compliance_fail_audit_log');
-assert(auditIssue, 'audit compliance issue should be promoted into issues');
-assert.strictEqual(
-  auditIssue.description,
-  '合规失败：未启用 audit log 插件，无法满足等保合规',
-  'audit compliance wording should not contradict itself'
+// v4.7.2：第十六章「安全合规审计」已移除，compliance_fail_* issues 不再升级到 issues[]。
+// 真正的安全风险（root@%、弱口令、复制账号 wildcard 等）依然由 wildcard_critical /
+// wildcard_high / wildcard_medium 等规则独立捕获。
+assert(
+  !data.issues.find((issue) => issue.type && issue.type.startsWith('compliance_fail_')),
+  'compliance_fail_* issues should NOT appear in issues after v4.7.2 (compliance chapter removed)'
 );
 
 const backupIssue = data.issues.find((issue) => issue.type === 'backup_capability');

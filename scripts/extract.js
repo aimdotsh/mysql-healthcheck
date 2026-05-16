@@ -2269,25 +2269,31 @@ function promoteAssessmentIssues(issues, backup, security, totalNodes) {
     });
   }
 
-  // --- 安全合规：每条 FAIL 单独升级 ---
+  // v4.7.2：第十六章「安全合规审计」已从报告移除，不再把 compliance_fail_* 提升到
+  // issues[]，避免它们污染第一章问题汇总 / 第十六章行动计划。
+  // 真正的安全风险（root@%、弱口令、复制账号 wildcard）依然由 wildcard_critical /
+  // wildcard_high / wildcard_medium 等规则独立捕获，不会因此遗漏。
+  // 如需重新启用合规审计章节，把这段还原 + render.js 取消 chapterSecurityCompliance 注释。
+  /* (legacy: 提升 securityAssessment FAIL 到 issues)
   for (const item of (security?.items || [])) {
     if (item.status === 'FAIL') {
       const priority = item.id === 'no_wildcard_root' || item.id === 'no_empty_password'
         ? 'P0'
         : 'P1';
       extras.push({
-      type: `compliance_fail_${item.id}`,
-      priority,
-      groupKey: `compliance_fail:${item.id}`,
-      description: complianceFailureDescription(item),
-      node: '全部节点',
-      action: complianceAction(item.id),
-      status: '待处理',
+        type: `compliance_fail_${item.id}`,
+        priority,
+        groupKey: `compliance_fail:${item.id}`,
+        description: complianceFailureDescription(item),
+        node: '全部节点',
+        action: complianceAction(item.id),
+        status: '待处理',
         scope: 'cluster',
         source: 'security_assessment',
       });
     }
   }
+  */
 
   if (extras.length === 0) return issues;
 

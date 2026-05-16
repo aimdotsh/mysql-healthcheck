@@ -496,7 +496,8 @@ function chapterExecutiveSummary(data) {
       ['整体评估', data.overallAssessment.replace(/（健康度评分.*?）/, '')],
       ['问题分布', `P0 紧急 ${p0} 项 / P1 重要 ${p1} 项 / P2 建议 ${p2} 项 / P3 观察 ${p3} 项`],
       ['备份能力', data.backupAssessment?.assessment || '-'],
-      ['合规等级', data.securityAssessment?.complianceLevel || '-'],
+      // v4.7.2：合规等级行已移除（连同第十六章「安全合规审计」一起，
+      // 因为这部分内容属于咨询性/框架对照，不是日常巡检关注点）
     ],
     '关键事实速览',
   ));
@@ -504,7 +505,7 @@ function chapterExecutiveSummary(data) {
 
   out.push(para([
     { text: '本报告组成：', bold: true },
-    { text: '本页（执行摘要） + 目录页 + 17 章详细分析。管理层可仅阅读本页与第十七章总结；DBA 团队建议完整阅读全部章节。' },
+    { text: '本页（执行摘要） + 目录页 + 16 章详细分析。管理层可仅阅读本页与第十六章总结；DBA 团队建议完整阅读全部章节。' },
   ]));
   out.push(new Paragraph({ children: [new PageBreak()] }));
   return out;
@@ -2019,8 +2020,9 @@ function chapterSecurityCompliance(data) {
 }
 
 function chapterConclusion(data) {
-  const out = [h1('十七、巡检总结与行动计划')];
-  out.push(h2('17.1 整体结论'));
+  // v4.7.2：因移除第十六章，本章节号从「十七」改为「十六」
+  const out = [h1('十六、巡检总结与行动计划')];
+  out.push(h2('16.1 整体结论'));
   out.push(para(`【${data.project}】MySQL 集群本次巡检整体评估：${data.overallAssessment}。`));
   const sl = data.nodes.filter(n => n.replication?.isSlave);
   if (sl.length > 0) {
@@ -2031,7 +2033,7 @@ function chapterConclusion(data) {
   out.push(emptyLine());
 
   // 13.2 行动计划（按优先级，带具体 issue 与 SQL hint）
-  out.push(h2('17.2 行动计划（按优先级）'));
+  out.push(h2('16.2 行动计划（按优先级）'));
   const renderActionBlock = (label, color, issues) => {
     if (!issues || issues.length === 0) return;
     out.push(para([{ text: label, bold: true, color }]));
@@ -2067,7 +2069,7 @@ function chapterConclusion(data) {
     out.push(emptyLine());
   }
 
-  out.push(h2('17.3 附录 · 数据来源'));
+  out.push(h2('16.3 附录 · 数据来源'));
   out.push(para('本报告基于以下原始采集文件生成：'));
   for (const n of data.nodes) {
     out.push(bullet(`${n.ip}（${roleLabel(n.role)}）：${n._file || '-'}`));
@@ -2286,7 +2288,11 @@ function buildDocument(data) {
         ...chapterSchemaDesignAudit(data),
         ...chapterSqlGovernance(data),
         ...chapterBackupRecovery(data),
-        ...chapterSecurityCompliance(data),
+        // v4.7.2：第十六章「安全合规审计」已移除 — 内容属于框架对照 / 咨询性总结，
+        // 实际的安全风险（root@%, 弱口令, 复制账号 wildcard 等）已经在第十一章
+        // 用户权限审计 + 第一章问题汇总里覆盖；合规等级 / GDPR / PCI / 等保对照
+        // 等属于专项合规咨询范畴，不在日常巡检关注范围。
+        // ...chapterSecurityCompliance(data),
         ...chapterConclusion(data),
       ],
     }],
