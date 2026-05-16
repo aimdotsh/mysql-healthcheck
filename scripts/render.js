@@ -532,7 +532,9 @@ function chapterTOC() {
       ],
     }),
     new Paragraph({
-      children: [new TextRun({ text: '提示：Word/WPS 打开后在目录上右键 → 更新域 → 更新整个目录，可显示页码。', italics: true, size: 18, color: COLOR.muted, font: FONT })],
+      // v4.7：如导出时检测到 LibreOffice，TOC 已自动填充含页码 + 超链接；
+      // 如未检测到 / 刷新失败，则首次打开为空，需手动右键 → 更新域。
+      children: [new TextRun({ text: '提示：本目录在导出时已自动刷新（如检测到 LibreOffice）。若 TOC 仍显示为空，请在目录上右键 → 更新域 → 更新整个目录。', italics: true, size: 18, color: COLOR.muted, font: FONT })],
       spacing: { before: 200, after: 100 },
     }),
     new Paragraph({ children: [new PageBreak()] }),
@@ -2125,14 +2127,14 @@ function buildDocument(data) {
   const footerWidths = [1800, 5000, 1800];
 
   return new Document({
-    creator: 'mysql-healthcheck v4.6',
+    creator: 'mysql-healthcheck v4.7',
     title: `${data.project} MySQL 数据库健康巡检报告`,
-    // v4.6.1：原本通过 features.updateFields=true 期望 Word 静默更新 TOC，但
-    // 实测在部分 Word/WPS 版本下反而触发「Do you want to update the fields」
-    // 弹窗。真正可靠的做法是 post-process：从 fldChar 上剥离 w:dirty="true"，
-    // 同时不在 settings.xml 写 updateFields。处理逻辑在主流程 Packer.toBuffer
-    // 之后 stripDirtyFields() 完成。
-    // （TOC 内容打开后默认为空，用户右键 → 更新域即可填充；已有提示段落引导。）
+    // v4.7：保留 features.updateFields=true，让 LibreOffice 在 headless
+    // 模式下加载 docx 时识别「字段需要更新」并刷新 TOC。
+    // 主流程会先尝试通过 LibreOffice 刷新（生成真实页码 + 超链接），
+    // 失败或 LO 不可用时回退到 stripDirtyFields（剥离 dirty，TOC 空但
+    // Word 打开无弹窗）。
+    features: { updateFields: true },
     styles: {
       default: { document: { run: { font: FONT, size: 22 } } },
       paragraphStyles: [
@@ -2283,10 +2285,93 @@ function checkPlaceholders(buf) {
   return [...new Set(matches)];
 }
 
+// v4.7：检测本机 LibreOffice 二进制路径（按优先级返回首个存在的；都没有返回 null）
+function detectLibreOffice() {
+  const envOverride = process.env.SOFFICE || process.env.LIBREOFFICE;
+  if (envOverride && fs.existsSync(envOverride)) return envOverride;
+  const candidates = [
+    '/Applications/LibreOffice.app/Contents/MacOS/soffice', // macOS GUI 安装
+    '/usr/bin/soffice',                                      // Debian/Ubuntu/RHEL
+    '/usr/local/bin/soffice',                                // Homebrew CLI / 自编译
+    '/opt/libreoffice/program/soffice',                      // 部分 Linux 发行版
+    '/opt/homebrew/bin/soffice',                             // Apple Silicon Homebrew
+  ];
+  for (const p of candidates) {
+    try { if (fs.existsSync(p)) return p; } catch (_) {}
+  }
+  // 兜底：which / where
+  try {
+    const cp = require('child_process');
+    const r = cp.spawnSync(process.platform === 'win32' ? 'where' : 'which', ['soffice'], { encoding: 'utf-8' });
+    if (r.status === 0 && r.stdout && r.stdout.trim()) return r.stdout.trim().split(/\r?\n/)[0];
+  } catch (_) {}
+  return null;
+}
+
+// v4.7：调用 LibreOffice headless 刷新 TOC 字段（生成真实页码 + 内嵌 hyperlink）
+// 成功返回刷新后的 Buffer，失败/超时/未刷新返回 null（主流程会回退到 stripDirtyFields）
+async function refreshFieldsViaLibreOffice(buf, soffice) {
+  const os = require('os');
+  const cp = require('child_process');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mysql-hc-toc-'));
+  const profileDir = path.join(tmpDir, 'lo-profile');
+  const inFile = path.join(tmpDir, 'input.docx');
+  fs.writeFileSync(inFile, buf);
+  try {
+    const r = cp.spawnSync(soffice, [
+      '--headless', '--norestore', '--nologo', '--nofirststartwizard',
+      '-env:UserInstallation=file://' + profileDir, // 隔离用户配置，避免与桌面 LO 冲突
+      '--convert-to', 'docx',
+      '--outdir', tmpDir,
+      inFile,
+    ], { timeout: 60_000, encoding: 'utf-8' });
+    if (r.status !== 0) {
+      console.warn('⚠ LibreOffice 退出码 ' + r.status + '：' + ((r.stderr || r.stdout || '').slice(0, 200)));
+      return null;
+    }
+    // LO --convert-to docx 默认覆盖同名文件；某些版本会跳过同名输出。
+    // 扫描 tmpDir 找最新的 .docx（排除 input.docx 本身的引用判别用 mtime）。
+    const candidates = fs.readdirSync(tmpDir)
+      .filter(f => f.endsWith('.docx'))
+      .map(f => ({ f, p: path.join(tmpDir, f), m: fs.statSync(path.join(tmpDir, f)).mtimeMs }))
+      .sort((a, b) => b.m - a.m);
+    if (candidates.length === 0) return null;
+    const refreshed = fs.readFileSync(candidates[0].p);
+    if (await verifyTocPopulated(refreshed)) {
+      return refreshed;
+    }
+    return null;
+  } catch (e) {
+    console.warn('⚠ LibreOffice 调用失败：' + e.message);
+    return null;
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+  }
+}
+
+// v4.7：验证 LO 输出的 docx 中 TOC 字段是否真的被刷新填充
+// - fldChar 不再含 dirty="true"
+// - TOC SDT 内部含 hyperlink（指向 _Toc... 书签）或 PAGEREF 字段（页码引用）
+async function verifyTocPopulated(buf) {
+  try {
+    const JSZip = require('jszip');
+    const zip = await JSZip.loadAsync(buf);
+    const docFile = zip.file('word/document.xml');
+    if (!docFile) return false;
+    const xml = await docFile.async('string');
+    if (/<w:fldChar[^/]*w:dirty="true"/.test(xml)) return false;
+    return /<w:hyperlink\s+w:anchor=/.test(xml) || /PAGEREF/.test(xml);
+  } catch (_) {
+    return false;
+  }
+}
+
 // v4.6.1：post-process — 从 word/document.xml 中剥离 fldChar 上的 w:dirty="true"
 // 原因：docx 库的 TableOfContents 硬编码 dirty=true，导致 Word/WPS 打开时弹出
 // 「是否更新字段」提示。剥离后字段不再标"待更新"，Word 不再询问；TOC 内容打开
 // 后为空，用户首次需在目录上右键 → 更新域 → 更新整个目录（已有提示段落引导）。
+// v4.7：当本机有 LibreOffice 且刷新成功时跳过此函数，直接使用 LO 刷新后的 buf；
+// 只有 LO 不可用 / 刷新失败 / --no-toc-refresh 时才走 stripDirtyFields 兜底。
 async function stripDirtyFields(buf) {
   const JSZip = require('jszip');
   const zip = await JSZip.loadAsync(buf);
@@ -2304,9 +2389,47 @@ async function stripDirtyFields(buf) {
 
 // ============== 主流程 ==============
 (async function main() {
+  // v4.7：CLI 解析 — --no-toc-refresh / --soffice <path>
+  const skipRefresh = process.argv.includes('--no-toc-refresh');
+  const userSofficeIdx = process.argv.indexOf('--soffice');
+  const userSoffice = userSofficeIdx >= 0 ? process.argv[userSofficeIdx + 1] : null;
+
   const doc = buildDocument(data);
   let buf = await Packer.toBuffer(doc);
-  buf = await stripDirtyFields(buf);
+
+  // v4.7：尝试通过 LibreOffice 刷新 TOC 字段（生成真实页码 + 超链接）
+  // 降级路径：LO 不可用 / 刷新失败 / --no-toc-refresh → stripDirtyFields（剥离 dirty 让 Word 不弹窗）
+  // 用户传 --soffice 但路径不存在时也走降级路径（不强行调用）
+  let soffice = userSoffice || detectLibreOffice();
+  if (soffice && !fs.existsSync(soffice)) {
+    console.warn(`⚠ --soffice 指定路径不存在：${soffice}，将自动降级`);
+    soffice = null;
+  }
+  let tocSource = 'empty';  // 'libreoffice' | 'empty' | 'skipped'
+  if (skipRefresh) {
+    buf = await stripDirtyFields(buf);
+    tocSource = 'skipped';
+    console.error('⊘ --no-toc-refresh 已指定，跳过 LibreOffice 刷新（TOC 保持空，可在 Word 中右键 → 更新域）');
+  } else if (soffice) {
+    console.error(`⏳ 检测到 LibreOffice (${soffice})，正在刷新 TOC 字段……`);
+    const refreshed = await refreshFieldsViaLibreOffice(buf, soffice);
+    if (refreshed) {
+      buf = refreshed;
+      tocSource = 'libreoffice';
+      console.error('✓ TOC 已通过 LibreOffice 自动刷新（含页码 + 超链接）');
+    } else {
+      buf = await stripDirtyFields(buf);
+      console.warn('⚠ LibreOffice 刷新失败，已回退（TOC 空目录，可在 Word 中右键 → 更新域）');
+    }
+  } else {
+    buf = await stripDirtyFields(buf);
+    console.error('ⓘ 未检测到 LibreOffice，TOC 保持空目录（可在 Word/WPS 中右键 → 更新域显示页码）');
+    console.error('  如希望导出即带完整目录，请安装 LibreOffice：');
+    console.error('    macOS:  brew install --cask libreoffice');
+    console.error('    Ubuntu: sudo apt install libreoffice');
+    console.error('  或通过 --soffice <path> 指定二进制路径');
+  }
+
   fs.writeFileSync(outPath, buf);
 
   // 残留占位符校验：把 docx 当作 zip，解压 word/document.xml 后搜 {xxx}
