@@ -210,53 +210,216 @@ flowchart LR
 
 ---
 
-## 🔍 自动检测规则速览
+## 🔍 自动检测规则完整清单
 
-| 类别 | 规则示例 | 优先级 |
-|---|---|---|
-| **可用性** | 磁盘 ≥80% / 复制线程异常 / 内存 >90% / Swap 已启用 | P0~P1 |
-| **持久化** | `sync_binlog=0` / `innodb_flush_log_at_trx_commit=0` / GTID 未启用 | P1~P2 |
-| **性能** | Buffer Pool 命中率 <99% / 慢查询累计 >100万 / ibtmp1 >5GB | P1~P2 |
-| **数据规范** | 无主键表 / 非 utf8 表 / 高碎片表（≥70% 且 ≥100MB） | P2 |
-| **安全** | root@% / 复制账号开放 % / 空密码账号 / 未启用审计 | P0~P1 |
-| **运维** | 节点参数不一致 / 慢日志未开 / 备份工具缺失 | P1~P2 |
+巡检规则按健康度的 **6 个维度** 分组。每条规则在报告里都会生成一条 issue（含优先级、节点、措施、SQL），并按 `disabledRules` / `priorities` 配置接管开关与优先级。
 
-> 完整 30+ 规则与阈值见 [`references/rules.md`](references/rules.md)；详细健康度评分模型也在那里。
+> **图例**：P0 = 紧急（立即修） · P1 = 重要（两周内） · P2 = 建议（一月内） · P3 = 观察 · 🆕 = v4.8 新增 · ⚙️ = 阈值可配置
+
+### 🟥 可用性（availability）— 影响服务能否对外提供
+
+| Rule ID | 优先级 | 含义 | 触发条件 | 配置键 |
+|---|---|---|---|---|
+| `mem_high` | P1 | 内存使用率偏高，可能拖累 buffer pool 或触发 Swap | 节点内存使用率 > 90% | ⚙️ `memory.high_pct` |
+| `swap_used` | P1 | Swap 已被使用，数据库内存被换出会引发性能抖动 | Swap 已使用（free < total）| - |
+| `disk_critical` | **P0** | 磁盘空间紧急，binlog/redo 写入可能直接失败 | 任一挂载点使用率 ≥ 90% | ⚙️ `disk.critical_pct` |
+| `disk_high` | P1 | 磁盘已用偏高，需在本周内清理或扩容 | 任一挂载点使用率 ≥ 80% | ⚙️ `disk.high_pct` |
+| `repl_thread_down` | **P0** | 复制线程异常，从库已不同步 | `Slave_IO_Running ≠ Yes` 或 `Slave_SQL_Running ≠ Yes` | - |
+| `repl_delay_high` | P1 | 从库延迟过大，故障切换会丢数据 | `Seconds_Behind_Master > 300s` | ⚙️ `replication.delay_p1_seconds` |
+| `repl_delay_low` | P2 | 从库延迟轻微但需关注趋势 | `Seconds_Behind_Master > 60s` | ⚙️ `replication.delay_p2_seconds` |
+| 🆕 `bp_too_large` | P1 | InnoDB Buffer Pool 占内存过大，可能挤压 OS 触发 OOM | bp_size > 80% RAM | ⚙️ `innodb.bp_too_large_ratio` |
+| 🆕 `max_connections_vs_memory` | P1/P2 | max_connections × 单连接峰值超过 RAM 30% 或 50%，可能 OOM | peak_mem 公式见下文 | ⚙️ `max_connections.peak_memory_ratio_warn` / `_p1` |
+
+### 🟧 持久化（durability）— 数据不丢、可恢复
+
+| Rule ID | 优先级 | 含义 | 触发条件 | 配置键 |
+|---|---|---|---|---|
+| `flush_log_weak` | P1 | redo log 仅每秒刷盘，主库 crash 可能丢 1 秒事务 | `innodb_flush_log_at_trx_commit = 0` | - |
+| `sync_binlog_weak` | P1 | binlog 不强制 fsync，崩溃时从库与主库 binlog 漂移 | `sync_binlog = 0` | - |
+| `gtid_off` | P2 | 未启用 GTID，故障切换需手工对位 | `gtid_mode = OFF` | - |
+| `master_readonly` | P1/P3 | 主库被设为只读（无法写入）— standalone read-only 推断时降级 P3 | primary 节点 `read_only = 1` | - |
+| `slave_writable` | P1 | 从库可写，存在数据漂移风险 | slave `read_only = 0` | - |
+| `dr_writable` | P3 | 灾备节点可写（可能是切换设计预留），需人工确认 | DR 节点 `read_only = 0` | - |
+| `self_ref_slave_residue` | P2 | SHOW SLAVE STATUS 残留指向本机（曾是从库未 RESET SLAVE ALL）| `Master_Host = 本机 IP/hostname` | - |
+| `expire_logs_zero` | P1 | binlog 永不过期，磁盘会被撑爆 | `expire_logs_days = 0` | - |
+| `expire_logs_long` | P3 | binlog 保留过长，磁盘成本上升 | `expire_logs_days > 30` | ⚙️ `binlog.expire_logs_max_days` |
+| `swap_used` | P1 | 见可用性段 | - | - |
+| `ibtmp1_oversize` | P2 | 临时表空间膨胀，可能撑爆磁盘 | ibtmp1 > 5 GB | ⚙️ `innodb.ibtmp1_max_gb` |
+| `ibtmp1_no_max` | P2 | 临时表空间未配 `:max:` 上限 | `innodb_temp_data_file_path` 缺 `:max:` | - |
+| 🆕 `doublewrite_off` | P1 | 半页写崩溃会导致页损坏不可恢复（torn page） | `innodb_doublewrite = OFF` | - |
+| 🆕 `slave_skip_errors_set` | **P0** | 复制错误被静默跳过，从库与主库已经/将会数据不一致 | `slave_skip_errors ≠ OFF/NONE` | - |
+
+### 🟨 性能（performance）— 吞吐、延迟、缓存命中
+
+| Rule ID | 优先级 | 含义 | 触发条件 | 配置键 |
+|---|---|---|---|---|
+| `bp_hit_low` | P1 | Buffer Pool 命中率低，频繁磁盘 IO | hit_rate < 95% | ⚙️ `innodb.bp_hit_low_pct` |
+| `bp_hit_sub99` | P3 | Buffer Pool 命中率未达 99% 推荐线 | hit_rate < 99% | ⚙️ `innodb.bp_hit_warn_pct` |
+| `innodb_hll_high` | P1/P2 | History List Length 过高，undo 历史清理滞后；常伴长事务 | HLL > 10000（P1 当 > 50000）| ⚙️ `innodb.hll_warn` / `.hll_p1` |
+| `long_running_session` | P2/P3 | 存在长时间运行的业务会话（>= 60s）| 非 sleep/复制线程会话 ≥ 60s | ⚙️ `session.long_running_seconds_p2` |
+| `slow_query_abs_high` | P1 | 累计慢查询数量巨大（> 100 万），治理优先级最高 | `slow_queries > 1,000,000` | ⚙️ `sql.slow_query_abs_high` |
+| `slow_query_abs_med` | P2 | 累计慢查询偏多 | `slow_queries > 100,000` | ⚙️ `sql.slow_query_abs_med` |
+| `long_query_time_loose` | P3 | 慢查询阈值过宽，会漏掉本该被捕获的慢 SQL | `long_query_time ≥ 5` | ⚙️ `sql.long_query_time_loose` |
+| `slave_parallel_workers_zero` | P1/P2 | 大数据量集群单线程应用 binlog，大事务会延迟堆积 | parallel_workers=0 且数据 ≥ 100 GB | ⚙️ `replication.parallel_workers_data_gb_p2` / `_p1` |
+| 🆕 `bp_too_small` | P1/P2 | **用户的示例规则**：buffer pool 占 RAM 过低，工作集 cache miss | bp 占 RAM < 40%（P1 < 20%） | ⚙️ `innodb.bp_too_small_ratio` / `_p1_ratio` |
+| 🆕 `redo_log_too_small` | P1/P2 | redo log 文件过小，频繁切换拉低写吞吐 + 放大恢复时间 | log_file_size < 512 MB 且数据 ≥ 50 GB | ⚙️ `innodb.redo_log_min_mb` 等 |
+| 🆕 `flush_method_not_o_direct` | P2 | Linux 上 fsync 双重缓存浪费内存 | Linux 且 flush_method ≠ O_DIRECT | - |
+| 🆕 `data_to_memory_ratio_high` | P1/P2 | 数据量远大于内存，工作集无法常驻 buffer pool | `dbSize / RAM > 10`（P1 > 50） | ⚙️ `data_memory.ratio_warn` / `_p1` |
+
+### 🟦 数据规范（dataDesign）— 表结构、字符集、索引
+
+| Rule ID | 优先级 | 含义 | 触发条件 | 配置键 |
+|---|---|---|---|---|
+| `no_pk_tables` | P2 | 业务表无主键，ROW 复制效率极低 + 无法 MTS 并行 | 至少 1 张业务表无主键 | - |
+| `no_pk_tables_temp_only` | P3 | 仅临时/历史表无主键，确认无业务引用后可清理 | 全部无主键都是临时/字典表 | - |
+| `non_utf8_tables` | P2 | 存在非 utf8 表，部分语种/emoji 无法存 | 至少 1 张 charset ≠ utf8 | - |
+| `heavy_frag_tables` | P2 | 存在大表碎片，浪费磁盘且影响顺序扫描 | 碎片率 ≥ 70% 且碎片 ≥ 100 MB | ⚙️ `frag.rate` / `frag.min_mb` |
+| `ghost_tables` | P2 | pt-osc / gh-ost 在线 DDL 残留 ghost 表（≥ 1 GB） | 单表 ≥ 1 GB 的 `_gho_*` / `_*_new` | - |
+| `lct_zero_linux` | P3 | Linux 上大小写敏感（lower_case_table_names=0），跨平台风险 | Linux + LCT=0 | - |
+| 🆕 `charset_not_utf8mb4` | P2 | utf8 实际是 utf8mb3，已 deprecated，无法存 4 字节字符（emoji） | `character_set_server` 非 utf8mb4 | - |
+| 🆕 `sql_mode_missing_strict` | P2 | sql_mode 不严格，错误数据被静默截断（INT 越界写 0、字符串裁断） | sql_mode 缺 `STRICT_TRANS_TABLES` | - |
+| 🆕 `auto_increment_exhausting` | P0/P1/P2 | 自增列接近耗尽，耗尽后 INSERT 会报 ER_AUTOINC_READ_FAILED | rate ≥ 0.7（≥ 0.9 升 P0）| ⚙️ `auto_increment.rate_p2` / `_p1` / `_p0` |
+
+### 🟪 安全（security）— 账号、加密、远程访问
+
+| Rule ID | 优先级 | 含义 | 触发条件 | 配置键 |
+|---|---|---|---|---|
+| `wildcard_critical` | **P0** | root / admin / dba / super 等管理员账号开放 host=% | host=% 用户名 ∈ {root, admin*, dba*, super*} | - |
+| `wildcard_high` | P1 | 复制 / 备份账号开放 host=%，应限定到具体网段 | host=% 用户名 ∈ {repl*, backup*, dump*} | - |
+| `wildcard_medium` | P2 | 业务账号开放 host=%，建议限定到内网网段 | host=% 业务账号（一行聚合所有用户）| - |
+| `tls_weak_protocol` | P2 | TLS 协议含 TLSv1 / TLSv1.1，NIST 已废弃 | `tls_version` 含旧版本 | - |
+| 🆕 `auth_plugin_native_on_80` | P2 | 8.0+ 默认 mysql_native_password（SHA1 派生），8.4 起 disabled | 8.0+ 且 plugin = `mysql_native_password` | - |
+
+### ⚪ 运维（operations）— 备份、监控、版本生命周期
+
+| Rule ID | 优先级 | 含义 | 触发条件 | 配置键 |
+|---|---|---|---|---|
+| `backup_capability` | P0/P1/P2 | 备份能力评估（工具、调度、最近备份时效） | 无备份工具/调度，或最近备份 > 180 天 | - |
+| `slow_log_off` | P2 | 慢日志未开启，无法做 SQL 治理审计 | `slow_query_log = 0` | - |
+| `os_version_eol` | P1/P2 | 操作系统已 EOL（CentOS 6/7/8、Ubuntu 18.04 等） | osEolStatus.status = eol | - |
+| `mysql_version_eol` | P0/P1 | MySQL 主版本已 EOL（5.5/5.6/5.7） | 通过 MYSQL_EOL_TABLE 匹配 | - |
+| `mysql_version_security` | P3 | MySQL 进入仅安全更新阶段（8.0 自 2026-04 起）| 同上 | - |
+| `param_inconsistent` | P2 | 跨节点关键参数不一致（read_only、long_query_time 等） | 节点间核心参数有差异 | - |
+| 🆕 `performance_schema_off` | P2 | P_S 关闭，失去 TOP SQL 与监控指标（PMM/exporter 缺核心指标）| `performance_schema = OFF` | - |
+
+> 想看每条规则的实际 push() 代码与完整 SQL 模板，请阅读 [`references/rules.md`](references/rules.md) 或直接看 `scripts/extract.js` 的 `analyzeIssues()` 函数。
 
 ---
 
 ## ⚙️ 配置巡检阈值（v4.8+）
 
-不同客户场景需求不一致 — 金融客户磁盘 80% 就要告警，POC 内部 95% 才需要关注；某些客户不在乎 `sql_mode` 严格模式，需要直接禁用。v4.8 引入三层配置：
+### 三层配置优先级（从低到高）
 
 ```
-内置默认  <  采集目录同名文件  <  CLI --config
+① 内置默认  <  ② 采集目录同名文件  <  ③ CLI --config 参数
 ```
 
-**内置默认**：`scripts/config/default-thresholds.json`（含全部 30+ 阈值 + 注释）。
+**① 内置默认**：`scripts/config/default-thresholds.json`（含全部 30+ 阈值 + 注释，零配置即可使用）。
 
-**采集目录自动发现**：在数据目录放一份 `mysql-healthcheck.config.json`，extract 时自动 deep-merge：
+**② 采集目录自动发现**：在数据目录放一份 `mysql-healthcheck.config.json`，extract 时自动 deep-merge — 适合「客户 A 用一份，客户 B 用另一份」场景：
 
-```json
-{
-  "thresholds": {
-    "disk": { "critical_pct": 85, "high_pct": 75 },
-    "innodb": { "bp_too_small_ratio": 0.5 }
-  },
-  "disabledRules": ["sql_mode_missing_strict", "wait_timeout_too_long"],
-  "priorities": { "wildcard_medium": "P3" }
-}
+```bash
+# 目录布局
+/data/customer-A/
+  ├── MySQLHealthCheck_10.0.0.1_*.txt
+  ├── MySQLHealthCheck_10.0.0.2_*.txt
+  └── mysql-healthcheck.config.json     # ← 自动应用
 ```
 
-**CLI 临时覆盖**：
+**③ CLI 临时覆盖**：最高优先级，适合调试或一次性场景：
 
 ```bash
 node scripts/extract.js <data-dir> --config /path/to/custom.json --out data.json
 ```
 
-**预设模板**：
-- `scripts/config/samples/strict.json` — 金融/合规客户（阈值收紧）
-- `scripts/config/samples/lenient.json` — POC/内部环境（阈值放宽 + 禁用合规向规则）
+### 配置文件三个顶层段
+
+```json
+{
+  "thresholds": {        // ① 调整阈值
+    "disk": { "critical_pct": 85, "high_pct": 75 },
+    "innodb": { "bp_too_small_ratio": 0.5, "hll_warn": 5000 },
+    "sql":   { "long_query_time_loose": 2 }
+  },
+  "disabledRules": [     // ② 禁用规则（type 名见上文清单）
+    "sql_mode_missing_strict",
+    "auth_plugin_native_on_80"
+  ],
+  "priorities": {        // ③ 覆盖单条规则优先级
+    "wildcard_medium": "P3",
+    "long_query_time_loose": "P2"
+  }
+}
+```
+
+### 三种典型场景
+
+#### 场景 A：金融 / 合规客户（阈值收紧）
+
+```bash
+# 直接用 strict 模板
+node scripts/extract.js <data-dir> --config scripts/config/samples/strict.json
+```
+
+`strict.json` 把磁盘告警阈值改为 80/70、bp_hit 推荐 99%、long_query_time 上限 2s、binlog 保留 14 天等。
+
+#### 场景 B：POC / 内部环境（噪声收敛）
+
+```bash
+node scripts/extract.js <data-dir> --config scripts/config/samples/lenient.json
+```
+
+`lenient.json` 阈值放宽 + 禁用 `sql_mode_missing_strict` / `charset_not_utf8mb4` / `auth_plugin_native_on_80` / `performance_schema_off` 等合规向规则。
+
+#### 场景 C：单条阈值定制
+
+只想把磁盘 90% 改为 95%：
+
+```bash
+echo '{"thresholds":{"disk":{"critical_pct":95,"high_pct":90}}}' \
+  > /path/data/mysql-healthcheck.config.json
+node scripts/extract.js /path/data
+```
+
+### 完整阈值键速查
+
+| 分组 | 配置键 | 默认值 | 控制的规则 |
+|---|---|---|---|
+| **disk** | `critical_pct` / `high_pct` | 90 / 80 | `disk_critical` / `disk_high` |
+| **memory** | `high_pct` | 90 | `mem_high` |
+| **innodb** | `hll_warn` / `hll_p1` | 10000 / 50000 | `innodb_hll_high` |
+| | `bp_hit_low_pct` / `bp_hit_warn_pct` | 95 / 99 | `bp_hit_low` / `bp_hit_sub99` |
+| | `bp_too_small_ratio` / `_p1_ratio` | 0.4 / 0.2 | `bp_too_small` |
+| | `bp_too_large_ratio` | 0.8 | `bp_too_large` |
+| | `bp_too_small_min_mem_gb` | 4 | bp 规则跳过小机器 |
+| | `ibtmp1_max_gb` | 5 | `ibtmp1_oversize` |
+| | `redo_log_min_mb` / `_db_gb_busy` / `_db_gb_heavy` | 512 / 50 / 200 | `redo_log_too_small` |
+| **session** | `long_running_seconds_p2` | 600 | `long_running_session` |
+| **replication** | `delay_p1_seconds` / `delay_p2_seconds` | 300 / 60 | `repl_delay_high` / `repl_delay_low` |
+| | `parallel_workers_data_gb_p2` / `_p1` | 100 / 500 | `slave_parallel_workers_zero` |
+| **sql** | `slow_query_abs_high` / `_med` | 1000000 / 100000 | `slow_query_abs_*` |
+| | `long_query_time_loose` | 5 | `long_query_time_loose` |
+| **frag** | `rate` / `min_mb` | 0.7 / 100 | `heavy_frag_tables` |
+| **binlog** | `expire_logs_max_days` | 30 | `expire_logs_long` |
+| **max_connections** | `peak_memory_ratio_warn` / `_p1` | 0.3 / 0.5 | `max_connections_vs_memory` |
+| **data_memory** | `ratio_warn` / `_p1` | 10 / 50 | `data_to_memory_ratio_high` |
+| **auto_increment** | `rate_p2` / `_p1` / `_p0` | 0.7 / 0.8 / 0.9 | `auto_increment_exhausting` |
+
+完整 JSON schema 与注释见 `scripts/config/default-thresholds.json`。
+
+### 验证配置是否生效
+
+extract 完成后 `data.json` 末尾包含 `hcConfig` 段，可直接查看实际应用的阈值：
+
+```bash
+node scripts/extract.js <data-dir> --config <my.json> --out /tmp/d.json
+jq '.hcConfig.thresholds.disk' /tmp/d.json
+# {"critical_pct": 85, "high_pct": 75}     ← 已应用
+jq '.disabledRulesApplied' /tmp/d.json
+# ["sql_mode_missing_strict"]              ← 已禁用
+```
+
+控制台也会即时打印 `阈值配置：cli:my.json 已合并到默认值之上` 和 `已禁用规则：sql_mode_missing_strict` 帮助调试。
 
 ---
 
