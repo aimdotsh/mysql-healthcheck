@@ -4,6 +4,63 @@
 
 ---
 
+## [4.9.0] - 2026-05-17
+
+**根因关联引擎数据驱动重写**。把 v4.8 之前充满「可能 / 疑似」类弱推断的根因关联，改造为**数据交叉验证**驱动：每条关联引用具体数值（uptime / qps / 磁盘百分比），模糊措辞替换为「已确认 / 已排除 / 需进一步排查」三态。
+
+### 🆕 信号扩展（Phase A）
+
+- **uptime 数值化**：`parseUptimeToSec()` 把 `490 days 7 hours 57 min 15 sec` → 42364635 秒，存为 `n.uptimeSec`。用于区分「冷重启」「长期运行」。
+- **日志文件大小精确解析**：
+  - `n.slowLogSizeBytes` ← 慢日志 `file size: 3.1G` 段
+  - `n.errorLogSizeBytes` ← 错误日志 `file size: 50K` 段
+  - `n.binlogDirSizeBytes` / `n.binlogDirPath` ← binlog 目录 `总大小: 52G` 段
+- **collector v3.0 → v3.1** 新增 2 个段：
+  - `[11] Datadir size`：`du -sh $DATA_DIR`
+  - `[11] Relay log directory`：`du -sh $RELAY_LOG_DIR`（与 binlog 同目录时跳过避免重复）
+- **`n.diskAttribution`**：按 binlog / slowLog / errorLog / relayLog / ibtmp1 / datadir 排序的容量归因清单（每项含 `bytes` + `pct`），让磁盘高位根因可以**明确**说出「主因是 binlog 占 72%（38 GB）」，而非含糊「可能是 binlog」。
+
+### 🔄 现有 6 条 correlation 全部重写
+
+| 编号 | 旧版（弱推断） | 新版（数据驱动） |
+|---|---|---|
+| C1 | "可能主因是 binlog" | 用 `diskAttribution` 拆出主因 + 百分比；针对性 SQL（binlog/慢日志/错误日志/ibtmp1 各有专属处置） |
+| C2 | "可能丢失最近 1 秒" | 标【已确认】+ 明确 RPO 估算 |
+| C3 | "提示业务中存在...触发" | 加慢查询占比 + 「已基本确认」 |
+| C4 | "差异通常源于节点重启时间不同" — **猜测** | 用 `uptimeSec` 交叉验证：差 > 7 天 → 【已确认】重启时间不同；qps 差 > 2× → 【已确认】读业务不均衡；都不足 → 【需进一步排查】+ 列出已排除项 |
+| C5 | "root@% 风险" | 标【已确认】 |
+| C6 | "可能未预热" — **猜测** | 用 `uptimeSec` 区分：< 30 天 → 【已确认】冷启动；> 30 天 → 【已排除冷启动】，归因为「工作集偏小或资源浪费」 |
+
+### 🆕 10 条新增 senior-DBA correlations
+
+- **C7 复制延迟根因拆解** — parallel_workers / 大事务 / 主从 qps 差异，定位为「单线程」「读负载挤占」「binlog 格式不对」其中一种
+- **C8 Swap 压力级联** — bp_size / qps / max_connections 三因素同时检查，给出具体处置（下调 bp / vm.swappiness / 扩容）
+- **C9 OS + MySQL 双重 EOL 风险** — 同时 EOL 时显式联合告警，给出 1-3 个月迁移路径
+- **C10 慢日志膨胀因素** — `log_queries_not_using_indexes=ON` / `long_query_time` 过低 / 真实慢 SQL 多，三种情形分别确认
+- **C11 错误日志暴涨** — `errorLogSizeBytes` + `errorLogAnalysis.errorCount` 交叉判断
+- **C12 持久化弱 + 高复制延迟 → RPO 量化** — 把丢失数据窗口算成 `主库丢失 1s + 从库延迟 N s` 总秒数
+- **C13 从库可写 + 复制延迟 → 数据漂移加剧**
+- **C14 自增列耗尽 + 慢查询累积 → 故障窗口临近**
+- **C15 节点间 binlog 增长速率差异** — 用 `uptimeSec` 折算每日增量，超过 5× 差异告警
+
+### 📊 实测对比（v3 测试集 4 节点集群）
+
+| 关联点 | v4.8 措辞 | v4.9 措辞 |
+|---|---|---|
+| 从库 ibtmp1 差异 | "源于节点重启时间不同" | "275 天 vs 967 天 → 【已确认】重启时间不同（差 692 天，足以解释 1467× ibtmp1 差异）" |
+| 灾备内存低 | "可能 buffer pool 未预热" | "uptime 275 天 → 【已排除冷启动】足够预热；归因为工作集偏小或资源浪费" |
+| 磁盘高位 | "可能 binlog 主因" | "binlog 占 71%（55.8 GB）/ ibtmp1 占 24%（17.4 GB）/ 慢日志 4%（3.1 GB）— 主因明确：binlog" |
+| OS + MySQL EOL | （未关联） | "CentOS 6 + MySQL 5.7 双重 EOL，规划 1-3 个月联合迁移" |
+
+### 🧪 验证
+
+- `npm test` 全绿（collector_autodiscovery + report_regression）
+- 单节点报告无 correlation（合理 — 多节点关联不适用）
+- v3 测试集产出 7 条 correlation，全部带【已确认】或具体数据
+- 老版本 collector 采集（缺 Datadir/Relay log 段）自动退化为旧文案，向后兼容
+
+---
+
 ## [4.8.0] - 2026-05-17
 
 **重大版本**。两件大事：(A) 规则阈值与开关全面可配置化；(B) 新增 12 条 senior-DBA 经验级参数推荐规则，带「当前值 → 推荐值（基于本机 RAM/CPU/数据量计算）+ 一键 SQL」。

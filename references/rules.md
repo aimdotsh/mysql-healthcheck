@@ -142,14 +142,34 @@ function recommendBufferPoolMB(memGB) {
 
 ## 四、根因关联（correlations）
 
-extract.js 的 `deriveCorrelations` 自动生成，6 类典型模式：
+extract.js 的 `deriveCorrelations` 自动生成。**v4.9 重写**为数据驱动模式：每条关联引用具体数值（uptime / qps / 磁盘归因 / RPO 秒数），模糊措辞「可能/疑似」改为「已确认 / 已排除 / 需进一步排查」三态。
 
-1. 节点磁盘高位 ↔ binlog 永不过期 / 保留过长
-2. 全集群持久化偏弱（commit=0 + sync_binlog=0）
-3. 主库慢查询累积 ↔ ibtmp1 增长
-4. 从库间 ibtmp1 大小差异显著（重启时间不同）
-5. 集群所有节点存在 root@%
-6. 灾备节点内存利用率显著低于主库
+### 数据驱动原则
+
+1. **多信号交叉验证**：单一指标不下结论，至少两个独立信号支撑
+2. **明确数值**：不说"差异较大"，要说"275 天 vs 967 天，差 692 天"
+3. **列出排除项**：当主因不能 100% 确认时，列出已排除的因素帮助 DBA 收窄排查范围
+4. **可执行 SQL**：每条关联尽量附带处置 SQL 或命令
+
+### 现有 16 条关联模式
+
+| 编号 | 名称 | 触发条件 | 关键交叉信号 |
+|---|---|---|---|
+| C1 | 节点磁盘高位 — 主因拆解 | 磁盘 ≥ 80% + `n.diskAttribution` | binlog / 慢日志 / 错误日志 / ibtmp1 各占百分比，定位主因 |
+| C2 | 全集群持久化强度偏低 | 全部节点 `flush_log=0 + sync_binlog=0` | 节点数 + RPO 估算 |
+| C3 | 主库慢查询 ↔ ibtmp1 强相关 | 主库 slowQueries > 1M + ibtmp1 > 5 GB | 慢查询占总查询比率 |
+| C4 | 从库间 ibtmp1 大小差异 | 多从库 ibtmp1 差 > 4× | `uptimeSec` 差 + qps 差 → 3 种归因分支 |
+| C5 | 集群全节点 root@% | 全节点都有 root@% | - |
+| C6 | 从库 / DR 内存利用率显著低 | mem 比主库低 30%+ | `uptimeSec` 区分冷启动 vs 工作集偏小 |
+| C7 | 复制延迟根因拆解 | secondsBehindMaster > 60s | parallel_workers / 主从 qps / binlog_format |
+| C8 | Swap 压力级联 | swap_used > 0 | bp_size / qps / max_connections 三因素 |
+| C9 | OS + MySQL 双重 EOL | osEolStatus=eol + MySQL 5.x | 联合迁移路径 |
+| C10 | 慢日志膨胀因素 | slowLogSizeBytes > 1 GB | `log_queries_not_using_indexes` / `long_query_time` / 慢查询总数 |
+| C11 | 错误日志暴涨 | errorLogSizeBytes > 100 MB | errorLogAnalysis.errorCount + warningCount |
+| C12 | 持久化弱 + 高复制延迟 → RPO 量化 | (commit=0+sync_binlog=0) + 延迟 > 60s | RPO ≈ delay + 1 秒 |
+| C13 | 从库可写 + 复制延迟 → 数据漂移 | slave read_only=0 + delay > 60s | - |
+| C14 | 自增列耗尽 + 慢查询累积 | autoIncrement.rate ≥ 0.7 + slowQueries > 100k | - |
+| C15 | 节点间 binlog 增长速率差异 | binlogDir size 差 > 5× | 用 `uptimeSec` 折算每日增量 |
 
 ---
 

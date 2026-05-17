@@ -17,7 +17,7 @@
   <a href="https://github.com/aimdotsh/mysql-healthcheck/issues"><img alt="GitHub issues" src="https://img.shields.io/github/issues/aimdotsh/mysql-healthcheck?style=flat-square&logo=github"></a>
   <a href="https://github.com/aimdotsh/mysql-healthcheck/commits/main"><img alt="GitHub last commit" src="https://img.shields.io/github/last-commit/aimdotsh/mysql-healthcheck?style=flat-square&logo=github"></a>
   <img alt="Tests" src="https://img.shields.io/badge/tests-passing-43853d?style=flat-square&logo=githubactions&logoColor=white">
-  <img alt="Version" src="https://img.shields.io/badge/version-v4.8-1F4E79?style=flat-square">
+  <img alt="Version" src="https://img.shields.io/badge/version-v4.9-1F4E79?style=flat-square">
   <img alt="Node" src="https://img.shields.io/badge/node-%E2%89%A516-43853d?style=flat-square&logo=node.js">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square">
   <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey?style=flat-square">
@@ -303,6 +303,29 @@ flowchart LR
 | 🆕 `performance_schema_off` | P2 | P_S 关闭，失去 TOP SQL 与监控指标（PMM/exporter 缺核心指标）| `performance_schema = OFF` | - |
 
 > 想看每条规则的实际 push() 代码与完整 SQL 模板，请阅读 [`references/rules.md`](references/rules.md) 或直接看 `scripts/extract.js` 的 `analyzeIssues()` 函数。
+
+### 🧠 根因关联（v4.9 重写为数据驱动）
+
+报告里除了单条 issue，还会自动生成跨规则的「根因关联」（Root-Cause Correlations），把多个孤立指标串成一条因果链。v4.9 共 16 条关联模式，全部用**多信号交叉验证 + 「已确认 / 已排除 / 需进一步排查」三态判定**，避免「可能 / 疑似」类弱推断。
+
+举例 — 老版本会说"从库间 ibtmp1 大小差异显著，**通常源于**节点重启时间不同"（猜测）；v4.9 改为：
+> 各从库 ibtmp1 占用差异显著：最小 12.00 MB（节点 A，uptime 275 天） · 最大 17.20 GB（节点 B，uptime 967 天），相差 1467× 。
+> 交叉验证：
+>   · **【已确认】** 节点间重启时间差 692 天（ibtmp1 重启会重置归零，长 uptime 节点累积更多）
+>   · **【已排除】** 从库间 qps 接近（120 ~ 145，读业务相对均衡）
+
+16 条关联速览：
+
+| 类别 | 关联示例 |
+|---|---|
+| **磁盘归因** | C1 磁盘高位 → diskAttribution 拆出 binlog/慢日志/错误日志/ibtmp1 各占百分比；C10 慢日志膨胀因素；C11 错误日志暴涨；C15 节点间 binlog 增长速率差异 |
+| **复制风险** | C7 复制延迟根因拆解（parallel_workers / 主从 qps 差）；C12 持久化弱 + 延迟 → RPO 量化；C13 从库可写 + 延迟 → 数据漂移 |
+| **资源压力** | C8 Swap 压力级联（bp_size / qps / max_conn）；C6 内存低 → 用 uptime 区分冷启动 vs 资源浪费 |
+| **生命周期** | C9 OS + MySQL 双重 EOL；C14 自增列耗尽 + 慢查询累积 |
+| **安全 / 持久化** | C2 全集群持久化偏弱；C5 全集群 root@% |
+| **临时表 / 工作集** | C3 主库慢查询 ↔ ibtmp1 强相关；C4 从库 ibtmp1 差异 — 用 uptime + qps 三态归因 |
+
+完整 16 条关联与触发条件见 [`references/rules.md`](references/rules.md)。
 
 ---
 

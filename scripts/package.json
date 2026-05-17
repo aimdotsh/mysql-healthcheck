@@ -1,6 +1,6 @@
 {
   "name": "mysql-healthcheck",
-  "version": "4.8.0",
+  "version": "4.9.0",
   "private": true,
   "description": "Detailed MySQL monthly inspection report generator (txt/html → docx)",
   "bin": {
