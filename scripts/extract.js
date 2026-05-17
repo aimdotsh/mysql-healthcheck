@@ -1803,7 +1803,8 @@ function analyzeIssues(nodes) {
     const v = n.variables || {};
 
     // ----- 资源类（节点级，groupKey 唯一）-----
-    if (n.memUsagePct && Number(n.memUsagePct) > 90) {
+    // v4.8：阈值改为读 cfg.thresholds.memory.high_pct
+    if (n.memUsagePct && Number(n.memUsagePct) > (T.memory?.high_pct ?? 90)) {
       push({
         type: 'mem_high', priority: 'P1', groupKey: `mem_high:${n.ip}`,
         description: `内存使用率 ${n.memUsagePct}% 偏高`,
@@ -1839,13 +1840,16 @@ function analyzeIssues(nodes) {
       }
     }
 
+    // v4.8：HLL 阈值改为读 cfg.thresholds.innodb.hll_warn / .hll_p1
     const hll = Number(n.innodb?.historyListLength);
-    if (hll > 10000) {
+    const hllWarn = T.innodb?.hll_warn ?? 10000;
+    const hllP1 = T.innodb?.hll_p1 ?? 50000;
+    if (hll > hllWarn) {
       push({
         type: 'innodb_hll_high',
-        priority: hll >= 50000 ? 'P1' : 'P2',
+        priority: hll >= hllP1 ? 'P1' : 'P2',
         groupKey: `innodb_hll_high:${n.ip}`,
-        description: `History List Length = ${hll.toLocaleString()}（超过 10000 预警线，undo 历史清理滞后）`,
+        description: `History List Length = ${hll.toLocaleString()}（超过 ${hllWarn.toLocaleString()} 预警线，undo 历史清理滞后）`,
         node: nodeLabel(n),
         action: '排查长事务/长查询和 purge 线程压力；优先确认 PROCESSLIST 与 INNODB TRX 中是否存在长期未提交事务',
         sql: 'SHOW ENGINE INNODB STATUS\\G\nSELECT * FROM information_schema.INNODB_TRX\\G\nSHOW FULL PROCESSLIST;',
@@ -1853,12 +1857,14 @@ function analyzeIssues(nodes) {
       });
     }
 
+    // v4.8：长会话阈值改为读 cfg.thresholds.session.*
     const longSessions = businessLongSessions(n);
+    const longSessP2 = T.session?.long_running_seconds_p2 ?? 600;
     if (longSessions.length > 0) {
       const top = longSessions[0];
       push({
         type: 'long_running_session',
-        priority: Number(top.time) >= 600 ? 'P2' : 'P3',
+        priority: Number(top.time) >= longSessP2 ? 'P2' : 'P3',
         groupKey: `long_running_session:${n.ip}`,
         description: `存在长时间运行会话：${top.user}@${top.host || '-'} ${top.time}s，状态 ${top.state || '-'}${top.db ? `，库 ${top.db}` : ''}`,
         node: nodeLabel(n),
@@ -1869,9 +1875,12 @@ function analyzeIssues(nodes) {
       });
     }
 
+    // v4.8：磁盘阈值改为读 cfg.thresholds.disk.*
+    const diskCriticalPct = T.disk?.critical_pct ?? 90;
+    const diskHighPct = T.disk?.high_pct ?? 80;
     for (const d of (n.disks || [])) {
       const pct = parseInt((d.usePct || '0').replace('%', ''));
-      if (pct >= 90) {
+      if (pct >= diskCriticalPct) {
         push({
           type: 'disk_critical', priority: 'P0', groupKey: `disk:${n.ip}:${d.mount}`,
           description: `磁盘 ${d.mount} 使用率 ${d.usePct}（容量 ${d.total}，已用 ${d.used}）`,
@@ -1879,7 +1888,7 @@ function analyzeIssues(nodes) {
           sql: `df -h ${d.mount}\nfind ${d.mount} -type f -size +1G -mtime +30 -exec ls -lh {} \\;`,
           scope: 'node',
         });
-      } else if (pct >= 80) {
+      } else if (pct >= diskHighPct) {
         push({
           type: 'disk_high', priority: 'P1', groupKey: `disk:${n.ip}:${d.mount}`,
           description: `磁盘 ${d.mount} 使用率 ${d.usePct}`,
@@ -1889,11 +1898,13 @@ function analyzeIssues(nodes) {
       }
     }
 
-    // ----- 复制类 -----
+    // ----- 复制类 ----- (v4.8：延迟阈值改为读 cfg.thresholds.replication.*)
     if (n.replication?.isSlave) {
       const s = n.replication.status || {};
       const ioR = s.slaveIoRunning, sqlR = s.slaveSqlRunning;
       const sbm = s.secondsBehindMaster;
+      const delayP1 = T.replication?.delay_p1_seconds ?? 300;
+      const delayP2 = T.replication?.delay_p2_seconds ?? 60;
       if (ioR !== 'Yes' || sqlR !== 'Yes') {
         push({
           type: 'repl_thread_down', priority: 'P0', groupKey: `repl_thread:${n.ip}`,
@@ -1903,14 +1914,14 @@ function analyzeIssues(nodes) {
           sql: 'SHOW SLAVE STATUS\\G',
           scope: 'node',
         });
-      } else if (sbm != null && Number(sbm) > 300) {
+      } else if (sbm != null && Number(sbm) > delayP1) {
         push({
           type: 'repl_delay_high', priority: 'P1', groupKey: `repl_delay:${n.ip}`,
           description: `从库延迟 ${sbm} 秒`,
           node: nodeLabel(n), action: '排查 SQL 线程瓶颈/大事务；启用并行复制',
           scope: 'node',
         });
-      } else if (sbm != null && Number(sbm) > 60) {
+      } else if (sbm != null && Number(sbm) > delayP2) {
         push({
           type: 'repl_delay_low', priority: 'P2', groupKey: `repl_delay:${n.ip}`,
           description: `从库延迟 ${sbm} 秒`,
@@ -1974,11 +1985,13 @@ function analyzeIssues(nodes) {
       });
     }
 
-    // 碎片表：只统计绝对值大的（≥100MB），避免噪声
+    // 碎片表：只统计绝对值大的（v4.8 阈值改为读 cfg.thresholds.frag.*）
+    const fragRate = T.frag?.rate ?? 0.7;
+    const fragMinMB = T.frag?.min_mb ?? 100;
     const bigFrag = (n.fragTables || []).filter(t => {
       const fr = Number(t.fragRate);
       const free = Number(t.dataFree);
-      return fr >= 0.7 && free >= 100 * 1024 * 1024;
+      return fr >= fragRate && free >= fragMinMB * 1024 * 1024;
     });
     if (bigFrag.length > 0) {
       const top = bigFrag
@@ -1988,7 +2001,7 @@ function analyzeIssues(nodes) {
         .join('、');
       push({
         type: 'heavy_frag_tables', priority: 'P2', groupKey: 'heavy_frag_tables',
-        description: `存在高碎片大表 ${bigFrag.length} 张（碎片率≥70% 且碎片≥100MB；TOP：${top}）`,
+        description: `存在高碎片大表 ${bigFrag.length} 张（碎片率≥${(fragRate*100).toFixed(0)}% 且碎片≥${fragMinMB}MB；TOP：${top}）`,
         node: nodeLabel(n),
         action: '维护窗口期 OPTIMIZE TABLE 或 pt-online-schema-change 重建',
         sql: '-- 示例：OPTIMIZE TABLE pioneer_db.tbl_order_refund;\n-- 大表推荐：pt-online-schema-change --alter "ENGINE=InnoDB" D=pioneer_db,t=tbl_order_refund --execute',
@@ -1996,11 +2009,13 @@ function analyzeIssues(nodes) {
       });
     }
 
-    // ----- 慢查询（按绝对值分级）-----
+    // ----- 慢查询（按绝对值分级；v4.8 阈值改为读 cfg.thresholds.sql.*）-----
     if (n.slowQueries != null) {
       const slow = Number(n.slowQueries);
       const pct = n.questions ? (slow / Number(n.questions) * 100) : null;
-      if (slow > 1000000) {
+      const slowHigh = T.sql?.slow_query_abs_high ?? 1000000;
+      const slowMed = T.sql?.slow_query_abs_med ?? 100000;
+      if (slow > slowHigh) {
         push({
           type: 'slow_query_abs_high', priority: 'P1', groupKey: `slow_abs:${n.ip}`,
           description: `累计慢查询 ${slow.toLocaleString()} 次${pct!=null?`（占总查询 ${pct.toFixed(4)}%）`:''}`,
@@ -2009,7 +2024,7 @@ function analyzeIssues(nodes) {
           sql: 'pt-query-digest /data/mysql/data/*-slow.log | head -200',
           scope: 'node',
         });
-      } else if (slow > 100000) {
+      } else if (slow > slowMed) {
         push({
           type: 'slow_query_abs_med', priority: 'P2', groupKey: `slow_abs:${n.ip}`,
           description: `累计慢查询 ${slow.toLocaleString()} 次`,
@@ -2030,17 +2045,20 @@ function analyzeIssues(nodes) {
         scope: 'node',
       });
     }
-    if (v.long_query_time && Number(v.long_query_time) >= 5) {
+    // v4.8：long_query_time 上限改为读 cfg.thresholds.sql.long_query_time_loose
+    const longQtLoose = T.sql?.long_query_time_loose ?? 5;
+    if (v.long_query_time && Number(v.long_query_time) >= longQtLoose) {
       push({
         type: 'long_query_time_loose', priority: 'P3', groupKey: `long_qt:${n.ip}`,
-        description: `long_query_time = ${v.long_query_time}（阈值过宽）`,
+        description: `long_query_time = ${v.long_query_time}（阈值过宽，应 < ${longQtLoose}）`,
         node: nodeLabel(n), action: '建议设为 1 秒以更敏感地捕获慢 SQL',
         scope: 'node',
       });
     }
 
-    // ----- ibtmp1 -----
-    if (n.ibtmp1?.sizeBytes && n.ibtmp1.sizeBytes > 5 * 1073741824) {
+    // ----- ibtmp1 ----- (v4.8 阈值改为读 cfg.thresholds.innodb.ibtmp1_max_gb)
+    const ibtmp1MaxGB = T.innodb?.ibtmp1_max_gb ?? 5;
+    if (n.ibtmp1?.sizeBytes && n.ibtmp1.sizeBytes > ibtmp1MaxGB * 1073741824) {
       push({
         type: 'ibtmp1_oversize', priority: 'P2', groupKey: `ibtmp1:${n.ip}`,
         description: `ibtmp1 已增长至 ${n.ibtmp1.sizeFormatted}`,
@@ -2180,32 +2198,38 @@ function analyzeIssues(nodes) {
         sql: "SET GLOBAL expire_logs_days = 7;\nPURGE BINARY LOGS BEFORE NOW() - INTERVAL 7 DAY;",
         scope: 'node',
       });
-    } else if (v.expire_logs_days && Number(v.expire_logs_days) > 30) {
-      push({
-        type: 'expire_logs_long', priority: 'P3', groupKey: `expire_logs_long:${n.ip}`,
-        description: `expire_logs_days = ${v.expire_logs_days}（保留过长）`,
-        node: nodeLabel(n), action: '评估磁盘成本与回滚需求',
-        scope: 'node',
-      });
+    } else {
+      // v4.8：expire_logs_long 阈值改为读 cfg.thresholds.binlog.expire_logs_max_days
+      const expireLogsMax = T.binlog?.expire_logs_max_days ?? 30;
+      if (v.expire_logs_days && Number(v.expire_logs_days) > expireLogsMax) {
+        push({
+          type: 'expire_logs_long', priority: 'P3', groupKey: `expire_logs_long:${n.ip}`,
+          description: `expire_logs_days = ${v.expire_logs_days}（保留过长，> ${expireLogsMax} 天）`,
+          node: nodeLabel(n), action: '评估磁盘成本与回滚需求',
+          scope: 'node',
+        });
+      }
     }
 
-    // ----- Buffer Pool 命中率（与说明文字阈值对齐：<99% → P2）-----
+    // ----- Buffer Pool 命中率（v4.8 阈值改为读 cfg.thresholds.innodb.bp_hit_*） -----
     if (n.innodb?.bufferPoolHitRate) {
       const [hit, total] = n.innodb.bufferPoolHitRate.split('/').map(s => Number(s.trim()));
       if (hit && total) {
         const rate = hit / total;
-        if (rate < 0.95) {
+        const bpHitLowPct = T.innodb?.bp_hit_low_pct ?? 95;
+        const bpHitWarnPct = T.innodb?.bp_hit_warn_pct ?? 99;
+        if (rate * 100 < bpHitLowPct) {
           push({
             type: 'bp_hit_low', priority: 'P1', groupKey: `bp_hit:${n.ip}`,
-            description: `Buffer Pool 命中率 ${(rate*100).toFixed(1)}%（${hit}/${total}）`,
+            description: `Buffer Pool 命中率 ${(rate*100).toFixed(1)}%（${hit}/${total}），低于 ${bpHitLowPct}% 阈值`,
             node: nodeLabel(n), action: '评估扩大 innodb_buffer_pool_size 至内存的 50-70%',
             scope: 'node',
           });
-        } else if (rate < 0.99) {
+        } else if (rate * 100 < bpHitWarnPct) {
           push({
             type: 'bp_hit_sub99', priority: 'P3', groupKey: `bp_hit:${n.ip}`,
-            description: `Buffer Pool 命中率 ${(rate*100).toFixed(1)}%（${hit}/${total}），未达 99% 推荐线`,
-            node: nodeLabel(n), action: '观察是否随业务增长继续下降；若持续 <97% 评估扩容',
+            description: `Buffer Pool 命中率 ${(rate*100).toFixed(1)}%（${hit}/${total}），未达 ${bpHitWarnPct}% 推荐线`,
+            node: nodeLabel(n), action: '观察是否随业务增长继续下降；若持续偏低评估扩容',
             scope: 'node',
           });
         }
@@ -2284,16 +2308,16 @@ function analyzeIssues(nodes) {
       });
     }
 
-    // ----- 从库并行复制未启用（评审反馈 #1）-----
+    // ----- 从库并行复制未启用（评审反馈 #1；v4.8 阈值改为读 cfg.thresholds.replication.parallel_workers_data_gb_*）-----
     // 大数据量集群必须启用并行复制，否则单线程应用 binlog 在大事务下会延迟积压
     if (n.role !== 'primary' && n.replication?.isSlave) {
       const parW = Number(v.slave_parallel_workers || 0);
-      // 估算节点数据量（取主库 dbTotalSizeGB；不存在时用本节点）
       const primary = nodes.find(nn => nn.role === 'primary');
       const dataSizeGB = Number(primary?.dbTotalSizeGB || n.dbTotalSizeGB || 0);
-      if (parW === 0 && dataSizeGB >= 100) {
-        // 100GB 以上集群一律告警
-        const priority = dataSizeGB >= 500 ? 'P1' : 'P2';
+      const parP2Gb = T.replication?.parallel_workers_data_gb_p2 ?? 100;
+      const parP1Gb = T.replication?.parallel_workers_data_gb_p1 ?? 500;
+      if (parW === 0 && dataSizeGB >= parP2Gb) {
+        const priority = dataSizeGB >= parP1Gb ? 'P1' : 'P2';
         push({
           type: 'slave_parallel_workers_zero',
           priority,
