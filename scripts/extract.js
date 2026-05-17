@@ -200,6 +200,48 @@ function isMysql80Plus(versionStr) {
 }
 // ============== /v4.8 辅助 ==============
 
+// ============== v4.9 senior-DBA 根因关联辅助函数 ==============
+// 把 "152 days 8 hours 44 min 21 sec" / "1 days 5 hours 30 min" / "23 hours 15 min" 解析为秒
+function parseUptimeToSec(s) {
+  if (!s) return null;
+  const str = String(s).toLowerCase();
+  let sec = 0;
+  const m = (re) => {
+    const r = str.match(re);
+    return r ? Number(r[1]) : 0;
+  };
+  sec += m(/(\d+)\s*days?/) * 86400;
+  sec += m(/(\d+)\s*hours?/) * 3600;
+  sec += m(/(\d+)\s*min/) * 60;
+  sec += m(/(\d+)\s*sec/);
+  return sec || null;
+}
+
+// 把人类可读字节数（"1.2G" / "52G" / "500M" / "120K"）解析为字节数
+function parseHumanSizeToBytes(s) {
+  if (!s) return null;
+  const m = String(s).trim().match(/^([\d.]+)\s*([KMGT])?B?$/i);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  const u = (m[2] || '').toUpperCase();
+  if (u === 'T') return Math.round(n * 1024 * 1024 * 1024 * 1024);
+  if (u === 'G') return Math.round(n * 1024 * 1024 * 1024);
+  if (u === 'M') return Math.round(n * 1024 * 1024);
+  if (u === 'K') return Math.round(n * 1024);
+  return Math.round(n);
+}
+
+// 把秒数 → 「X 天」/「X 小时」/「X 分」简洁文本
+function formatUptimeShort(sec) {
+  if (!sec || sec <= 0) return '-';
+  if (sec >= 86400) return Math.floor(sec / 86400) + ' 天';
+  if (sec >= 3600) return Math.floor(sec / 3600) + ' 小时';
+  if (sec >= 60) return Math.floor(sec / 60) + ' 分';
+  return sec + ' 秒';
+}
+// ============== /v4.9 辅助 ==============
+
+
 
 // 抽取 txt 中由 ----->>>---->>>  XXX 分隔的某段
 function getSection(content, sectionName, options = {}) {
@@ -441,6 +483,8 @@ function parseTxt(filepath) {
   node.mysqlVersion = serverVerMatch ? serverVerMatch[1].trim() : '-';
   const uptimeMatch = mysqlVer.match(/Uptime:\s*(.+)$/m);
   node.uptimeText = uptimeMatch ? uptimeMatch[1].trim() : '-';
+  // v4.9：把 uptimeText 解析为秒，供根因关联用（区分「冷重启」「长期运行」）
+  node.uptimeSec = parseUptimeToSec(node.uptimeText);
   // Threads / Questions / Slow_queries
   const statsLine = mysqlVer.match(/Threads:\s*(\d+)\s+Questions:\s*(\d+)\s+Slow queries:\s*(\d+)\s+Opens:\s*(\d+)[^Q]*Queries per second avg:\s*([\d.]+)/);
   if (statsLine) {
@@ -672,6 +716,9 @@ function parseTxt(filepath) {
   const slowLogStatus = getSection(content, 'Slow query log status');
   if (slowLogStatus) {
     node.slowLogStatus = slowLogStatus.trim();
+    // v4.9：从「file size: 12M」/「file size: 2.4G」中提取慢日志文件实际大小（字节）
+    const m = slowLogStatus.match(/file size:\s*([\d.]+\s*[KMGT]?B?)/i);
+    if (m) node.slowLogSizeBytes = parseHumanSizeToBytes(m[1]);
   }
   const slowLog = getSection(content, 'Slow query log tail');
   if (slowLog) {
@@ -682,6 +729,9 @@ function parseTxt(filepath) {
   const errLogStatus = getSection(content, 'Error log status');
   if (errLogStatus) {
     node.errorLogStatus = errLogStatus.trim();
+    // v4.9：从「file size: 50K」中提取错误日志文件实际大小（字节）
+    const m = errLogStatus.match(/file size:\s*([\d.]+\s*[KMGT]?B?)/i);
+    if (m) node.errorLogSizeBytes = parseHumanSizeToBytes(m[1]);
   }
   const errLog = getSection(content, 'Error log tail');
   if (errLog) {
@@ -717,6 +767,28 @@ function parseTxt(filepath) {
   const binlogDir = getSection(content, 'Binlog directory');
   if (binlogDir) {
     node.binlogDirInfo = stripCollectorBanner(binlogDir).trim();
+    // v4.9：从「总大小: 52G」中提取 binlog 目录总大小（字节）
+    const m = node.binlogDirInfo.match(/总大小:\s*([\d.]+\s*[KMGT]?B?)/);
+    if (m) node.binlogDirSizeBytes = parseHumanSizeToBytes(m[1]);
+    // 从「binlog dir: /path」中提取路径，供后续磁盘归因
+    const p = node.binlogDirInfo.match(/binlog dir:\s*(\S+)/);
+    if (p) node.binlogDirPath = p[1];
+  }
+
+  // v4.9：扩展采集段——datadir / relay log 目录大小（collector v3.1+ 提供，老版本采集会缺失）
+  const datadirSec = getSection(content, 'Datadir size');
+  if (datadirSec) {
+    const m = datadirSec.match(/总大小:\s*([\d.]+\s*[KMGT]?B?)/) || datadirSec.match(/([\d.]+\s*[KMGT]?B?)\s/);
+    if (m) node.datadirSizeBytes = parseHumanSizeToBytes(m[1]);
+    const p = datadirSec.match(/datadir:\s*(\S+)/);
+    if (p) node.datadirPath = p[1];
+  }
+  const relayDirSec = getSection(content, 'Relay log directory');
+  if (relayDirSec) {
+    const m = relayDirSec.match(/总大小:\s*([\d.]+\s*[KMGT]?B?)/);
+    if (m) node.relayLogDirSizeBytes = parseHumanSizeToBytes(m[1]);
+    const p = relayDirSec.match(/relay log dir:\s*(\S+)/);
+    if (p) node.relayLogDirPath = p[1];
   }
 
   // -------- 安全配置 --------
@@ -1418,6 +1490,27 @@ function main() {
 
   normalizeNodeRoles(nodes);
   sortNodesPrimaryFirst(nodes);
+
+  // v4.9：计算每节点的磁盘归因（binlog / slow log / error log / relay log / ibtmp1 各占多少）
+  // 用于「磁盘高位」类根因关联给出明确主因，而不是模糊地说「可能是 binlog」
+  for (const n of nodes) {
+    const parts = {};
+    if (n.binlogDirSizeBytes) parts.binlog = n.binlogDirSizeBytes;
+    if (n.slowLogSizeBytes) parts.slowLog = n.slowLogSizeBytes;
+    if (n.errorLogSizeBytes) parts.errorLog = n.errorLogSizeBytes;
+    if (n.relayLogDirSizeBytes) parts.relayLog = n.relayLogDirSizeBytes;
+    if (n.ibtmp1?.sizeBytes) parts.ibtmp1 = n.ibtmp1.sizeBytes;
+    if (n.datadirSizeBytes) parts.datadir = n.datadirSizeBytes;
+    const total = Object.values(parts).reduce((s, v) => s + v, 0);
+    n.diskAttribution = {
+      parts,
+      totalBytes: total,
+      // 排序后的明细，便于 render 端直接展示
+      top: Object.entries(parts)
+        .sort((a, b) => b[1] - a[1])
+        .map(([k, v]) => ({ kind: k, bytes: v, pct: total > 0 ? (v / total) : null })),
+    };
+  }
 
   // ============== 自动分析与问题清单 ==============
   let issues = analyzeIssues(nodes);

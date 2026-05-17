@@ -1192,6 +1192,31 @@ collect_backup() {
         echo "总大小: $(du -sh "$BINLOG_DIR" 2>/dev/null | awk '{print $1}')"
         ls -lt "$BINLOG_DIR" 2>/dev/null | head -10
     fi
+
+    # v4.9：datadir / relay log 目录大小独立采集，让根因关联可以拆解「磁盘高位」主因
+    section "11" "Datadir size"
+    if [[ -n "$DATA_DIR" && -d "$DATA_DIR" ]]; then
+        echo "datadir: $DATA_DIR"
+        echo "总大小: $(du -sh "$DATA_DIR" 2>/dev/null | awk '{print $1}')"
+    else
+        echo "(datadir 不可读)"
+    fi
+
+    section "11" "Relay log directory"
+    RELAY_LOG_BASENAME=$(run_sql_silent "SELECT @@relay_log_basename;" 2>/dev/null)
+    [[ -z "$RELAY_LOG_BASENAME" ]] && RELAY_LOG_BASENAME=$(run_sql_silent "SELECT @@relay_log;" 2>/dev/null)
+    if [[ -n "$RELAY_LOG_BASENAME" ]]; then
+        RELAY_LOG_DIR=$(dirname "$RELAY_LOG_BASENAME")
+        # relay log 可能与 binlog 同目录（避免重复计数）
+        if [[ -n "$RELAY_LOG_DIR" && "$RELAY_LOG_DIR" != "$BINLOG_DIR" && -d "$RELAY_LOG_DIR" ]]; then
+            echo "relay log dir: $RELAY_LOG_DIR"
+            echo "总大小: $(du -sh "$RELAY_LOG_DIR" 2>/dev/null | awk '{print $1}')"
+        else
+            echo "(relay log 与 binlog 同目录 或 该节点不是从库；跳过独立度量)"
+        fi
+    else
+        echo "(本节点未启用 relay log 或不是从库)"
+    fi
 }
 
 ###############################################################################
