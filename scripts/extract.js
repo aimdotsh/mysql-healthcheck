@@ -18,15 +18,16 @@ const path = require('path');
 // ============== CLI 参数解析 ==============
 const args = process.argv.slice(2);
 if (!args[0] || args[0].startsWith('--')) {
-  console.error('用法: node extract.js <数据目录> [--project "项目名"] [--report-version 1.0] [--out data.json]');
+  console.error('用法: node extract.js <数据目录> [--project "项目名"] [--report-version 1.0] [--out data.json] [--config <path>]');
   process.exit(1);
 }
 const dataDir = path.resolve(args[0]);
-const opts = { project: null, reportVersion: '1.0', out: null };
+const opts = { project: null, reportVersion: '1.0', out: null, config: null };
 for (let i = 1; i < args.length; i++) {
   if (args[i] === '--project') opts.project = args[++i];
   else if (args[i] === '--report-version') opts.reportVersion = args[++i];
   else if (args[i] === '--out') opts.out = args[++i];
+  else if (args[i] === '--config') opts.config = args[++i];
 }
 
 if (!fs.existsSync(dataDir) || !fs.statSync(dataDir).isDirectory()) {
@@ -37,6 +38,86 @@ if (!fs.existsSync(dataDir) || !fs.statSync(dataDir).isDirectory()) {
 const outPath = opts.out
   ? path.resolve(opts.out)
   : path.join(dataDir, 'data.json');
+
+// ============== v4.8：阈值与规则配置（三层合并：内置默认 < 采集目录同名 < CLI --config） ==============
+function loadHcConfig(dataDir, cliPath) {
+  const defaultPath = path.join(__dirname, 'config', 'default-thresholds.json');
+  let result = {};
+  const sourcesApplied = [];
+  // Layer 1: 内置默认（必须存在；否则配置层失效，但程序继续，避免阻塞）
+  try {
+    result = JSON.parse(fs.readFileSync(defaultPath, 'utf-8'));
+    sourcesApplied.push({ source: 'default', path: defaultPath });
+  } catch (e) {
+    console.warn(`⚠ 默认配置加载失败 (${defaultPath})：${e.message}`);
+    result = { thresholds: {}, priorities: {}, disabledRules: [] };
+  }
+  // Layer 2: <dataDir>/mysql-healthcheck.config.json
+  if (dataDir) {
+    const auto = path.join(dataDir, 'mysql-healthcheck.config.json');
+    if (fs.existsSync(auto)) {
+      try {
+        deepMergeConfig(result, JSON.parse(fs.readFileSync(auto, 'utf-8')));
+        sourcesApplied.push({ source: 'dataDir', path: auto });
+      } catch (e) {
+        console.warn(`⚠ 采集目录配置 ${auto} 解析失败：${e.message}（已忽略）`);
+      }
+    }
+  }
+  // Layer 3: --config <path>
+  if (cliPath) {
+    const resolved = path.resolve(cliPath);
+    if (fs.existsSync(resolved)) {
+      try {
+        deepMergeConfig(result, JSON.parse(fs.readFileSync(resolved, 'utf-8')));
+        sourcesApplied.push({ source: 'cli', path: resolved });
+      } catch (e) {
+        console.warn(`⚠ --config 文件 ${resolved} 解析失败：${e.message}（已忽略）`);
+      }
+    } else {
+      console.warn(`⚠ --config 文件不存在：${resolved}（已忽略）`);
+    }
+  }
+  // 标准化 disabledRules：过滤掉注释 / 非字符串
+  result.disabledRules = Array.isArray(result.disabledRules)
+    ? result.disabledRules.filter(s => typeof s === 'string' && !s.startsWith('_'))
+    : [];
+  // priorities 同样过滤掉注释键
+  if (result.priorities && typeof result.priorities === 'object') {
+    for (const k of Object.keys(result.priorities)) {
+      if (k.startsWith('_')) delete result.priorities[k];
+    }
+  } else {
+    result.priorities = {};
+  }
+  result._sources = sourcesApplied;
+  return result;
+}
+
+// 深合并 source 进 target，跳过以 _ 开头的注释键（_doc / _comment / _schema 等）
+function deepMergeConfig(target, source) {
+  if (!source || typeof source !== 'object') return target;
+  for (const k of Object.keys(source)) {
+    if (k.startsWith('_')) continue;
+    const v = source[k];
+    if (Array.isArray(v)) {
+      target[k] = v;
+    } else if (v && typeof v === 'object') {
+      if (!target[k] || typeof target[k] !== 'object' || Array.isArray(target[k])) {
+        target[k] = {};
+      }
+      deepMergeConfig(target[k], v);
+    } else {
+      target[k] = v;
+    }
+  }
+  return target;
+}
+
+const hcConfig = loadHcConfig(dataDir, opts.config);
+const T = hcConfig.thresholds || {};
+const DISABLED_RULES = new Set(hcConfig.disabledRules || []);
+const PRIORITY_OVERRIDES = hcConfig.priorities || {};
 
 // ============== 辅助函数 ==============
 function fmtBytes(bytes) {
@@ -1314,12 +1395,27 @@ function main() {
     securityAssessment,
     nodes,
     recommendations: deriveRecommendations(nodes, issues),
+    // v4.8：把合并后的阈值配置 + 已禁用规则透出，供 render 渲染附录 + 调试
+    hcConfig: {
+      thresholds: hcConfig.thresholds,
+      priorities: hcConfig.priorities,
+      disabledRules: hcConfig.disabledRules,
+      sources: hcConfig._sources,
+    },
+    disabledRulesApplied: hcConfig.disabledRules,
   };
 
   fs.writeFileSync(outPath, JSON.stringify(out, null, 2));
   console.error(`\n数据已写入 ${outPath}`);
   console.error(`  - 节点：${nodes.length} 个`);
   console.error(`  - 自动检出问题：${issues.length} 项 (P0:${issues.filter(i => i.priority === 'P0').length}, P1:${issues.filter(i => i.priority === 'P1').length}, P2:${issues.filter(i => i.priority === 'P2').length}, P3:${issues.filter(i => i.priority === 'P3').length})`);
+  if (hcConfig._sources && hcConfig._sources.length > 1) {
+    const overrides = hcConfig._sources.filter(s => s.source !== 'default').map(s => `${s.source}:${path.basename(s.path)}`).join(', ');
+    console.error(`  - 阈值配置：${overrides} 已合并到默认值之上`);
+  }
+  if (hcConfig.disabledRules && hcConfig.disabledRules.length > 0) {
+    console.error(`  - 已禁用规则：${hcConfig.disabledRules.join(', ')}`);
+  }
   console.error(`\n下一步：必要时手工编辑 ${path.basename(outPath)}（补充项目名/重要问题判断），然后运行 render.js。`);
 }
 
@@ -1692,7 +1788,15 @@ function businessLongSessions(node) {
 // ============== 问题自动分析（节点级 → 集群级聚合）==============
 function analyzeIssues(nodes) {
   const raw = [];
-  const push = (it) => raw.push({ status: '待处理', ...it });
+  // v4.8：push 统一接管 disabledRules 过滤 + priorities 覆盖。
+  // 旧规则 push() 调用零改动，新行为自动生效。
+  const push = (it) => {
+    if (it && it.type && DISABLED_RULES.has(it.type)) return;
+    if (it && it.type && PRIORITY_OVERRIDES[it.type]) {
+      it.priority = PRIORITY_OVERRIDES[it.type];
+    }
+    raw.push({ status: '待处理', ...it });
+  };
   const nodeLabel = (n) => `${n.ip}（${roleLabel(n.role)}）`;
 
   for (const n of nodes) {
@@ -2250,10 +2354,18 @@ function analyzeIssues(nodes) {
 function promoteAssessmentIssues(issues, backup, security, totalNodes) {
   const extras = [];
   const nextSeq = issues.length;
+  // v4.8：extras 也走 disabledRules / priorities 接管
+  const pushExtra = (it) => {
+    if (it && it.type && DISABLED_RULES.has(it.type)) return;
+    if (it && it.type && PRIORITY_OVERRIDES[it.type]) {
+      it.priority = PRIORITY_OVERRIDES[it.type];
+    }
+    extras.push(it);
+  };
 
   // --- 备份评估 ---
   if (backup && backup.severity && backup.severity !== 'OK') {
-    extras.push({
+    pushExtra({
       type: 'backup_capability',
       priority: backup.severity,   // P0 / P1 / P2
       groupKey: 'backup_capability',

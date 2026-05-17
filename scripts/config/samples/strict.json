@@ -1,0 +1,26 @@
+{
+  "_schema": "mysql-healthcheck v4.8 strict sample",
+  "_doc": "金融 / 等保三级 / 合规客户场景：阈值收紧、不禁用任何规则。",
+  "thresholds": {
+    "disk":            { "critical_pct": 80, "high_pct": 70 },
+    "memory":          { "high_pct": 80 },
+    "innodb": {
+      "hll_warn": 5000, "hll_p1": 30000,
+      "bp_hit_low_pct": 98, "bp_hit_warn_pct": 99,
+      "bp_too_small_ratio": 0.5, "bp_too_small_p1_ratio": 0.3,
+      "bp_too_large_ratio": 0.75
+    },
+    "session": { "long_running_seconds_warn": 30, "long_running_seconds_p2": 300 },
+    "replication": {
+      "delay_p1_seconds": 60, "delay_p2_seconds": 10,
+      "parallel_workers_data_gb_p2": 50, "parallel_workers_data_gb_p1": 200
+    },
+    "sql": { "slow_query_abs_high": 500000, "slow_query_abs_med": 50000, "long_query_time_loose": 2 },
+    "frag": { "rate": 0.5, "min_mb": 50 },
+    "binlog": { "expire_logs_max_days": 14 },
+    "max_connections": { "peak_memory_ratio_warn": 0.2, "peak_memory_ratio_p1": 0.4 },
+    "data_memory": { "ratio_warn": 5, "ratio_p1": 20 }
+  },
+  "priorities": {},
+  "disabledRules": []
+}

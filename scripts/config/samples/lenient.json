@@ -1,0 +1,30 @@
+{
+  "_schema": "mysql-healthcheck v4.8 lenient sample",
+  "_doc": "POC / 内部环境场景：阈值放宽，禁用合规向规则减少噪声。",
+  "thresholds": {
+    "disk":            { "critical_pct": 95, "high_pct": 85 },
+    "memory":          { "high_pct": 95 },
+    "innodb": {
+      "hll_warn": 30000, "hll_p1": 200000,
+      "bp_hit_low_pct": 90, "bp_hit_warn_pct": 95,
+      "bp_too_small_ratio": 0.3, "bp_too_small_p1_ratio": 0.1
+    },
+    "session": { "long_running_seconds_warn": 300, "long_running_seconds_p2": 1800 },
+    "replication": {
+      "delay_p1_seconds": 600, "delay_p2_seconds": 120
+    },
+    "sql": { "slow_query_abs_high": 5000000, "slow_query_abs_med": 500000, "long_query_time_loose": 10 },
+    "frag": { "rate": 0.8, "min_mb": 500 },
+    "binlog": { "expire_logs_max_days": 60 }
+  },
+  "priorities": {
+    "_comment": "示例：把 wildcard_medium 从 P2 降到 P3",
+    "wildcard_medium": "P3"
+  },
+  "disabledRules": [
+    "sql_mode_missing_strict",
+    "charset_not_utf8mb4",
+    "auth_plugin_native_on_80",
+    "performance_schema_off"
+  ]
+}
