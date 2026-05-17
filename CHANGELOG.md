@@ -4,6 +4,66 @@
 
 ---
 
+## [4.8.0] - 2026-05-17
+
+**重大版本**。两件大事：(A) 规则阈值与开关全面可配置化；(B) 新增 12 条 senior-DBA 经验级参数推荐规则，带「当前值 → 推荐值（基于本机 RAM/CPU/数据量计算）+ 一键 SQL」。
+
+### 🆕 规则配置化（重大）
+
+引入三层 deep-merge 配置体系，按 `内置默认 < 采集目录同名 < CLI --config` 优先级合并：
+
+1. **内置默认** `scripts/config/default-thresholds.json`：含 30+ 阈值，覆盖 disk / memory / innodb（含 bp_too_small/large、bp_hit、HLL、ibtmp1、redo_log）/ session / replication / sql / frag / binlog / max_connections / data_memory / auto_increment 共 11 个分组。
+2. **采集目录同名文件**：若数据目录有 `mysql-healthcheck.config.json`，自动 deep-merge（无需 CLI 参数）。适合「客户 A 用一份配置，客户 B 用另一份」交付场景。
+3. **CLI `--config <path>`**：最高优先，临时覆盖用。
+
+配套能力：
+- **`disabledRules`**：按 type 禁用规则（例：`["sql_mode_missing_strict", "wait_timeout_too_long"]`）；`push()` 已统一接管。
+- **`priorities`**：覆盖单条规则优先级（例：`{"wildcard_medium": "P3"}` 把中危降为观察）。
+- **样本配置**：`scripts/config/samples/strict.json`（金融/合规客户阈值收紧）、`lenient.json`（POC/内部宽松 + 禁用合规向规则）。
+- **`data.json` 透出**：合并后的 `hcConfig` + `disabledRulesApplied` 写入 data.json，render.js 与外部审计可读。
+
+**迁移现有 17 处硬编码阈值**：mem_high / disk_critical / disk_high / innodb_hll_warn / hll_p1 / long_running_seconds_p2 / repl_delay_high / repl_delay_low / heavy_frag (rate + min_mb) / slow_query_abs_high / slow_query_abs_med / long_query_time_loose / ibtmp1_max_gb / bp_hit_low_pct / bp_hit_warn_pct / expire_logs_max_days / parallel_workers_data_gb_p1 / _p2 → 全部读 `cfg.thresholds.X.Y`，默认值保持原状（零回归 — `npm test` 全绿）。
+
+### 🆕 12 条 senior-DBA 参数推荐规则
+
+每条都计算「基于本机 RAM/CPU/数据量的推荐值」+ 携带新字段 `currentValue` / `recommendedValue` / `dimension`，render 端会以彩色「✦ 当前值 → 推荐值」对照行展示。
+
+| # | type | dimension | priority | 触发条件（精简） |
+|---|---|---|---|---|
+| 1 | `bp_too_small` | performance | P1/P2 | innodb_buffer_pool 占 RAM < 40%（用户的示例规则） |
+| 2 | `bp_too_large` | availability | P1 | innodb_buffer_pool 占 RAM > 80%（OOM 风险） |
+| 3 | `redo_log_too_small` | performance | P1/P2 | innodb_log_file_size < 512MB 且数据量大 |
+| 4 | `flush_method_not_o_direct` | performance | P2 | Linux 上 flush_method ≠ O_DIRECT |
+| 5 | `doublewrite_off` | durability | P1 | innodb_doublewrite=OFF（数据丢失风险） |
+| 6 | `charset_not_utf8mb4` | dataDesign | P2 | character_set_server 非 utf8mb4 |
+| 7 | `sql_mode_missing_strict` | dataDesign | P2 | sql_mode 缺 STRICT_TRANS_TABLES |
+| 8 | `auth_plugin_native_on_80` | security | P2 | 8.0+ 仍用 mysql_native_password |
+| 9 | `performance_schema_off` | operations | P2 | performance_schema = OFF |
+| 10 | `max_connections_vs_memory` | availability | P1/P2 | max_conn × 单连接峰值 > 30% RAM |
+| 11 | `slave_skip_errors_set` | durability | **P0** | slave_skip_errors 非空（数据漂移） |
+| 12 | `auto_increment_exhausting` | dataDesign | P0/P1/P2 | 自增列 rate ≥ 0.7（rate ≥ 0.9 升 P0） |
+
+**用户示例验证**：`innodb_buffer_pool_size = 1 GB` on RAM 16 GB → 触发 P2 `bp_too_small` → currentValue=`1024 MB（占 RAM 16 GB 的 6%）` → recommendedValue=`9.6 GB（~60% RAM，保留 OS/连接/临时表余量）` → sql=`SET GLOBAL innodb_buffer_pool_size = 10307921920; -- my.cnf: ...`
+
+### 🎨 渲染增强
+
+- `chapterConclusion` 16.2 行动计划：每条 issue 的 `i.action` 后插入彩色对照行「✦ 当前值：X → 推荐值：Y」，仅当 issue 同时携带 `currentValue` + `recommendedValue` 时显示（现有规则不带，行为不变）。
+- `computeHealthScore` 优先使用 `issue.dimension`，旧规则回退到 type 正则映射（零行为变化）。
+
+### 🧪 验证
+
+- `npm test`（collector_autodiscovery + report_regression）全绿，默认配置等效旧硬编码。
+- 8 个真实节点样本中，新规则共触发 16 次（bp_too_small × 5, max_connections_vs_memory × 8, flush_method_not_o_direct × 7, redo_log_too_small × 1, data_to_memory_ratio_high × 1）。
+- 用 strict 配置（disk 70/60, long_query 2, expire_logs 7）触发规则数从 ~10 涨到 50+，证明配置覆盖链路完全打通。
+
+### 📋 v4.9 backlog
+
+- 剩余 10 条 senior-DBA 规则：bp_instances_mismatch / tmp_table_size_mismatch / flush_log_at_trx_commit=2 / io_capacity_default / skip_name_resolve_off / wait_timeout_too_long / password_lifetime_missing
+- OS 层规则（swappiness / THP / NUMA），需要扩展采集脚本
+- 配置 schema 校验 + `--validate-config <path>` CLI
+
+---
+
 ## [4.7.2] - 2026-05-17
 
 **报告聚焦补丁**。基于 v4.7.1 实际查阅反馈，做两处「降噪」调整：

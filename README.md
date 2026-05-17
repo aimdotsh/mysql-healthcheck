@@ -17,7 +17,7 @@
   <a href="https://github.com/aimdotsh/mysql-healthcheck/issues"><img alt="GitHub issues" src="https://img.shields.io/github/issues/aimdotsh/mysql-healthcheck?style=flat-square&logo=github"></a>
   <a href="https://github.com/aimdotsh/mysql-healthcheck/commits/main"><img alt="GitHub last commit" src="https://img.shields.io/github/last-commit/aimdotsh/mysql-healthcheck?style=flat-square&logo=github"></a>
   <img alt="Tests" src="https://img.shields.io/badge/tests-passing-43853d?style=flat-square&logo=githubactions&logoColor=white">
-  <img alt="Version" src="https://img.shields.io/badge/version-v4.7-1F4E79?style=flat-square">
+  <img alt="Version" src="https://img.shields.io/badge/version-v4.8-1F4E79?style=flat-square">
   <img alt="Node" src="https://img.shields.io/badge/node-%E2%89%A516-43853d?style=flat-square&logo=node.js">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square">
   <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey?style=flat-square">
@@ -222,6 +222,41 @@ flowchart LR
 | **运维** | 节点参数不一致 / 慢日志未开 / 备份工具缺失 | P1~P2 |
 
 > 完整 30+ 规则与阈值见 [`references/rules.md`](references/rules.md)；详细健康度评分模型也在那里。
+
+---
+
+## ⚙️ 配置巡检阈值（v4.8+）
+
+不同客户场景需求不一致 — 金融客户磁盘 80% 就要告警，POC 内部 95% 才需要关注；某些客户不在乎 `sql_mode` 严格模式，需要直接禁用。v4.8 引入三层配置：
+
+```
+内置默认  <  采集目录同名文件  <  CLI --config
+```
+
+**内置默认**：`scripts/config/default-thresholds.json`（含全部 30+ 阈值 + 注释）。
+
+**采集目录自动发现**：在数据目录放一份 `mysql-healthcheck.config.json`，extract 时自动 deep-merge：
+
+```json
+{
+  "thresholds": {
+    "disk": { "critical_pct": 85, "high_pct": 75 },
+    "innodb": { "bp_too_small_ratio": 0.5 }
+  },
+  "disabledRules": ["sql_mode_missing_strict", "wait_timeout_too_long"],
+  "priorities": { "wildcard_medium": "P3" }
+}
+```
+
+**CLI 临时覆盖**：
+
+```bash
+node scripts/extract.js <data-dir> --config /path/to/custom.json --out data.json
+```
+
+**预设模板**：
+- `scripts/config/samples/strict.json` — 金融/合规客户（阈值收紧）
+- `scripts/config/samples/lenient.json` — POC/内部环境（阈值放宽 + 禁用合规向规则）
 
 ---
 
