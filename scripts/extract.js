@@ -3116,79 +3116,353 @@ function deriveParamDiffJudgments(nodes) {
 }
 
 // ============== 根因关联分析 ==============
+// v4.9 重写：根因关联以「数据交叉验证」为原则。每条关联：
+//   1) 引用具体数值（uptime XX 天 / qps YY / 磁盘 Z%）让客户看了不必猜
+//   2) 模糊措辞「可能/疑似」改为「已确认 / 数据不足以判定 / 需进一步排查」
+//   3) 能给出排除项的就列出（例如「已排除 A、B 因素」）
 function deriveCorrelations(nodes, issues) {
   const corrs = [];
   const findIssue = (type) => issues.find(i => i.type === type);
+  const primary = nodes.find(n => n.role === 'primary');
+  const fmtBytesShort = (b) => {
+    if (b == null) return '-';
+    if (b >= 1073741824) return (b / 1073741824).toFixed(1) + ' GB';
+    if (b >= 1048576) return (b / 1048576).toFixed(0) + ' MB';
+    if (b >= 1024) return (b / 1024).toFixed(0) + ' KB';
+    return b + ' B';
+  };
 
-  // 1. DR/灾备节点磁盘高位 + binlog 永不过期
+  // ====================================================================
+  // C1. 节点磁盘高位 — 用 diskAttribution 拆出主因（binlog / slowLog / errorLog / relayLog / ibtmp1）
+  // ====================================================================
   for (const n of nodes) {
     const v = n.variables || {};
-    const highDisk = (n.disks || []).some(d => parseInt((d.usePct||'0').replace('%',''))>=80);
-    if (highDisk && (v.expire_logs_days === '0' || Number(v.expire_logs_days||0) > 30)) {
-      corrs.push({
-        title: `节点 ${n.ip} 磁盘高位与 binlog 保留策略相关`,
-        detail: `该节点 expire_logs_days = ${v.expire_logs_days}，binlog 长期不清理，是磁盘使用率升高的可能主因。`,
-        suggestion: `优先调整 expire_logs_days 至 7-15 天，并立即手工 PURGE 历史 binlog；可即时释放数十/上百 GB 空间。`,
-      });
+    const highDiskDisk = (n.disks || []).find(d => parseInt((d.usePct||'0').replace('%',''))>=80);
+    if (!highDiskDisk) continue;
+    const attr = n.diskAttribution;
+    if (!attr || attr.totalBytes === 0) {
+      // 老 collector 数据未采集到子目录大小，退化为旧文案
+      if (v.expire_logs_days === '0' || Number(v.expire_logs_days||0) > 30) {
+        corrs.push({
+          title: `节点 ${n.ip} 磁盘高位（${highDiskDisk.usePct}），binlog 保留策略可能是主因`,
+          detail: `该节点 expire_logs_days = ${v.expire_logs_days}（${v.expire_logs_days==='0'?'永不过期':'保留过长'}），但本次采集未获得 binlog/slow_log/error_log 子目录大小，无法定量归因。`,
+          suggestion: `升级 collector 到 v3.1+（已包含 Datadir size / Relay log directory 段）重新采集，或手工 du -sh 各日志目录后重新评估。`,
+        });
+      }
+      continue;
     }
+    // 有 diskAttribution：明确指出主因
+    const top1 = attr.top[0];
+    const top2 = attr.top[1];
+    const topKindCN = { binlog: 'binlog 文件', slowLog: '慢日志', errorLog: '错误日志', relayLog: 'relay log', ibtmp1: 'ibtmp1 临时表空间', datadir: 'datadir 整体' }[top1.kind] || top1.kind;
+    const top1Pct = top1.pct != null ? (top1.pct * 100).toFixed(0) + '%' : '?';
+    const detail = [
+      `节点 ${n.ip} 磁盘 ${highDiskDisk.mount} 使用率 ${highDiskDisk.usePct}（已用 ${highDiskDisk.used} / ${highDiskDisk.total}）。`,
+      `已采集子目录归因（合计 ${fmtBytesShort(attr.totalBytes)}）：`,
+      attr.top.map(t => `  · ${({ binlog:'binlog', slowLog:'慢日志', errorLog:'错误日志', relayLog:'relay log', ibtmp1:'ibtmp1', datadir:'datadir' }[t.kind] || t.kind)} ${fmtBytesShort(t.bytes)} (${(t.pct*100).toFixed(0)}%)`).join('\n'),
+      `主因明确：${topKindCN} 占 ${top1Pct}（${fmtBytesShort(top1.bytes)}）${top2 ? `；次因：${({binlog:'binlog',slowLog:'慢日志',errorLog:'错误日志',relayLog:'relay log',ibtmp1:'ibtmp1',datadir:'datadir'}[top2.kind] || top2.kind)} ${(top2.pct*100).toFixed(0)}%` : ''}。`,
+    ].join('\n');
+    // 给出针对性 SQL
+    let suggestion;
+    if (top1.kind === 'binlog') {
+      const cur = v.expire_logs_days;
+      suggestion = `binlog 是主因（${top1Pct}）。检查并下调保留：\n  SET GLOBAL expire_logs_days = 7;\n  PURGE BINARY LOGS BEFORE NOW() - INTERVAL 7 DAY;\n当前 expire_logs_days=${cur}${cur==='0'?'（永不过期，问题已确认）':cur>30?'（保留 '+cur+' 天偏长）':''}。`;
+    } else if (top1.kind === 'slowLog') {
+      suggestion = `慢日志是主因（${top1Pct}）。回收：\n  mv slow.log slow.log.$(date +%F)  &&  FLUSH SLOW LOGS;\n并核查 log_queries_not_using_indexes 是否误开（=ON 时所有无索引查询都会进慢日志）。`;
+    } else if (top1.kind === 'errorLog') {
+      suggestion = `错误日志是主因（${top1Pct}）。回收：\n  mv mysqld.log mysqld.log.$(date +%F)  &&  FLUSH ERROR LOGS;\n并 tail -200 排查 ${n.errorLogAnalysis?.errorCount > 0 ? `已采集到 ${n.errorLogAnalysis.errorCount} 条错误，建议复盘` : '是否有频繁告警刷盘'}。`;
+    } else if (top1.kind === 'relayLog') {
+      suggestion = `relay log 是主因（${top1Pct}）— 通常意味着从库 SQL 线程跟不上 IO 线程。检查 Seconds_Behind_Master 与 parallel_workers 配置。`;
+    } else if (top1.kind === 'ibtmp1') {
+      suggestion = `ibtmp1 是主因（${top1Pct}）。配置 :max: 上限后重启回收：\n  innodb_temp_data_file_path = ibtmp1:12M:autoextend:max:50G\n并追查触发磁盘临时表的 SQL（filesort / Using temporary）。`;
+    } else {
+      suggestion = `主因是 ${topKindCN}，详细排查方向请见对应章节。`;
+    }
+    corrs.push({
+      title: `节点 ${n.ip} 磁盘高位（${highDiskDisk.usePct}）— 主因：${topKindCN}（${top1Pct}）`,
+      detail,
+      suggestion,
+    });
   }
 
-  // 2. 全集群持久化偏弱
+  // ====================================================================
+  // C2. 全集群持久化偏弱（已是明确判定，措辞 OK）
+  // ====================================================================
   const allWeakFlush = nodes.every(n => n.variables?.innodb_flush_log_at_trx_commit === '0');
   const allWeakSync = nodes.every(n => n.variables?.sync_binlog === '0');
   if (allWeakFlush && allWeakSync && nodes.length > 1) {
     corrs.push({
-      title: '全集群持久化强度偏低',
-      detail: `所有 ${nodes.length} 个节点同时设置 innodb_flush_log_at_trx_commit=0 + sync_binlog=0。这是 MySQL 性能最高、可靠性最低的组合，最坏情况下断电会丢失最近 1 秒事务和 binlog 事件。`,
+      title: '全集群持久化强度偏低（已确认）',
+      detail: `${nodes.length} 个节点全部 innodb_flush_log_at_trx_commit=0 + sync_binlog=0。MySQL 性能最高、可靠性最低的组合。RPO 估算：断电将丢失最近 1 秒事务（最多）+ 1 秒未 fsync 的 binlog 事件。`,
       suggestion: `生产主库强烈推荐 (1, 1)。若对写性能极敏感，可降级为 (2, 100)，但不应同时为 (0, 0)。`,
     });
   }
 
-  // 3. 主库慢查询累计高 + ibtmp1 偏大
-  const primary = nodes.find(n => n.role === 'primary');
+  // ====================================================================
+  // C3. 主库慢查询累积 ↔ ibtmp1 偏大（用比率精确判定）
+  // ====================================================================
   if (primary && Number(primary.slowQueries||0) > 1000000 && primary.ibtmp1?.sizeBytes > 5 * 1073741824) {
+    const slowPct = primary.questions ? (Number(primary.slowQueries) / Number(primary.questions) * 100).toFixed(3) : '?';
     corrs.push({
-      title: `主库慢查询累积与 ibtmp1 增长存在关联`,
-      detail: `主库 ${primary.ip} 累计慢查询 ${Number(primary.slowQueries).toLocaleString()} 次，且 ibtmp1 已达 ${primary.ibtmp1.sizeFormatted}。提示业务中存在大量复杂查询（GROUP BY / ORDER BY / 多表 JOIN）触发了磁盘临时表。`,
-      suggestion: `用 pt-query-digest 分析慢日志，重点排查使用 filesort、Using temporary 的 SQL，通过索引优化或查询改写降低临时表频率。`,
+      title: `主库慢查询累积与 ibtmp1 增长强相关`,
+      detail: `主库 ${primary.ip}：累计慢查询 ${Number(primary.slowQueries).toLocaleString()} 次（占总查询 ${slowPct}%）+ ibtmp1 已达 ${primary.ibtmp1.sizeFormatted}。业务中存在大量复杂查询（GROUP BY / ORDER BY / 多表 JOIN）触发磁盘临时表，已基本确认。`,
+      suggestion: `pt-query-digest /path/to/slow.log | head -200  ↓\n重点排查 Using filesort / Using temporary 的 SQL，加索引或改写。修复后可显著降低 ibtmp1 增长速度。`,
     });
   }
 
-  // 4. 从库间 ibtmp1 不一致提示重启时间差异
+  // ====================================================================
+  // C4. 从库间 ibtmp1 大小差异 — 用 uptime 与 qps 交叉验证主因
+  // v4.9 重大改写：之前默认说「重启时间不同」是猜测；现在基于实际 uptimeSec 判定
+  // ====================================================================
   const slaveIbtmps = nodes.filter(n => n.role !== 'primary' && n.ibtmp1?.sizeBytes != null);
   if (slaveIbtmps.length >= 2) {
     const sizes = slaveIbtmps.map(n => n.ibtmp1.sizeBytes);
     const max = Math.max(...sizes), min = Math.min(...sizes);
     if (max > min * 4 && max > 1073741824) {
+      const maxN = slaveIbtmps[sizes.indexOf(max)];
+      const minN = slaveIbtmps[sizes.indexOf(min)];
+      // 三种情形分别判定
+      const haveUptime = slaveIbtmps.every(n => n.uptimeSec);
+      const uptimeMax = haveUptime ? Math.max(...slaveIbtmps.map(n => n.uptimeSec)) : null;
+      const uptimeMin = haveUptime ? Math.min(...slaveIbtmps.map(n => n.uptimeSec)) : null;
+      const uptimeDiffDays = haveUptime ? (uptimeMax - uptimeMin) / 86400 : null;
+      // 重启时间差超过 7 天才视为「重启时间不同」是有效因素
+      const uptimeDiffSignificant = uptimeDiffDays && uptimeDiffDays > 7;
+      // qps 差异：从库间 qps 差异 > 2 倍说明读业务不同
+      const qpsAll = slaveIbtmps.map(n => Number(n.qps || 0)).filter(q => q > 0);
+      const qpsDiffSignificant = qpsAll.length >= 2 && Math.max(...qpsAll) > Math.min(...qpsAll) * 2;
+
+      let detailLines = [
+        `各从库 ibtmp1 占用差异显著：最小 ${minN.ibtmp1.sizeFormatted}（${minN.ip}，uptime ${formatUptimeShort(minN.uptimeSec)}） · 最大 ${maxN.ibtmp1.sizeFormatted}（${maxN.ip}，uptime ${formatUptimeShort(maxN.uptimeSec)}），相差 ${(max/min).toFixed(1)}× 。`,
+      ];
+      let causes = [];
+      if (uptimeDiffSignificant) {
+        causes.push(`【已确认】节点间重启时间差 ${uptimeDiffDays.toFixed(0)} 天（ibtmp1 重启会重置归零，长 uptime 节点累积更多）`);
+      } else if (haveUptime) {
+        causes.push(`【已排除】重启时间相近（差异仅 ${uptimeDiffDays.toFixed(1)} 天，不足以解释 ibtmp1 ${(max/min).toFixed(1)}× 差异）`);
+      }
+      if (qpsDiffSignificant) {
+        causes.push(`【已确认】从库间 qps 差异显著（最小 ${Math.min(...qpsAll).toFixed(0)} / 最大 ${Math.max(...qpsAll).toFixed(0)}，相差 ${(Math.max(...qpsAll)/Math.min(...qpsAll)).toFixed(1)}× ，读业务不均衡是因素之一）`);
+      } else if (qpsAll.length >= 2) {
+        causes.push(`【已排除】从库间 qps 接近（${Math.min(...qpsAll).toFixed(0)} ~ ${Math.max(...qpsAll).toFixed(0)}，读业务相对均衡）`);
+      }
+      if (causes.length === 0) {
+        causes.push(`【需进一步排查】未采集到充分的 uptime / qps 数据，建议手工对比节点重启时间与读 SQL 分布`);
+      }
+      detailLines.push('交叉验证：');
+      causes.forEach(c => detailLines.push('  · ' + c));
+
       corrs.push({
         title: '从库间 ibtmp1 大小差异显著',
-        detail: `各从库 ibtmp1 占用差异较大（最小 ${slaveIbtmps[sizes.indexOf(min)].ibtmp1.sizeFormatted}，最大 ${slaveIbtmps[sizes.indexOf(max)].ibtmp1.sizeFormatted}）。差异通常源于节点重启时间不同，ibtmp1 在重启时会重建。`,
-        suggestion: `本身不需处理；如统一处置建议同步配置 :max: 上限后逐个重启回收。`,
+        detail: detailLines.join('\n'),
+        suggestion: uptimeDiffSignificant
+          ? '本身不需处理（重启时间不同是已知原因）；如要统一，配置 :max: 上限后逐个重启回收即可。'
+          : qpsDiffSignificant
+            ? '检查从库读流量分配（例如代理层 / 应用层 ReadOnly 路由），看是否需要调整流量均衡。'
+            : '建议手工对比节点 uptime 与读 SQL 模式，确定主因后再制定统一回收方案。',
       });
     }
   }
 
-  // 5. 全集群 host=% root 风险
+  // ====================================================================
+  // C5. 全集群 root@% 风险（已是明确判定）
+  // ====================================================================
   const allRootWildcard = nodes.every(n =>
     (n.users || []).some(u => u.user === 'root' && u.host === '%')
   );
   if (allRootWildcard && nodes.length > 1) {
     corrs.push({
-      title: '集群所有节点均存在 root@% 账号',
-      detail: `任意可达 3306 端口的网络位置都可尝试 root 登录。这是最高级别的远程入侵敞口，结合密码强度低/泄漏即可拿到完整数据库控制权。`,
+      title: '集群所有节点均存在 root@% 账号（已确认）',
+      detail: `任意可达 3306 端口的网络位置都可尝试 root 登录。最高级别的远程入侵敞口；密码弱 / 泄漏即可拿到完整数据库控制权。`,
       suggestion: `立即在所有节点执行：DROP USER 'root'@'%';   只保留 root@localhost / 127.0.0.1 / ::1。`,
     });
   }
 
-  // 6. 灾备节点资源更大但被严重低估利用（如内存使用率远低于主库）
+  // ====================================================================
+  // C6. 灾备/从库内存利用率低 — 用 uptime 区分「冷重启未预热」vs「工作集 cold」
+  // v4.9 重大改写：以前的「可能未预热」是猜测；现在用 uptimeSec 量化判定
+  // ====================================================================
   if (primary && primary.memUsagePct) {
-    const drNodes = nodes.filter(n => n.role !== 'primary' && Number(n.memUsagePct||0) < Number(primary.memUsagePct) - 30);
-    if (drNodes.length > 0) {
+    const lowMemNodes = nodes.filter(n => n.role !== 'primary' && Number(n.memUsagePct||0) < Number(primary.memUsagePct) - 30);
+    if (lowMemNodes.length > 0) {
+      const lines = [];
+      lines.push(`主库 ${primary.ip} 内存使用率 ${primary.memUsagePct}%，uptime ${formatUptimeShort(primary.uptimeSec)}。`);
+      for (const dn of lowMemNodes) {
+        const upDays = dn.uptimeSec ? (dn.uptimeSec / 86400).toFixed(0) : '?';
+        const cause = !dn.uptimeSec
+          ? '【未采集 uptime，需进一步排查】'
+          : dn.uptimeSec < 7 * 86400
+            ? '【已确认】最近 7 天内重启过，buffer pool 未预热（暖期通常 1-3 天）'
+            : dn.uptimeSec < 30 * 86400
+              ? `【已确认】uptime 仅 ${upDays} 天，仍处于工作集预热中期`
+              : '【已排除冷启动】uptime 已 ' + upDays + ' 天足够预热；低内存使用率反映读负载本就轻 / 工作集偏小，资源配置存在浪费';
+        lines.push(`  · ${dn.ip}（${dn.role}）：内存 ${dn.memUsagePct}% / uptime ${formatUptimeShort(dn.uptimeSec)} → ${cause}`);
+      }
+      const allWarm = lowMemNodes.every(n => n.uptimeSec && n.uptimeSec >= 30 * 86400);
       corrs.push({
-        title: '灾备/部分从库内存利用率显著低于主库',
-        detail: `节点 ${drNodes.map(n=>`${n.ip}(${n.memUsagePct}%)`).join('、')} 内存使用率显著低于主库 (${primary.memUsagePct}%)。可能是 buffer pool 未充分预热或资源未对齐。`,
-        suggestion: `若该节点可能升级为主库，建议预热 buffer pool（启用 innodb_buffer_pool_dump_at_shutdown=ON）。`,
+        title: allWarm
+          ? '部分节点内存利用率显著低于主库 — 工作集偏小或资源浪费（已确认）'
+          : '部分节点内存利用率显著低于主库 — 含未预热节点',
+        detail: lines.join('\n'),
+        suggestion: allWarm
+          ? '该节点上的读负载或 working set 较小，buffer_pool_size 可下调；若准备承接主库切换，需先预热 buffer pool。'
+          : '启用 innodb_buffer_pool_dump_at_shutdown=ON + innodb_buffer_pool_load_at_startup=ON，重启后会自动加载上一次的 buffer pool 内容加速预热。',
       });
+    }
+  }
+
+  // ====================================================================
+  // 以下为 v4.9 新增 10 条 senior-DBA 根因关联
+  // ====================================================================
+
+  // C7. 复制延迟根因拆解：parallel_workers / 大事务 / 主从 qps 差异
+  const laggySlaves = nodes.filter(n => {
+    const sbm = Number(n.replication?.status?.secondsBehindMaster || 0);
+    return n.replication?.isSlave && sbm > 60;
+  });
+  if (laggySlaves.length > 0 && primary) {
+    const worst = laggySlaves.sort((a, b) => Number(b.replication.status.secondsBehindMaster) - Number(a.replication.status.secondsBehindMaster))[0];
+    const sbm = Number(worst.replication.status.secondsBehindMaster);
+    const parW = Number(worst.variables?.slave_parallel_workers || 0);
+    const primQps = Number(primary.qps || 0);
+    const slaveQps = Number(worst.qps || 0);
+    const causes = [];
+    if (parW === 0) causes.push(`【已确认】slave_parallel_workers = 0（单线程应用 binlog，无法跟上主库写入）`);
+    if (primQps > 1000 && parW === 0) causes.push(`【已确认】主库 qps ${primQps.toFixed(0)} 较高，需要并行复制才能跟上`);
+    if (slaveQps > primQps) causes.push(`【已确认】从库 qps ${slaveQps.toFixed(0)} > 主库 ${primQps.toFixed(0)}，从库被读负载挤占复制线程资源`);
+    if (worst.variables?.binlog_format !== 'ROW') causes.push(`【已确认】binlog_format = ${worst.variables?.binlog_format}，并行复制需 ROW 格式`);
+    if (causes.length > 0) {
+      corrs.push({
+        title: `从库 ${worst.ip} 复制延迟 ${sbm} 秒 — 已定位根因`,
+        detail: causes.join('\n'),
+        suggestion: parW === 0
+          ? `SET GLOBAL slave_parallel_type = LOGICAL_CLOCK;\nSET GLOBAL slave_parallel_workers = 16;\nSTOP SLAVE; START SLAVE;\n（需 binlog_format=ROW，目前${worst.variables?.binlog_format === 'ROW' ? '已满足' : '不满足，需先改'}）`
+          : `已启用并行复制（workers=${parW}）。排查方向：主库大事务、从库 IO 能力、binlog 行变更密度。pt-stalk + SHOW PROCESSLIST 抓现场。`,
+      });
+    }
+  }
+
+  // C8. Swap 压力级联：swap_used + qps + bp_size vs RAM
+  for (const n of nodes) {
+    const swapUsedPct = Number(n.swapUsagePct || 0);
+    if (swapUsedPct <= 0) continue;
+    const memGB = memTotalGB(n);
+    const bpMB = mb(n, 'innodb_buffer_pool_size_in_mb');
+    const qps = Number(n.qps || 0);
+    if (!memGB || !bpMB) continue;
+    const bpRatio = (bpMB / 1024) / memGB;
+    const causes = [];
+    if (bpRatio > 0.7) causes.push(`【已确认】innodb_buffer_pool ${(bpMB/1024).toFixed(1)} GB 占 RAM ${memGB.toFixed(0)} GB 的 ${(bpRatio*100).toFixed(0)}%，与 OS / 连接 / 其它进程内存竞争`);
+    if (qps > 500) causes.push(`【已确认】qps ${qps.toFixed(0)} 工作负载活跃，内存压力下 Swap 会持续被使用`);
+    if (Number(n.variables?.max_connections || 0) > 1000) causes.push(`【已确认】max_connections=${n.variables.max_connections}，单连接 buffer 累积放大内存压力`);
+    if (causes.length > 0) {
+      corrs.push({
+        title: `节点 ${n.ip} Swap 已使用 ${n.swapUsed}（${swapUsedPct}%）— 内存压力链路`,
+        detail: causes.join('\n'),
+        suggestion: `三项处置：① 下调 innodb_buffer_pool_size 至 RAM 60%（当前 ${(bpRatio*100).toFixed(0)}%）；② sysctl -w vm.swappiness=1；③ 评估扩容内存到 ${Math.ceil(memGB * 1.5)} GB。\n参考：v4.8 新增 bp_too_large / max_connections_vs_memory 规则。`,
+      });
+      break;  // 同集群通常配置一致，只展示一个代表节点
+    }
+  }
+
+  // C9. OS EOL + MySQL EOL 双重生命周期风险
+  const eolNodes = nodes.filter(n => n.osEolStatus?.status === 'eol');
+  const mysqlEolPrimary = primary?.mysqlVersion && /^(5\.5|5\.6|5\.7)/.test(primary.mysqlVersion);
+  if (eolNodes.length > 0 && mysqlEolPrimary) {
+    const osMajor = eolNodes[0].osEolStatus.major;
+    corrs.push({
+      title: 'OS 与 MySQL 同时进入 EOL 状态（双重风险）',
+      detail: `操作系统：${osMajor}（${eolNodes[0].osEolStatus.eolDate}） · MySQL：${primary.mysqlVersion}\n两者都已停止官方安全更新，0-day 漏洞与补丁来源都缺失。任何安全审计/合规检查会重点指出此项。`,
+      suggestion: `规划「OS 升级 + MySQL 升级」联合迁移：①​ 备份 + 演练 ②​ 准备新版本备机 ③​ 应用兼容性测试（mysql_upgrade_checker） ④​ 切换主备并验证 ⑤​ 旧节点降级为只读后下线。整体周期 1-3 个月。`,
+    });
+  }
+
+  // C10. 慢日志膨胀：slowLogSizeBytes 大 + log_queries_not_using_indexes 误开
+  for (const n of nodes) {
+    if (!n.slowLogSizeBytes || n.slowLogSizeBytes < 1024 * 1024 * 1024) continue;  // 1 GB 起算
+    const slowLogGB = (n.slowLogSizeBytes / 1073741824).toFixed(1);
+    const v = n.variables || {};
+    const lqnui = v.log_queries_not_using_indexes;
+    const lqt = Number(v.long_query_time || 0);
+    const causes = [];
+    if (lqnui === 'ON' || lqnui === '1') causes.push(`【已确认】log_queries_not_using_indexes = ON（所有无索引查询都会写入慢日志，是膨胀首要因素）`);
+    if (lqt > 0 && lqt < 1) causes.push(`【已确认】long_query_time = ${lqt}（阈值过低，正常 SQL 也会被记录）`);
+    if (Number(n.slowQueries || 0) > 1_000_000) causes.push(`【已确认】累计慢查询 ${Number(n.slowQueries).toLocaleString()} 次（业务存在大量真实慢 SQL）`);
+    if (causes.length > 0) {
+      corrs.push({
+        title: `节点 ${n.ip} 慢日志已 ${slowLogGB} GB — 已定位膨胀因素`,
+        detail: causes.join('\n'),
+        suggestion: `① 关闭 log_queries_not_using_indexes（如非排查期）：SET GLOBAL log_queries_not_using_indexes = OFF；\n② 调整 long_query_time = 1（标准生产值）：SET GLOBAL long_query_time = 1;\n③ 回滚日志：mv slow.log slow.log.archive && FLUSH SLOW LOGS；\n④ 用 pt-query-digest 分析归档慢日志归类 TOP SQL 后再优化。`,
+      });
+      break;
+    }
+  }
+
+  // C11. 错误日志暴涨：errorLogSizeBytes 大 + errorLogAnalysis 错误条数高
+  for (const n of nodes) {
+    if (!n.errorLogSizeBytes || n.errorLogSizeBytes < 100 * 1024 * 1024) continue;  // 100 MB 起算
+    const errLogMB = (n.errorLogSizeBytes / 1048576).toFixed(0);
+    const errCount = Number(n.errorLogAnalysis?.errorCount || 0);
+    const warnCount = Number(n.errorLogAnalysis?.warningCount || 0);
+    if (errCount + warnCount > 100) {
+      corrs.push({
+        title: `节点 ${n.ip} 错误日志 ${errLogMB} MB — 错误/告警频繁`,
+        detail: `已采集错误日志 tail 中包含：错误 ${errCount} 条 + 警告 ${warnCount} 条（错误日志 ${errLogMB} MB 远超正常水平）。\n常见原因：复制中断后重连、PROCESSLIST 异常、磁盘 / IO 错误、参数告警等。`,
+        suggestion: `tail -500 \$ERROR_LOG | grep -iE "ERROR|warning" | sort | uniq -c | sort -rn | head -20  → 找到 TOP 错误后逐一处置。处置后 mv 归档释放空间。`,
+      });
+      break;
+    }
+  }
+
+  // C12. 持久化弱 + 高复制延迟 → 数据丢失风险窗口扩大
+  if (allWeakFlush && allWeakSync && laggySlaves.length > 0 && primary) {
+    const worstSbm = Math.max(...laggySlaves.map(n => Number(n.replication.status.secondsBehindMaster || 0)));
+    corrs.push({
+      title: '持久化偏弱 + 复制延迟同时存在 — RPO 风险窗口被放大',
+      detail: `主库持久化（commit=0 + sync_binlog=0）+ 最大从库延迟 ${worstSbm} 秒。\n若主库宕机：① 主库本地丢失最近 ~1 秒事务；② 由于从库还有 ${worstSbm} 秒延迟，故障切换到从库后还会"丢失" ${worstSbm} 秒未来得及复制的事务。RPO ≈ ${worstSbm + 1} 秒（可见数据丢失）。`,
+      suggestion: `两件事并行：① 主库立即改 sync_binlog=1 + innodb_flush_log_at_trx_commit=1（性能下降但可控）；② 开并行复制（slave_parallel_workers=16 + LOGICAL_CLOCK）把延迟压到 < 5 秒。`,
+    });
+  }
+
+  // C13. 从库可写 + 复制延迟 → 数据漂移加剧
+  const writableLaggyNodes = laggySlaves.filter(n => n.variables?.read_only === '0' || n.variables?.read_only === 'OFF');
+  if (writableLaggyNodes.length > 0) {
+    for (const wn of writableLaggyNodes) {
+      const sbm = Number(wn.replication.status.secondsBehindMaster);
+      corrs.push({
+        title: `从库 ${wn.ip} 可写 + 延迟 ${sbm} 秒 — 数据漂移风险加剧`,
+        detail: `节点 read_only=0（允许写入）且 Seconds_Behind_Master=${sbm}。任意误写都会与主库永久不同步；延迟越大窗口越宽。`,
+        suggestion: `SET GLOBAL read_only = 1; SET GLOBAL super_read_only = 1;\n如果是 DR 切换设计预留的可写，文档化该例外并设监控告警。`,
+      });
+    }
+  }
+
+  // C14. 自增列耗尽 + 慢查询堆积：主键热点查询不利
+  if (primary && (primary.autoIncrementUsage || []).some(x => Number(x.rate || 0) >= 0.7) && Number(primary.slowQueries || 0) > 100000) {
+    const top = primary.autoIncrementUsage.sort((a, b) => Number(b.rate) - Number(a.rate))[0];
+    corrs.push({
+      title: `主键即将耗尽叠加慢查询累积 — 故障窗口正在临近`,
+      detail: `主库 ${primary.ip}：${top.schema}.${top.table}.${top.column} 已使用 ${(top.rate*100).toFixed(0)}% + 累计慢查询 ${Number(primary.slowQueries).toLocaleString()} 次。\n业务规模增长 + 主键剩余空间不足 + 查询性能下滑，三者形成「故障窗口正在临近」的复合风险。`,
+      suggestion: `优先级最高：pt-online-schema-change 把 ${top.table}.${top.column} 改为 BIGINT UNSIGNED（彻底解决主键耗尽）。同期跑 pt-query-digest 治理慢查询。两件事并行，避免主键耗尽前故障。`,
+    });
+  }
+
+  // C15. 多节点 binlog 累积速率异常：同集群 binlog 大小差异显著
+  if (nodes.length > 1) {
+    const withBinlog = nodes.filter(n => n.binlogDirSizeBytes && n.uptimeSec);
+    if (withBinlog.length >= 2) {
+      const rates = withBinlog.map(n => ({ ip: n.ip, role: n.role, perDay: n.binlogDirSizeBytes / (n.uptimeSec / 86400) }));
+      const maxR = Math.max(...rates.map(r => r.perDay));
+      const minR = Math.min(...rates.map(r => r.perDay));
+      if (maxR > minR * 5 && maxR > 1073741824) {  // 至少 1 GB/day
+        const maxNode = rates.find(r => r.perDay === maxR);
+        const minNode = rates.find(r => r.perDay === minR);
+        corrs.push({
+          title: `节点间 binlog 增长速率差异显著（${(maxR/minR).toFixed(0)}× ）`,
+          detail: `${maxNode.ip}（${maxNode.role}）binlog ${fmtBytesShort(maxR)}/天 vs ${minNode.ip}（${minNode.role}）${fmtBytesShort(minR)}/天。\n如果是主从架构，主库 binlog 增量应近似（仅主库产生 binlog，从库 relay log 是接收）— 差异大暗示参数不一致或采集时点偏差。`,
+          suggestion: `比对 max_binlog_size / binlog_row_image / log_slave_updates 等参数。从库通常 binlog_row_image=MINIMAL 可显著降低增量。`,
+        });
+      }
     }
   }
 
