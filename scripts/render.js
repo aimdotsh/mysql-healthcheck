@@ -2047,6 +2047,15 @@ function chapterConclusion(data) {
         { text: '   ✦ 措施：', color: '548235' },
         { text: i.action },
       ]));
+      // v4.8：senior-DBA 参数规则带 currentValue / recommendedValue，显式渲染对照行
+      if (i.currentValue && i.recommendedValue) {
+        out.push(para([
+          { text: '   ✦ 当前值：', color: 'BF8F00' },
+          { text: i.currentValue },
+          { text: '   →   推荐值：', color: '548235' },
+          { text: i.recommendedValue, bold: true },
+        ]));
+      }
       if (i.sql) {
         out.push(code(i.sql));
       }

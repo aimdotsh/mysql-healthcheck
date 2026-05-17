@@ -145,6 +145,62 @@ function fmtSeconds(s) {
   return `${m} 分`;
 }
 
+// ============== v4.8 senior-DBA 规则辅助函数 ==============
+// 主机内存 GB（从 memTotalKB 推导）
+function memTotalGB(n) {
+  return n.memTotalKB ? n.memTotalKB / 1024 / 1024 : null;
+}
+
+// 按 MB 取参数值；自动兼容 *_in_mb / *_in_kb 后缀 + "1G" / "512M" / 纯数字字节
+function mb(n, key) {
+  const v = n.variables?.[key];
+  if (v == null) return null;
+  const s = String(v).trim();
+  const m = s.match(/^([\d.]+)\s*([KMGT])?B?$/i);
+  if (!m) return null;
+  const num = parseFloat(m[1]);
+  const u = (m[2] || '').toUpperCase();
+  if (u === 'G') return num * 1024;
+  if (u === 'M') return num;
+  if (u === 'K') return num / 1024;
+  if (u === 'T') return num * 1024 * 1024;
+  if (/_in_mb$/.test(key)) return num;
+  if (/_in_kb$/.test(key)) return num / 1024;
+  return num / 1024 / 1024;   // 默认按字节
+}
+
+function kb(n, key) {
+  const m = mb(n, key);
+  return m == null ? null : m * 1024;
+}
+
+function formatMB(mbVal) {
+  if (mbVal == null) return '-';
+  return mbVal >= 1024 ? (mbVal / 1024).toFixed(1) + ' GB' : Math.round(mbVal) + ' MB';
+}
+
+// 推荐缓冲池：60% RAM；RAM ≤ 4G 保留 1G，4-16G 保留 2G，>16G 保留 4G
+function recommendBufferPoolMB(memGB) {
+  if (!memGB || memGB <= 0) return null;
+  const reserveGB = memGB <= 4 ? 1 : memGB <= 16 ? 2 : 4;
+  return Math.round(Math.max(1, Math.min(memGB * 0.6, memGB - reserveGB)) * 1024);
+}
+
+// 把 sql_mode 字符串解析为 Set，便于 has() 判断
+function parseSqlMode(str) {
+  return new Set(String(str || '').toUpperCase().split(',').map(s => s.trim()).filter(Boolean));
+}
+
+// 是否 MySQL 8.0+（含 8.0、8.1、8.4 …）
+function isMysql80Plus(versionStr) {
+  const m = String(versionStr || '').match(/^(\d+)\.(\d+)/);
+  if (!m) return false;
+  const maj = Number(m[1]);
+  return maj > 8 || (maj === 8 && Number(m[2]) >= 0);
+}
+// ============== /v4.8 辅助 ==============
+
+
 // 抽取 txt 中由 ----->>>---->>>  XXX 分隔的某段
 function getSection(content, sectionName, options = {}) {
   const { caseInsensitive = true } = options;
@@ -1455,16 +1511,20 @@ function computeHealthScore(nodes, issues) {
 
   for (const i of issues) {
     const penalty = { P0: 18, P1: 7, P2: 3, P3: 1 }[i.priority] || 0;
-    const t = i.type || '';
-    // 按规则类型扣对应维度的分
-    if (/disk|repl_thread|repl_delay|mem_high/.test(t)) dim.availability -= penalty;
-    else if (/wildcard|empty_password|old_auth|pwd_|tls_weak/.test(t)) dim.security -= penalty;
-    else if (/slow|bp_hit|long_query|sql_|hll|long_running_session/.test(t)) dim.performance -= penalty;
-    else if (/no_pk|non_utf8|heavy_frag|unused_index|redundant_index|lct_/.test(t)) dim.dataDesign -= penalty;
-    else if (/flush_log|sync_binlog|gtid|ibtmp1|swap|master_readonly|slave_writable|expire_logs/.test(t)) dim.durability -= penalty;
-    else if (/param_inconsistent|backup|slow_log_off|os_version/.test(t)) dim.operations -= penalty;
-    else {
-      // 默认拆分给 availability
+    // v4.8：优先用显式 dimension 字段；旧规则没设则回退到 type 正则映射（零行为变化）
+    let dimKey = i.dimension;
+    if (!dimKey) {
+      const t = i.type || '';
+      if (/disk|repl_thread|repl_delay|mem_high/.test(t)) dimKey = 'availability';
+      else if (/wildcard|empty_password|old_auth|pwd_|tls_weak/.test(t)) dimKey = 'security';
+      else if (/slow|bp_hit|long_query|sql_|hll|long_running_session/.test(t)) dimKey = 'performance';
+      else if (/no_pk|non_utf8|heavy_frag|unused_index|redundant_index|lct_/.test(t)) dimKey = 'dataDesign';
+      else if (/flush_log|sync_binlog|gtid|ibtmp1|swap|master_readonly|slave_writable|expire_logs/.test(t)) dimKey = 'durability';
+      else if (/param_inconsistent|backup|slow_log_off|os_version/.test(t)) dimKey = 'operations';
+    }
+    if (dimKey && dim[dimKey] != null) {
+      dim[dimKey] -= penalty;
+    } else {
       dim.availability -= penalty / 2;
     }
   }
@@ -2235,6 +2295,347 @@ function analyzeIssues(nodes) {
         }
       }
     }
+
+    // ============== v4.8 senior-DBA 参数推荐规则（12 条）==============
+    // 每条规则带 currentValue / recommendedValue / dimension，render 端会展示彩色对照
+
+    // #1 bp_too_small — innodb_buffer_pool_size 占 RAM 比例过低
+    {
+      const memGB = memTotalGB(n);
+      const bpMB = mb(n, 'innodb_buffer_pool_size_in_mb');
+      const Ti = T.innodb || {};
+      const minMemGB = Ti.bp_too_small_min_mem_gb ?? 4;
+      const warnRatio = Ti.bp_too_small_ratio ?? 0.4;
+      const p1Ratio = Ti.bp_too_small_p1_ratio ?? 0.2;
+      if (memGB && bpMB && memGB >= minMemGB) {
+        const ratio = (bpMB / 1024) / memGB;
+        if (ratio < warnRatio) {
+          const rec = recommendBufferPoolMB(memGB);
+          const pct = (ratio * 100).toFixed(0);
+          push({
+            type: 'bp_too_small',
+            priority: ratio < p1Ratio ? 'P1' : 'P2',
+            groupKey: `bp_too_small:${n.ip}`,
+            dimension: 'performance',
+            description: `innodb_buffer_pool_size = ${formatMB(bpMB)}，仅占 RAM ${memGB.toFixed(0)} GB 的 ${pct}%，远低于 50-70% 推荐区间`,
+            currentValue: `${formatMB(bpMB)}（占 RAM ${memGB.toFixed(0)} GB 的 ${pct}%）`,
+            recommendedValue: `${formatMB(rec)}（~60% RAM，保留 OS/连接/临时表余量）`,
+            action: `调大 innodb_buffer_pool_size 至 ~${formatMB(rec)}；> 1GB 时建议 buffer_pool_instances=8`,
+            sql: [
+              `SET GLOBAL innodb_buffer_pool_size = ${rec * 1024 * 1024};`,
+              '-- my.cnf:',
+              `innodb_buffer_pool_size = ${formatMB(rec).replace(' ', '')}`,
+              'innodb_buffer_pool_instances = 8',
+            ].join('\n'),
+            node: nodeLabel(n),
+            scope: 'node',
+          });
+        } else if (ratio > (Ti.bp_too_large_ratio ?? 0.8)) {
+          // #2 bp_too_large — 缓冲池 > 80% RAM，OOM 风险
+          const rec = recommendBufferPoolMB(memGB);
+          const pct = (ratio * 100).toFixed(0);
+          push({
+            type: 'bp_too_large',
+            priority: 'P1',
+            groupKey: `bp_too_large:${n.ip}`,
+            dimension: 'availability',
+            description: `innodb_buffer_pool_size = ${formatMB(bpMB)} 已占 RAM ${memGB.toFixed(0)} GB 的 ${pct}%，OS/连接/临时表无足够余量，可能触发 OOM 或 Swap`,
+            currentValue: `${formatMB(bpMB)}（占 RAM ${memGB.toFixed(0)} GB 的 ${pct}%）`,
+            recommendedValue: `${formatMB(rec)}（~60% RAM）`,
+            action: `下调 innodb_buffer_pool_size 至 ~${formatMB(rec)}；同时检查 Swap 是否已启用，必要时降低 max_connections`,
+            sql: [
+              `SET GLOBAL innodb_buffer_pool_size = ${rec * 1024 * 1024};`,
+              '-- my.cnf:',
+              `innodb_buffer_pool_size = ${formatMB(rec).replace(' ', '')}`,
+            ].join('\n'),
+            node: nodeLabel(n),
+            scope: 'node',
+          });
+        }
+      }
+    }
+
+    // #3 redo_log_too_small — InnoDB redo log file 偏小，频繁切换会拉低写吞吐 + 放大恢复时间
+    {
+      const logMB = mb(n, 'innodb_log_file_size_in_mb');
+      const dbGB = Number(n.dbTotalSizeGB || 0);
+      const Ti = T.innodb || {};
+      const minMB = Ti.redo_log_min_mb ?? 512;
+      const busyGB = Ti.redo_log_db_gb_busy ?? 50;
+      const heavyGB = Ti.redo_log_db_gb_heavy ?? 200;
+      if (logMB != null && logMB < minMB && (dbGB >= busyGB || Number(n.qps || 0) > 200)) {
+        const targetMB = dbGB >= heavyGB ? 2048 : dbGB >= busyGB ? 1024 : 512;
+        push({
+          type: 'redo_log_too_small',
+          priority: logMB < 128 ? 'P1' : 'P2',
+          groupKey: `redo_log_small:${n.ip}`,
+          dimension: 'performance',
+          description: `innodb_log_file_size = ${formatMB(logMB)}（库数据量 ${dbGB.toFixed(0)} GB），redo 频繁切换会拉低写吞吐并放大故障恢复时间`,
+          currentValue: formatMB(logMB),
+          recommendedValue: `${formatMB(targetMB)}（依据库大小 ${dbGB.toFixed(0)} GB）`,
+          action: 'MySQL 8.0 可动态调整；5.7 需停机改 my.cnf 后重启',
+          sql: [
+            '-- MySQL 8.0+ 动态：',
+            `SET GLOBAL innodb_redo_log_capacity = ${targetMB * 2 * 1024 * 1024};`,
+            '-- MySQL 5.7 需重启：',
+            '-- my.cnf:',
+            `innodb_log_file_size = ${targetMB}M`,
+            'innodb_log_files_in_group = 2',
+          ].join('\n'),
+          node: nodeLabel(n),
+          scope: 'node',
+        });
+      }
+    }
+
+    // #4 flush_method_not_o_direct — Linux 上 flush_method ≠ O_DIRECT 造成 OS+buffer pool 双重缓存
+    {
+      const fm = v.innodb_flush_method;
+      const isLinux = /linux|el|centos|ubuntu|debian/i.test(n.osKernel || (n.osRelease?.name || ''));
+      if (isLinux && fm && fm !== 'O_DIRECT' && fm !== 'O_DIRECT_NO_FSYNC') {
+        push({
+          type: 'flush_method_not_o_direct',
+          priority: 'P2',
+          groupKey: 'flush_method_default',
+          dimension: 'performance',
+          description: `innodb_flush_method = ${fm} — Linux 下默认 fsync 会同时占用 OS page cache 与 buffer pool（双重缓存），浪费内存并增加冗余 IO`,
+          currentValue: fm,
+          recommendedValue: 'O_DIRECT',
+          action: 'Linux 推荐 O_DIRECT；该参数不可动态修改，需重启 MySQL',
+          sql: '-- my.cnf:\ninnodb_flush_method = O_DIRECT\n# 重启 MySQL 生效',
+          node: nodeLabel(n),
+          scope: 'node',
+        });
+      }
+    }
+
+    // #5 doublewrite_off — innodb_doublewrite=OFF 半页写崩溃风险
+    if (v.innodb_doublewrite === 'OFF' || v.innodb_doublewrite === '0') {
+      push({
+        type: 'doublewrite_off',
+        priority: 'P1',
+        groupKey: 'doublewrite_off',
+        dimension: 'durability',
+        description: 'innodb_doublewrite = OFF — 半页写崩溃会导致页损坏且不可恢复（torn page），性能收益 < 5% 但风险远大于收益',
+        currentValue: 'OFF',
+        recommendedValue: 'ON',
+        action: '立即开启；仅在使用 ZFS 或支持原子写的存储（FusionIO 等）时才可关闭',
+        sql: 'SET GLOBAL innodb_doublewrite = ON;\n-- my.cnf:\ninnodb_doublewrite = 1',
+        node: nodeLabel(n),
+        scope: 'node',
+      });
+    }
+
+    // #6 charset_not_utf8mb4 — character_set_server 非 utf8mb4
+    {
+      const cs = v.character_set_server;
+      if (cs && !/utf8mb4/i.test(cs)) {
+        push({
+          type: 'charset_not_utf8mb4',
+          priority: 'P2',
+          groupKey: 'charset_server_not_utf8mb4',
+          dimension: 'dataDesign',
+          description: `character_set_server = ${cs}，无法存储 emoji / 4 字节字符；utf8 实际是 utf8mb3，已被 MySQL 标记为 deprecated`,
+          currentValue: cs,
+          recommendedValue: 'utf8mb4',
+          action: '服务端 + 库 + 表 + 列四级都需要改；新建表前先改服务端默认，存量表用 CONVERT TO',
+          sql: [
+            '-- my.cnf:',
+            'character_set_server = utf8mb4',
+            'collation_server = utf8mb4_0900_ai_ci  # MySQL 8.0',
+            '# collation_server = utf8mb4_general_ci  # MySQL 5.7',
+            '-- 库级转换：',
+            'ALTER DATABASE <dbname> CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;',
+          ].join('\n'),
+          node: nodeLabel(n),
+          scope: 'node',
+        });
+      }
+    }
+
+    // #7 sql_mode_missing_strict — sql_mode 缺少 STRICT_TRANS_TABLES
+    {
+      const modes = parseSqlMode(n.sqlMode || v.sql_mode);
+      if (modes.size > 0 && !modes.has('STRICT_TRANS_TABLES') && !modes.has('STRICT_ALL_TABLES')) {
+        push({
+          type: 'sql_mode_missing_strict',
+          priority: 'P2',
+          groupKey: 'sql_mode_no_strict',
+          dimension: 'dataDesign',
+          description: 'sql_mode 未包含 STRICT_TRANS_TABLES — 错误数据会被静默截断（INT 越界写 0、字符串超长被裁），存在数据完整性风险',
+          currentValue: [...modes].join(',') || '(空)',
+          recommendedValue: '加上 STRICT_TRANS_TABLES + NO_ENGINE_SUBSTITUTION',
+          action: '评估业务影响（旧应用可能依赖宽松模式静默成功）后再切换；建议先在测试环境验证',
+          sql: [
+            "SET GLOBAL sql_mode = CONCAT(@@sql_mode, ',STRICT_TRANS_TABLES');",
+            '-- 评估后持久化到 my.cnf:',
+            'sql_mode = STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION,NO_ZERO_DATE,NO_ZERO_IN_DATE,ERROR_FOR_DIVISION_BY_ZERO',
+          ].join('\n'),
+          node: nodeLabel(n),
+          scope: 'node',
+        });
+      }
+    }
+
+    // #8 auth_plugin_native_on_80 — MySQL 8.0+ 默认 mysql_native_password 已废弃
+    if (isMysql80Plus(n.mysqlVersion) && v.default_authentication_plugin === 'mysql_native_password') {
+      push({
+        type: 'auth_plugin_native_on_80',
+        priority: 'P2',
+        groupKey: 'auth_plugin_native_on_80',
+        dimension: 'security',
+        description: 'MySQL 8.0+ 默认认证插件仍为 mysql_native_password — 该插件派生 SHA1，已被弃用；8.4 起 mysql_native_password 默认 disabled',
+        currentValue: 'mysql_native_password',
+        recommendedValue: 'caching_sha2_password',
+        action: '新账号默认走 caching_sha2_password；存量账号灰度迁移；客户端驱动需 ≥ Connector/J 8.0、PyMySQL 1.0+',
+        sql: [
+          '-- my.cnf:',
+          'default_authentication_plugin = caching_sha2_password',
+          '-- 单账号迁移：',
+          "ALTER USER 'app'@'10.%' IDENTIFIED WITH caching_sha2_password BY '<pwd>';",
+        ].join('\n'),
+        node: nodeLabel(n),
+        scope: 'node',
+      });
+    }
+
+    // #9 performance_schema_off — P_S 关闭，失去 TOP SQL 与监控指标
+    if (v.performance_schema === 'OFF') {
+      push({
+        type: 'performance_schema_off',
+        priority: 'P2',
+        groupKey: 'performance_schema_off',
+        dimension: 'operations',
+        description: 'performance_schema = OFF — 无法使用 sys.statement_analysis / events_statements_summary_by_digest 等做 TOP SQL；监控工具（PMM / Prometheus mysqld_exporter）会缺核心指标',
+        currentValue: 'OFF',
+        recommendedValue: 'ON',
+        action: '开启 P_S；约占 400-600 MB 内存，对 OLTP 影响 < 5%',
+        sql: '-- my.cnf:\nperformance_schema = ON\n# 重启 MySQL 生效',
+        node: nodeLabel(n),
+        scope: 'node',
+      });
+    }
+
+    // #10 max_connections_vs_memory — max_connections × 单连接峰值 vs RAM
+    {
+      const memGB = memTotalGB(n);
+      const maxConn = Number(v.max_connections || 0);
+      const Tmc = T.max_connections || {};
+      const warnRatio = Tmc.peak_memory_ratio_warn ?? 0.3;
+      const p1Ratio = Tmc.peak_memory_ratio_p1 ?? 0.5;
+      if (memGB && maxConn > 0) {
+        const perConnMB =
+          (kb(n, 'sort_buffer_size_in_kb') || 0) / 1024 +
+          (kb(n, 'join_buffer_size_in_kb') || 0) / 1024 +
+          (kb(n, 'read_buffer_size_in_kb') || 0) / 1024 +
+          (kb(n, 'read_rnd_buffer_size_in_kb') || 0) / 1024 +
+          (mb(n, 'tmp_table_size_in_mb') || 0);
+        const peakMB = perConnMB * maxConn;
+        const peakRatio = peakMB / (memGB * 1024);
+        if (peakRatio > warnRatio) {
+          const targetMaxConn = Math.floor(memGB * 1024 * warnRatio / Math.max(perConnMB, 1));
+          push({
+            type: 'max_connections_vs_memory',
+            priority: peakRatio > p1Ratio ? 'P1' : 'P2',
+            groupKey: `max_conn_mem:${n.ip}`,
+            dimension: 'availability',
+            description: `max_connections=${maxConn} × 单连接峰值 ~${formatMB(perConnMB)} = 总峰值 ~${formatMB(peakMB)}，约占 RAM ${memGB.toFixed(0)} GB 的 ${(peakRatio*100).toFixed(0)}%（仅估算，实际并发不会全用满 buffer）`,
+            currentValue: `max_connections=${maxConn}（每连接 ~${formatMB(perConnMB)}，理论峰值 ${(peakRatio*100).toFixed(0)}% RAM）`,
+            recommendedValue: `max_connections=${targetMaxConn} 或缩减 sort_buffer / join_buffer / read_buffer（通常 256KB-2MB 即可）`,
+            action: '下调 max_connections，或缩减单连接 buffer；中长期改用连接池（ProxySQL / HAProxy）',
+            sql: `SET GLOBAL max_connections = ${targetMaxConn};`,
+            node: nodeLabel(n),
+            scope: 'node',
+          });
+        }
+      }
+    }
+
+    // #11 slave_skip_errors_set — 静默吞下复制错误（P0 数据漂移）
+    {
+      const sse = v.slave_skip_errors || v.replica_skip_errors;
+      if (sse && sse !== 'OFF' && sse !== '' && sse !== 'NONE' && sse !== 'off') {
+        push({
+          type: 'slave_skip_errors_set',
+          priority: 'P0',
+          groupKey: `slave_skip_errors:${n.ip}`,
+          dimension: 'durability',
+          description: `slave_skip_errors = ${sse} — 复制错误被强制跳过，从库已经/将会与主库数据不一致；任何 binlog 错误都不会再暴露`,
+          currentValue: sse,
+          recommendedValue: 'OFF',
+          action: '立即关闭；用 pt-table-checksum / pt-table-sync 校验现有数据一致性',
+          sql: [
+            '# slave_skip_errors 不能动态改，必须修改 my.cnf:',
+            '# 删除该行或改为：',
+            'slave_skip_errors = OFF',
+            '# 重启 slave 后校验数据：',
+            'pt-table-checksum --replicate=percona.checksums h=<primary>,u=<user>,p=<pwd>',
+          ].join('\n'),
+          node: nodeLabel(n),
+          scope: 'node',
+        });
+      }
+    }
+
+    // #12 auto_increment_exhausting — 自增列接近耗尽
+    {
+      const critical = (n.autoIncrementUsage || []).filter(x => Number(x.rate || 0) >= (T.auto_increment?.rate_p2 ?? 0.7));
+      if (critical.length > 0) {
+        critical.sort((a, b) => Number(b.rate) - Number(a.rate));
+        const top = critical[0];
+        const maxRate = Number(top.rate);
+        const ratePri = (r) => r >= (T.auto_increment?.rate_p0 ?? 0.9) ? 'P0' : r >= (T.auto_increment?.rate_p1 ?? 0.8) ? 'P1' : 'P2';
+        const top3Display = critical.slice(0, 3).map(x => `${x.schema}.${x.table}.${x.column}=${(Number(x.rate)*100).toFixed(0)}%`).join('、');
+        push({
+          type: 'auto_increment_exhausting',
+          priority: ratePri(maxRate),
+          groupKey: 'auto_increment_exhausting',
+          dimension: 'dataDesign',
+          description: `自增列接近耗尽 — TOP ${Math.min(3, critical.length)}：${top3Display}；耗尽后 INSERT 会报 ER_AUTOINC_READ_FAILED`,
+          currentValue: `最高 ${(maxRate*100).toFixed(0)}%（${top.schema}.${top.table}.${top.column}）`,
+          recommendedValue: '升级该列为 BIGINT UNSIGNED（增至 ~1.8×10^19 上限）',
+          action: 'pt-online-schema-change 在线改大表；小表直接 ALTER TABLE 即可',
+          sql: [
+            '-- pt-osc 在线变更（推荐，大表）：',
+            `pt-online-schema-change --alter "MODIFY COLUMN ${top.column} BIGINT UNSIGNED NOT NULL AUTO_INCREMENT" \\`,
+            `  D=${top.schema},t=${top.table},u=<user>,p=<pwd> --execute`,
+            '-- 小表直接 ALTER：',
+            `ALTER TABLE ${top.schema}.${top.table} MODIFY COLUMN ${top.column} BIGINT UNSIGNED NOT NULL AUTO_INCREMENT;`,
+          ].join('\n'),
+          node: nodeLabel(n),
+          scope: 'node',
+        });
+      }
+    }
+
+    // 数据量 vs 内存（也属于参数推荐范畴）
+    {
+      const memGB = memTotalGB(n);
+      const dbGB = Number(n.dbTotalSizeGB || 0);
+      const Tdm = T.data_memory || {};
+      const warnRatio = Tdm.ratio_warn ?? 10;
+      const p1Ratio = Tdm.ratio_p1 ?? 50;
+      if (memGB && dbGB > 0) {
+        const ratio = dbGB / memGB;
+        if (ratio > warnRatio) {
+          push({
+            type: 'data_to_memory_ratio_high',
+            priority: ratio > p1Ratio ? 'P1' : 'P2',
+            groupKey: `data_memory_ratio:${n.ip}`,
+            dimension: 'performance',
+            description: `数据集 ${dbGB.toFixed(0)} GB 是 RAM ${memGB.toFixed(0)} GB 的 ${ratio.toFixed(1)} 倍 — 工作集大概率无法常驻 buffer pool，会持续磁盘 IO`,
+            currentValue: `${dbGB.toFixed(0)} GB 数据 / ${memGB.toFixed(0)} GB RAM = ${ratio.toFixed(1)}x`,
+            recommendedValue: `扩容 RAM 到 ${Math.ceil(dbGB / 5)} GB（数据 / 5），或冷热分离 / 归档 / 分库`,
+            action: '架构层调整（不是 SET GLOBAL 能改的）；评估扩容 / 冷数据归档 / 业务分表',
+            sql: null,
+            node: nodeLabel(n),
+            scope: 'node',
+          });
+        }
+      }
+    }
+
+    // ============== /v4.8 senior-DBA 规则 ==============
 
     // ----- 用户安全：host=% 按危险等级（v4.6：每级聚合，避免相同告警挤占报告）-----
     const wildcards = (n.users || []).filter(u => u.host === '%');
