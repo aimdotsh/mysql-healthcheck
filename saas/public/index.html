@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MySQL 巡检报告生成器</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+      background: linear-gradient(135deg, #f5f7fa 0%, #e6ebf1 100%);
+      min-height: 100vh; padding: 24px;
+    }
+    .container { max-width: 880px; margin: 0 auto; }
+    header { margin-bottom: 32px; }
+    h1 { color: #1f4e79; margin: 0 0 8px 0; font-size: 28px; }
+    .subtitle { color: #6b7280; font-size: 14px; }
+    .card {
+      background: #fff; border-radius: 12px; padding: 28px; margin-bottom: 20px;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.04);
+    }
+    .drop-zone {
+      border: 2px dashed #c7d2db; border-radius: 12px; padding: 56px 24px;
+      text-align: center; transition: all 0.2s; cursor: pointer; background: #fafbfc;
+    }
+    .drop-zone.dragover { border-color: #1f4e79; background: #e7f0f8; }
+    .drop-zone .icon { font-size: 48px; margin-bottom: 12px; }
+    .drop-zone h2 { margin: 0 0 8px 0; color: #374151; font-size: 18px; font-weight: 600; }
+    .drop-zone p { margin: 0; color: #6b7280; font-size: 14px; }
+    input[type="file"] { display: none; }
+    .file-list { margin-top: 16px; }
+    .file-item {
+      display: flex; align-items: center; padding: 8px 12px; background: #f9fafb;
+      border-radius: 6px; margin-bottom: 4px; font-size: 13px;
+    }
+    .file-item .name { flex: 1; color: #374151; }
+    .file-item .size { color: #6b7280; }
+    .file-item button {
+      background: none; border: none; color: #ef4444; cursor: pointer;
+      margin-left: 12px; font-size: 16px;
+    }
+    .form-row { display: flex; gap: 16px; margin-top: 20px; }
+    .form-row > div { flex: 1; }
+    label { display: block; font-size: 13px; color: #374151; margin-bottom: 6px; font-weight: 500; }
+    input[type="text"], textarea {
+      width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px;
+      font-size: 14px; font-family: inherit;
+    }
+    textarea { font-family: 'SF Mono', Monaco, monospace; font-size: 12px; min-height: 80px; }
+    .btn {
+      background: #1f4e79; color: #fff; border: none; padding: 12px 32px;
+      border-radius: 6px; font-size: 15px; font-weight: 500; cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn:hover { background: #163a5a; }
+    .btn:disabled { background: #9ca3af; cursor: not-allowed; }
+    .btn-secondary { background: #6b7280; }
+    .btn-secondary:hover { background: #4b5563; }
+    .actions { margin-top: 24px; display: flex; justify-content: space-between; align-items: center; }
+    .actions .right { display: flex; gap: 12px; }
+    .progress { display: none; }
+    .progress.active { display: block; }
+    .progress-bar {
+      height: 6px; background: #e5e7eb; border-radius: 3px; overflow: hidden;
+      margin-bottom: 16px;
+    }
+    .progress-bar .fill {
+      height: 100%; background: linear-gradient(90deg, #1f4e79, #3b82f6);
+      width: 30%; transition: width 0.3s;
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+    .progress-stage { color: #374151; font-size: 14px; }
+    .progress-stage strong { color: #1f4e79; }
+    .summary { display: none; }
+    .summary.active { display: block; }
+    .summary h3 { margin: 0 0 16px 0; color: #1f4e79; }
+    .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .metric { padding: 12px; background: #f9fafb; border-radius: 8px; }
+    .metric .label { font-size: 12px; color: #6b7280; margin-bottom: 4px; }
+    .metric .value { font-size: 20px; font-weight: 600; color: #1f4e79; }
+    .metric.p0 .value { color: #dc2626; }
+    .metric.p1 .value { color: #ea580c; }
+    .metric.p2 .value { color: #ca8a04; }
+    .metric.p3 .value { color: #65a30d; }
+    .error {
+      display: none; padding: 16px; background: #fee2e2; border-left: 4px solid #dc2626;
+      border-radius: 4px; color: #991b1b; font-size: 14px;
+    }
+    .error.active { display: block; }
+    .footer { margin-top: 32px; text-align: center; color: #9ca3af; font-size: 12px; }
+    .footer a { color: #1f4e79; text-decoration: none; }
+    .api-info { margin-top: 16px; padding: 16px; background: #f3f4f6; border-radius: 8px; font-size: 13px; }
+    .api-info code { background: #fff; padding: 2px 6px; border-radius: 3px; font-family: 'SF Mono', Monaco, monospace; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🩺 MySQL 巡检报告生成器</h1>
+      <div class="subtitle">上传 MySQLHealthCheck 采集脚本输出（*.txt），自动生成商业可交付级巡检报告（.docx）</div>
+    </header>
+
+    <div class="card">
+      <div id="dropZone" class="drop-zone">
+        <div class="icon">📁</div>
+        <h2>拖拽 MySQLHealthCheck_*.txt 到这里</h2>
+        <p>或点击选择文件 · 单次最多 16 个 · 单个最大 50 MB</p>
+      </div>
+      <input type="file" id="fileInput" multiple accept=".txt,.log">
+      <div id="fileList" class="file-list"></div>
+
+      <div class="form-row">
+        <div>
+          <label for="projectName">项目名称（可选）</label>
+          <input type="text" id="projectName" placeholder="如：某客户生产环境">
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div>
+          <label for="configJson">阈值配置 JSON（可选）</label>
+          <textarea id="configJson" placeholder='{"thresholds": {"disk": {"critical_pct": 85}}, "disabledRules": ["sql_mode_missing_strict"]}'></textarea>
+        </div>
+      </div>
+
+      <div class="actions">
+        <span id="statusText" style="color: #6b7280; font-size: 13px;"></span>
+        <div class="right">
+          <button id="clearBtn" class="btn btn-secondary">清空</button>
+          <button id="submitBtn" class="btn" disabled>生成报告</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="progressCard" class="card progress">
+      <h3 style="margin: 0 0 16px 0; color: #1f4e79;">⏳ 报告生成中…</h3>
+      <div class="progress-bar"><div class="fill"></div></div>
+      <div class="progress-stage">当前阶段：<strong id="progressStage">排队中</strong></div>
+      <div style="margin-top: 8px; color: #6b7280; font-size: 13px;">Job ID: <code id="jobIdDisplay"></code></div>
+    </div>
+
+    <div id="summaryCard" class="card summary">
+      <h3>✅ 报告已生成</h3>
+      <div id="summaryGrid" class="summary-grid"></div>
+      <div id="summaryExtra" style="color: #6b7280; font-size: 13px; margin-bottom: 16px;"></div>
+      <div style="display: flex; gap: 12px;">
+        <a id="downloadDocx" class="btn" href="#" download>📥 下载 docx 报告</a>
+        <a id="downloadJson" class="btn btn-secondary" href="#" download>📊 下载 data.json</a>
+      </div>
+    </div>
+
+    <div id="errorCard" class="error"></div>
+
+    <div class="api-info">
+      <strong>程序化调用？</strong> 见 REST API：
+      <code>POST /api/v1/reports</code> ·
+      <code>GET /api/v1/reports/:id</code> ·
+      <code>GET /api/v1/reports/:id/download</code> ·
+      <code>GET /api/v1/health</code>
+      <br>详见 <a href="https://github.com/aimdotsh/mysql-healthcheck/blob/SaaS/saas/README.md" target="_blank">SaaS README</a>
+    </div>
+
+    <div class="footer">
+      mysql-healthcheck SaaS · 基于 <a href="https://github.com/aimdotsh/mysql-healthcheck" target="_blank">aimdotsh/mysql-healthcheck</a>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

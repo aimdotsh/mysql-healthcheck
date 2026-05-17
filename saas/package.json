@@ -1,0 +1,20 @@
+{
+  "name": "mysql-healthcheck-saas",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Web 上传 + REST API 自动生成 MySQL 巡检报告。包装 scripts/extract.js + scripts/render.js 为 HTTP 服务。",
+  "bin": {
+    "mysql-healthcheck-saas": "./server.js"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "PORT=3000 node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.0",
+    "multer": "^2.1.1"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}
