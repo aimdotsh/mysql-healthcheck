@@ -13,11 +13,35 @@ const fs = require('fs');
 const path = require('path');
 
 /**
- * 从文件名提取 IP：MySQLHealthCheck_<IP>_<timestamp>.txt
+ * 从文件名提取 IP：
+ * - V3 新格式：MySQLHealthCheck_<IP>_<timestamp>.txt
+ * - V1/V2 老格式：MySQLHealthCheck_<date>.txt / MySQL_Check_<date>.txt （无 IP）
  */
 function inferIpFromFilename(filename) {
-  const m = String(filename).match(/MySQLHealthCheck_(\d+\.\d+\.\d+\.\d+)_/);
+  const m = String(filename).match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/);
   return m ? m[1] : null;
+}
+
+/**
+ * v4.9.x：从 ip info 段或文件开头扫真实 IP（用于老 collector 文件名无 IP 的场景）
+ * 跳过 loopback / link-local / docker 默认网段。
+ */
+function inferIpFromContent(content) {
+  const ipExclude = ip => ip === '127.0.0.1' || ip.startsWith('169.254.') ||
+                          ip.startsWith('0.0.0.') || ip.startsWith('172.17.');
+  // 优先 ip info 段
+  const sec = content.match(/----->>>----+>>>\s*(?:\[\d+\]\s*)?ip info[\s\S]{0,4000}/i);
+  if (sec) {
+    for (const m of sec[0].matchAll(/inet\s+(\d+\.\d+\.\d+\.\d+)/g)) {
+      if (!ipExclude(m[1])) return m[1];
+    }
+  }
+  // 兜底：开头 8 KB 任意 inet 行
+  const head = content.slice(0, 8192);
+  for (const m of head.matchAll(/inet\s+(\d+\.\d+\.\d+\.\d+)/g)) {
+    if (!ipExclude(m[1])) return m[1];
+  }
+  return null;
 }
 
 /**
@@ -124,7 +148,10 @@ class UF {
 function groupIntoClusters(files) {
   const nodes = files.map(f => {
     const content = fs.readFileSync(f.path, 'utf-8');
-    const ip = inferIpFromFilename(f.originalName) || inferIpFromFilename(path.basename(f.path));
+    // v4.9.x：filename 没 IP → 退而从 ip info 段抠 IP（老 collector 兼容）
+    let ip = inferIpFromFilename(f.originalName) || inferIpFromFilename(path.basename(f.path));
+    if (!ip) ip = inferIpFromContent(content);
+    if (!ip) ip = 'unknown-' + path.basename(f.originalName).replace(/\.txt$/i, '').slice(0, 16);
     const info = parseReplicationLight(content, ip);
     return { ...info, file: f };
   });

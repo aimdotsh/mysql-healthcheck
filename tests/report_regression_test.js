@@ -10,11 +10,28 @@ const { spawnSync } = require('child_process');
 const repoRoot = path.resolve(__dirname, '..');
 const extractPath = path.join(repoRoot, 'scripts', 'extract.js');
 const renderPath = path.join(repoRoot, 'scripts', 'render.js');
-const dataDir = process.argv[2] || '/Users/liups/ai/skill/test/v3';
+const sourceDataDir = process.argv[2] || '/Users/liups/ai/skill/test/v3';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mysql-healthcheck-regression-'));
 const outPath = path.join(tmpDir, 'data.json');
 const docxPath = path.join(tmpDir, 'report.docx');
+
+// 把测试固定使用的 4 个 fixture txt 复制到独立目录，避免被 source 目录里其它
+// MySQLHealthCheck_*.txt（不在断言范围内）干扰拓扑识别。
+const expectedFixtures = [
+  /MySQLHealthCheck_172\.16\.7\.2_/,
+  /MySQLHealthCheck_172\.16\.7\.3_/,
+  /MySQLHealthCheck_172\.16\.7\.4_/,
+  /MySQLHealthCheck_172\.16\.128\.101_/,
+];
+const fixtureDir = path.join(tmpDir, 'fixtures');
+fs.mkdirSync(fixtureDir, { recursive: true });
+const availableFiles = fs.readdirSync(sourceDataDir);
+for (const re of expectedFixtures) {
+  const f = availableFiles.find(x => re.test(x));
+  if (f) fs.copyFileSync(path.join(sourceDataDir, f), path.join(fixtureDir, f));
+}
+const dataDir = fixtureDir;
 
 const run = spawnSync('node', [extractPath, dataDir, '--project', 'v32V4doc', '--out', outPath], {
   encoding: 'utf8',

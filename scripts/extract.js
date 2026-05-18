@@ -271,6 +271,15 @@ function getSection(content, sectionName, options = {}) {
   return result.join('\n');
 }
 
+// v4.9.x：尝试多个段名别名（V3 新名 + V2/V1 老名），返回首个命中的内容
+function getSectionAny(content, ...names) {
+  for (const n of names) {
+    const s = getSection(content, n);
+    if (s) return s;
+  }
+  return '';
+}
+
 function hasSection(content, sectionName, options = {}) {
   const { caseInsensitive = true } = options;
   const lines = content.split(/\r?\n/);
@@ -478,7 +487,8 @@ function parseTxt(filepath) {
   node.openFilesLimit = node.openFilesLimitProcess || null; // 后续 main() 会用 variables 补全
 
   // -------- MySQL 版本 / Uptime --------
-  const mysqlVer = getSection(content, 'MySQL Database Version');
+  // v4.9.x：兼容 V2/V1 老 collector 段名（db version / variables / replication / db size 等）
+  const mysqlVer = getSectionAny(content, 'MySQL Database Version', 'db version');
   const serverVerMatch = mysqlVer.match(/Server version:\s*(.+)/);
   node.mysqlVersion = serverVerMatch ? serverVerMatch[1].trim() : '-';
   const uptimeMatch = mysqlVer.match(/Uptime:\s*(.+)$/m);
@@ -495,7 +505,7 @@ function parseTxt(filepath) {
   }
 
   // -------- 配置变量 --------
-  const variables = getSection(content, 'MySQL Variables');
+  const variables = getSectionAny(content, 'MySQL Variables', 'variables');
   node.variables = parseVariables(variables);
 
   // -------- 从 my.cnf 补充 server_id（MySQL Variables 段不含）--------
@@ -511,7 +521,7 @@ function parseTxt(filepath) {
   }
 
   // -------- 主从复制 --------
-  const replSec = getSection(content, 'MySQL Replication Info');
+  const replSec = getSectionAny(content, 'MySQL Replication Info', 'replication');
   node.replication = parseReplication(replSec);
 
   // -------- 数据库清单（含字符集）--------
@@ -521,7 +531,7 @@ function parseTxt(filepath) {
   }));
 
   // -------- 数据库总大小（过滤聚合行）--------
-  const dbSize = getSection(content, 'DB TOTAL SIZE');
+  const dbSize = getSectionAny(content, 'DB TOTAL SIZE', 'db size');
   node.dbSizes = parseMysqlTable(dbSize).rows
     .map(r => ({ name: r[0], sizeGB: r[1] }))
     .filter(d => d.name !== 'DATABASE TOTAL SIZE');
@@ -554,13 +564,13 @@ function parseTxt(filepath) {
   }));
 
   // -------- 非 utf8 表 --------
-  const utf8Sec = getSection(content, 'Not utf8 table');
+  const utf8Sec = getSectionAny(content, 'Not utf8 table', 'not utf8 table');
   node.nonUtf8Tables = parseMysqlTable(utf8Sec).rows.map(r => ({
     schema: r[0], table: r[1], collation: r[2],
   }));
 
   // -------- 无主键表 --------
-  const noPkSec = getSection(content, 'NO PRIMARY KEY TABLES');
+  const noPkSec = getSectionAny(content, 'NO PRIMARY KEY TABLES', 'no primary key');
   node.noPkTables = parseMysqlTable(noPkSec).rows.map(r => ({
     schema: r[0], table: r[1],
   }));
@@ -579,8 +589,8 @@ function parseTxt(filepath) {
     command: r[4], time: r[5], state: r[6], info: r[7],
   }));
 
-  // -------- Engine innodb status --------
-  const innodb = getSection(content, 'Engine innodb status');
+  // -------- Engine innodb status --------（V1/V2: "engine innodb status"; V3: "Engine innodb status"）
+  const innodb = getSectionAny(content, 'Engine innodb status', 'engine innodb status');
   node.innodb = parseInnodbStatus(innodb);
 
   // -------- BLOB 字段统计 --------
@@ -1050,10 +1060,16 @@ function parseDiskMount(text) {
 function parseVariables(text) {
   const result = {};
   text.split(/\r?\n/).forEach(line => {
-    const m = line.match(/^\s*(@@global\.)?([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+?)\s*$/);
+    // V3 竖向 \G 格式：「  @@global.xxx: value」或「  xxx: value」
+    let m = line.match(/^\s*(@@global\.)?([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+?)\s*$/);
     if (m) {
-      const key = m[2];
-      result[key] = normalizeVarValue(m[3].trim());
+      result[m[2]] = normalizeVarValue(m[3].trim());
+      return;
+    }
+    // v4.9.x：V1/V2 SHOW VARIABLES 表格格式：「Variable_name<TAB>Value」
+    m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\t(.+)$/);
+    if (m && m[1] !== 'Variable_name') {
+      result[m[1]] = normalizeVarValue(m[2].trim());
     }
   });
   return result;
@@ -1412,6 +1428,27 @@ function inferIpFromFilename(filename) {
   return m ? m[1] : null;
 }
 
+// v4.9.x：当文件名不含 IP（老 collector 文件名只有日期，如 MySQL_Check2021-03-15_xx.txt），
+// 退而求其次从「ip info」段（或文件开头 8 KB 任意 inet 行）抠出真实 IP。
+// 跳过 loopback / link-local / docker 默认网段。
+function inferIpFromContent(content) {
+  const ipExclude = ip => ip === '127.0.0.1' || ip.startsWith('169.254.') ||
+                          ip.startsWith('0.0.0.') || ip.startsWith('172.17.') /* docker0 */;
+  // 优先 ip info 段
+  const sec = getSection(content, 'ip info');
+  if (sec) {
+    for (const m of sec.matchAll(/inet\s+(\d+\.\d+\.\d+\.\d+)/g)) {
+      if (!ipExclude(m[1])) return m[1];
+    }
+  }
+  // 兜底：扫开头 8 KB（早期 collector 没 ip info 段，IP 在「IP:」标签下）
+  const head = content.slice(0, 8192);
+  for (const m of head.matchAll(/inet\s+(\d+\.\d+\.\d+\.\d+)/g)) {
+    if (!ipExclude(m[1])) return m[1];
+  }
+  return null;
+}
+
 function inferInspectionDate(filename) {
   // MySQLHealthCheck_172.16.7.2_202604301023.txt → 2026-04-30
   // 172.16.7.2_apple_pri-2026-04-30.html → 2026-04-30
@@ -1431,11 +1468,25 @@ function inferProjectFromFilename(filename) {
 // 主流程
 function main() {
   const allFiles = fs.readdirSync(dataDir);
-  const txtFiles = allFiles.filter(f => /^MySQLHealthCheck_.*\.txt$/i.test(f));
+  // v4.9.x：放宽文件名匹配以支持老版本 collector：
+  // - 新版（V3）：MySQLHealthCheck_<IP>_<timestamp>.txt
+  // - V2/V1 ：  MySQLHealthCheck_<date>.txt（无 IP）
+  // - 早期变种：MySQL_Check_<date>.txt / MySQL_HealthCheck_*.txt
+  // - 兜底：任意 .txt 内容含 "----->>>---->>>" 段标记
+  const sectionMarker = '----->>>---->>>';
+  const txtFiles = allFiles.filter(f => {
+    if (!/\.txt$/i.test(f)) return false;
+    if (/^(MySQLHealthCheck|MySQL_HealthCheck|MySQL_Check)/i.test(f)) return true;
+    // 内容 sniff：开头 4 KB 含段标记则视为 collector 输出
+    try {
+      const head = fs.readFileSync(path.join(dataDir, f), 'utf-8').slice(0, 4096);
+      return head.includes(sectionMarker);
+    } catch (_) { return false; }
+  });
   const htmlFiles = allFiles.filter(f => /\.html$/i.test(f));
 
   if (txtFiles.length === 0) {
-    console.error(`错误：${dataDir} 下未找到 MySQLHealthCheck_*.txt 文件`);
+    console.error(`错误：${dataDir} 下未找到任何巡检 txt 文件（接受文件名：MySQLHealthCheck_*.txt / MySQL_Check_*.txt / 内容含「----->>>---->>>」段标记）`);
     process.exit(1);
   }
 
@@ -1456,10 +1507,17 @@ function main() {
   if (!inspectionDate) inspectionDate = new Date().toISOString().slice(0, 10);
 
   // 按 IP 聚合 txt + html
+  // v4.9.x：filename 没 IP 时退而读 ip info 段内容；都拿不到则用文件名兜底
   const byIp = {};
   for (const f of txtFiles) {
-    const ip = inferIpFromFilename(f);
-    if (!ip) continue;
+    let ip = inferIpFromFilename(f);
+    if (!ip) {
+      try {
+        const content = fs.readFileSync(path.join(dataDir, f), 'utf-8');
+        ip = inferIpFromContent(content);
+      } catch (_) {}
+    }
+    if (!ip) ip = 'unknown-' + path.basename(f).replace(/\.txt$/i, '').slice(0, 20);
     byIp[ip] = byIp[ip] || { ip };
     byIp[ip].txt = path.join(dataDir, f);
   }
