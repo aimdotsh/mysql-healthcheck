@@ -2,6 +2,288 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+> 说明：`scripts/` 主线（CLI 工具）与 `saas/` 分支（HTTP 服务）在同一 CHANGELOG 内分别按版本号记录。SaaS 版本号独立维护（`saas/package.json`）。
+
+---
+
+## [4.9.2] - 2026-05-18
+
+**光盘 / 安装 ISO / 可移动介质误报修复 + 文档补充**。
+
+### 🐛 修复
+
+- **`disk_critical` (P0) 误报光盘 100% 占用** — 实测客户 RHEL-7.6 服务器有 GUI 自动挂载的安装光盘 `/dev/sr0 → /run/media/root/RHEL-7.6 Server.x86_64`，4.2G 完全占满，被错误识别为 **P0 紧急** 磁盘告警。
+
+### 🆕 新机制：`classifyDiskSpecial(d)` 自动分类非真实磁盘
+
+按四类信号识别，命中即降级为 **P3 说明性条目**（`dimension=operations`）：
+
+| 标签 | 判定条件 |
+|---|---|
+| `optical` | 设备 `/dev/sr*` / `/dev/cdrom` / `/dev/dvd` / `/dev/scd*`，或挂载 `/cdrom` / `/dvd` / `/mnt/cdrom` |
+| `install-iso` | 挂载在 `/run/media/...` 且路径含 `RHEL-` / `CentOS-` / `Ubuntu-` / `Debian-` / `Fedora-` / `SLES` / `openSUSE` / `Rocky` / `Alma` |
+| `removable` | 其它 `/run/media/...` 自动挂载（USB / 外置硬盘）|
+| `pseudo-fs` | `tmpfs` / `devtmpfs` / `overlay` / `squashfs` |
+
+新增 4 条 issue type，全部 **P3 + needsConfirmation**：
+
+| Rule type | 触发场景 | 描述 |
+|---|---|---|
+| `disk_optical_full` | 光驱 ≥ 80% 占用 | "设计如此，无需处理" |
+| `disk_install_iso_full` | 安装 ISO 自动挂载 ≥ 80% | "设计如此，无需处理" |
+| `disk_removable_full` | USB / 移动盘 ≥ 80% | "由设备所有者决定是否清理或卸载" |
+| `disk_pseudo_fs_full` | 系统伪文件系统 ≥ 80% | 显式归类 |
+
+### 🔄 同步影响
+
+- `disk_critical` / `disk_high` 触发前自动调用 `classifyDiskSpecial(d)`；命中特殊介质 → 不再发 P0/P1，改发对应 P3
+- **根因关联 C1「磁盘高位主因拆解」** 同步过滤特殊介质，避免光驱触发误关联
+
+### 📖 文档（commit 710e716）
+
+3 处文档统一更新：
+- **`references/rules.md`**：规则表新增 4 条 `disk_*_full` + 末尾「常用『禁用规则』组合」+「优先级覆盖示例」
+- **`README.md`**：🟧 运维段速览表加 4 条；配置文件示例 `disabledRules` 加注释；新增「场景 C：客户机器挂载了安装光盘 / USB 盘」实战命令
+- **`saas/README.md`**：专节「屏蔽特殊磁盘（光驱 / 安装 ISO / USB 等）的说明性条目」+ curl `configJson` 示例
+
+### 完全静默方法（如果不希望任何说明性条目出现）
+
+```json
+{
+  "disabledRules": [
+    "disk_optical_full",
+    "disk_install_iso_full",
+    "disk_removable_full",
+    "disk_pseudo_fs_full"
+  ]
+}
+```
+
+### 📊 实测
+
+| 指标 | 旧版 | 新版 |
+|---|---|---|
+| 2021 客户样本 P0 数 | 3（含 1 条假阳磁盘 100% 告警）| **2（去掉误报）** |
+| 2021 客户样本 P3 数 | 2 | 3（新增「光驱 — 设计如此」）|
+| 根因关联误触发 | 是 | 否 |
+| `npm test` | 全绿 | 全绿 |
+
+---
+
+## [4.9.1] - 2026-05-18
+
+**老 collector 兼容性修复**。SaaS 用户上传 V1 时代的 `MySQL_Check2021-03-15_14-22-36.txt` 时报错「未找到 MySQLHealthCheck_*.txt 文件」。该文件是 2021 年 V1 collector 输出，与现在 V3 在三个维度都不一样：
+
+| 维度 | V1 老格式 | V3 当前 |
+|---|---|---|
+| **文件名** | `MySQL_Check<date>_<time>.txt`（无 IP）| `MySQLHealthCheck_<IP>_<时间戳>.txt` |
+| **段标记** | `----->>>---->>>  db version` | `----->>>---->>>  [02] MySQL Database Version` |
+| **段名** | `db version` / `variables` / `replication` / `db size` / `no primary key` | `MySQL Database Version` / `MySQL Variables` / 等 |
+| **变量格式** | `Variable_name<TAB>Value` | 竖向 `key: value` |
+
+### 🆕 三项改造
+
+**1. 文件名匹配三层放宽** (`scripts/extract.js`)
+
+```
+优先：MySQLHealthCheck_* / MySQL_Check_* / MySQL_HealthCheck_*
+兜底：任意 .txt 文件开头 4 KB 含 "----->>>---->>>" 段标记
+```
+
+**2. IP 提取两层兜底**（`scripts/extract.js` + `saas/lib/grouper.js`）
+
+```
+1) 文件名提取 IP
+2) 文件名无 IP → 扫 ip info 段
+3) ip info 段也无 → 扫开头 8 KB 任意 inet 行
+4) 跳过 127.0.0.1 / 169.254.* / 0.0.0.* / 172.17.* (docker0)
+5) 都拿不到则用 'unknown-<filename-prefix>' 作 key
+```
+
+**3. 段名 + 变量双格式支持**
+
+- 新增 `getSectionAny(content, ...names)`：尝试多个段名别名，返回首个命中
+- 7 处替换：`db version` / `variables` / `replication` / `db size` / `no primary key` / `not utf8 table` / `engine innodb status`
+- `parseVariables` 同时支持 V3 竖向 `key: value` 和 V1/V2 表格 `Variable_name<TAB>Value`
+
+### 🔧 测试 fixture 修复
+
+`tests/report_regression_test.js` 启动时把 4 个预期 fixture 复制到独立临时目录，避免被 fixture 源目录中新增的额外节点文件干扰断言。
+
+### 📊 实测
+
+| 样本 | 结果 |
+|---|---|
+| `MySQL_Check2021-03-15_14-22-36.txt` (V1, MySQL 5.6.44) | IP=10.4.130.151 从内容提取 / 412 vars / Master_Host=10.4.130.152 / 10 issues / **3 秒生成 110 KB Word docx** ✓ |
+| `MySQLHealthCheck_2019-12-17-09_*.txt × 4`（2019 早期，无 ip info 段）| 各自从开头 inet 行抠 IP（172.16.4.95/99/119/123）→ 4 个单节点集群 ✓ |
+| v3 4 节点集群（原 fixture）| `npm test` 全绿 ✓ |
+
+### 向后兼容
+
+- V3 格式继续 100% 工作（默认路径不变，只是新增了 fallback）
+- 老格式的部分 sections（如 `db size` 竖向格式）暂不深度解析 → 返回空数组而非崩溃
+
+---
+
+## [SaaS v1.2.0] - 2026-05-18
+
+**历史记录持久化 + 批量 ZIP 下载**。
+
+### 🆕 历史记录持久化
+
+每次上传自动落盘 `saas/storage/history/<batchId>.json`，**进程重启后历史依然完整可见**。
+
+**新增 API**：
+
+| 端点 | 说明 |
+|---|---|
+| `GET /api/v1/history?limit=50&offset=0&q=<keyword>` | 历史列表（按时间倒序），支持按项目名 / batchId / 节点 IP 搜索 |
+| `GET /api/v1/history/:batchId` | 单批次详情，含每个 cluster 完整 summary + 磁盘路径 |
+| `DELETE /api/v1/history/:batchId` | 删除整批次 + 对应 `storage/uploads/<jobId>/` 与 `storage/reports/<jobId>/` |
+
+**Web UI 顶部新增 Tab**：
+- 📤 新建报告
+- 📚 历史记录 — 列表 + 详情 + 搜索 + 删除
+
+### 🆕 批量 ZIP 下载
+
+`GET /api/v1/reports/batch/:batchId/download` 返回 zip：
+
+```
+<project>_<batchId-prefix>/
+├── <cluster1>_MySQL健康巡检报告_v1.0.docx
+├── <cluster2>_MySQL健康巡检报告_v1.0.docx
+├── ...
+└── README.txt                    ← 批次清单与每集群 P0/P1 摘要
+```
+
+UI 中显示位置：
+- 新建报告 Tab：所有集群完成后自动显示「📦 下载全部 (N 份, zip)」
+- 历史详情 / 列表：每个 batch 一行都有「📦 下载全部」按钮
+
+### 🔧 实现细节
+
+- **`saas/lib/history.js`**（新文件）— `HistoryStore` 类：启动扫描 JSON 加载到内存 Map / `create` / `updateCluster` / `list` / `get` / `delete`
+- **磁盘兜底查找** `findClusterDocx(jobId)` / `findClusterDataJson(jobId)` — 即使内存 job TTL 已过期，只要 docx 文件还在磁盘，历史下载链接仍可用
+- **新依赖**：`jszip ^3.10`（用于批量 zip）
+- **`storage/history/.gitkeep`** 占位 + `.gitignore` 规则
+
+### 📊 实测
+
+POST 4 个混合 txt（1 套主从 + 2 单点）→ 立即在历史 Tab 看到 status=queued/0/3 → 7 秒后 3/3 done → batch zip 下载 475 KB（3 份 docx + README.txt）。搜索按 IP 或项目名命中正确。删除清理 storage 子目录。
+
+---
+
+## [SaaS v1.1.0] - 2026-05-18
+
+**自动集群发现**：上传任意 N 个 txt → 系统自动按 MySQL 复制拓扑分组 → 每个独立集群生成一份独立 docx 报告。
+
+### 🆕 `saas/lib/grouper.js`（新文件）
+
+轻量 parser（不调用完整 extract，避免重复开销）：
+- 从文件名提取 IP（`MySQLHealthCheck_<IP>_*.txt`）+ hostname / Master_Host / slaveIps / server_id
+- v4.5 self-referencing slave 识别（Master_Host == 本机 IP/hostname/localhost）→ 不视为真从库
+- **Union-Find** 合并节点：
+  - `A.masterHost == B.ip 或 B.hostname` → 同簇
+  - `A.slaveIps 含 B.ip` → 同簇
+- 输出每个连通分量的 `{label, topology, nodes, files, primaryIp}`
+
+边界场景：
+- 从库的 master 不在上传集合 → 该从库作为单节点处理（标 `hasOrphanSlave`）
+- self-ref slave → 视为单节点
+- hostname-based references（v3 测试集 `Master_Host: mysql-master`）也能匹配
+
+### 🔄 server.js 改造
+
+`POST /api/v1/reports` 现在：
+1. 收集所有上传 txt
+2. 调 grouper 自动分簇
+3. 每簇分配独立 jobId + 子目录（用 hard link 复用上传文件不复制内容）
+4. 每簇并发跑 extract+render
+5. 返回 batch 结构：`{batchId, receivedFiles, clusterCount, project, clusters[], batchDownloadUrl}`
+
+### 🎨 Web UI 改造
+
+- 单一进度卡片 → **N 张集群卡片**，每张独立显示：
+  - 集群标签（含拓扑 badge：单节点 / 一主N从）
+  - 节点 IP 列表 + 子作业 Job ID
+  - 实时进度条 + 阶段提示
+  - 完成后展示 P0~P3 + 健康度 + 根因关联数 + docx / data.json 下载按钮
+- 整体进度栏：M / N 已完成
+
+### 📊 实测
+
+上传 14 个混合 txt（8 单点 + 1 套主从 4 节点 + 1 套主从 2 节点）→ 自动识别 **10 个集群**：
+
+- 172.16.7.2 集群（一主3从）— 4 个 txt → 1 份 200 KB 集群 docx
+- 172.16.7.32 集群（一主1从）— 2 个 txt → 1 份 168 KB 集群 docx
+- 10.0.128.236 ~ 10.9.16.231 各自单节点 — 8 份 docx
+
+并发生成 10 份独立 docx。
+
+### 🐳 Dockerfile
+
+多阶段构建：`node:20-slim` + `scripts/saas` 两套依赖 + `/data` 卷挂载 + 默认 `PORT=3000` `STORAGE_ROOT=/data`。
+
+```bash
+docker build -t mysql-hc-saas .
+docker run -d -p 3000:3000 -v $(pwd)/data:/data mysql-hc-saas
+```
+
+---
+
+## [SaaS v1.0.0] - 2026-05-17
+
+**初始 SaaS 版本**：在独立 `SaaS` 分支提供 HTTP 服务，把 `scripts/extract.js` + `scripts/render.js` 包装成可对外提供的 Web + REST API 形态。主线 main 不受影响。
+
+### 🆕 架构
+
+单进程 / 内存 job 表 / 文件系统存储，零外部依赖（无需 Redis / DB），适合 POC 与小规模团队部署。
+
+```
+saas/
+├── server.js              Express HTTP + REST API + 静态托管
+├── lib/
+│   ├── jobs.js            内存 JobStore + 状态机 + TTL 自动清理
+│   └── runner.js          child_process.spawn 包装 extract.js + render.js（零改动）
+├── public/
+│   ├── index.html         拖拽上传页面（< 6 KB 纯 HTML + CSS）
+│   └── app.js             上传→轮询→摘要+下载（< 6 KB）
+├── storage/               运行时（gitignored）
+└── README.md              337 行完整文档
+```
+
+### 🔌 REST API
+
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/api/v1/health` | GET | 健康检查（不鉴权）|
+| `/api/v1/reports` | POST | multipart 上传 `*.txt` → 202 + jobId |
+| `/api/v1/reports/:id` | GET | 查询状态 + summary |
+| `/api/v1/reports/:id/download` | GET | 下载 docx 报告 |
+| `/api/v1/reports/:id/data.json` | GET | 下载 data.json |
+
+### 🌐 Web UI
+
+- 拖拽 / 点击多文件上传 `*.txt` `*.log`
+- 选填：项目名 / 阈值配置 JSON
+- 实时进度条 + 阶段提示（queued → extract → render → done）
+- 完成展示 8 个指标 + 一键下载 docx + data.json
+
+### ⚙️ 配置项（5 个环境变量）
+
+- `PORT` (3000), `API_KEY` (可选鉴权), `STORAGE_ROOT` (`saas/storage`)
+- `MAX_FILES` (16), `MAX_FILE_SIZE_MB` (50)
+
+### 📋 v1.0 限制（已在后续版本逐项解决）
+
+| 限制 | 解决版本 |
+|---|---|
+| 单集群假设（多 txt 都当一套）| v1.1 自动集群发现 |
+| 内存 job TTL 后无法回看 | v1.2 历史记录持久化 |
+| 多集群无批量下载 | v1.2 批量 ZIP |
+| 仅支持 V3 文件名格式 | v4.9.1 老 collector 兼容 |
+
 ---
 
 ## [4.9.0] - 2026-05-17
