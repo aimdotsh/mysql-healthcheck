@@ -324,6 +324,27 @@ curl -X POST http://localhost:3000/api/v1/reports \
   -F "files=@/path/MySQLHealthCheck_*.txt"
 ```
 
+### 屏蔽特殊磁盘（光驱 / 安装 ISO / USB 等）的说明性条目
+
+v4.9 起，光驱 / 自动挂载的安装 ISO / 可移动介质如果 100% 占用，会自动降级为 **P3 说明性条目**（描述「设计如此，无需处理」），不再误报 P0。但仍会在报告里出现一条说明性 issue。如果希望**完全静默**，加入 `disabledRules`：
+
+```bash
+curl -X POST http://localhost:3000/api/v1/reports \
+  -F 'configJson={"disabledRules":["disk_optical_full","disk_install_iso_full","disk_removable_full","disk_pseudo_fs_full"]}' \
+  -F "files=@/path/MySQLHealthCheck_*.txt"
+```
+
+可挑选其中需要的几条：
+
+| Rule type | 触发条件 |
+|---|---|
+| `disk_optical_full` | `/dev/sr*` / `/dev/cdrom` / `/dev/dvd` 光驱挂载使用率 ≥ 80% |
+| `disk_install_iso_full` | `/run/media/<user>/<RHEL-x.x \| CentOS-x \| Ubuntu-x \| Debian-x \| ...>` 自动挂载 |
+| `disk_removable_full` | 其它 `/run/media/...` 自动挂载（USB / 移动硬盘）|
+| `disk_pseudo_fs_full` | `tmpfs` / `devtmpfs` / `overlay` / `squashfs` 等系统伪文件系统 |
+
+完整规则清单 + 所有可禁用 / 可调阈值的规则 type 见 [`references/rules.md`](../references/rules.md)。
+
 ---
 
 ## Web UI 功能

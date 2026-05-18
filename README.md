@@ -222,8 +222,12 @@ flowchart LR
 |---|---|---|---|---|
 | `mem_high` | P1 | 内存使用率偏高，可能拖累 buffer pool 或触发 Swap | 节点内存使用率 > 90% | ⚙️ `memory.high_pct` |
 | `swap_used` | P1 | Swap 已被使用，数据库内存被换出会引发性能抖动 | Swap 已使用（free < total）| - |
-| `disk_critical` | **P0** | 磁盘空间紧急，binlog/redo 写入可能直接失败 | 任一挂载点使用率 ≥ 90% | ⚙️ `disk.critical_pct` |
-| `disk_high` | P1 | 磁盘已用偏高，需在本周内清理或扩容 | 任一挂载点使用率 ≥ 80% | ⚙️ `disk.high_pct` |
+| `disk_critical` | **P0** | 磁盘空间紧急，binlog/redo 写入可能直接失败 | 任一挂载点使用率 ≥ 90%（已自动排除光驱 / 安装 ISO / 可移动介质）| ⚙️ `disk.critical_pct` |
+| `disk_high` | P1 | 磁盘已用偏高，需在本周内清理或扩容 | 任一挂载点使用率 ≥ 80%（同上排除）| ⚙️ `disk.high_pct` |
+| `disk_optical_full` | P3 | 光驱（CD/DVD-ROM）使用率 100% — 设计如此，无需处理 | 设备 `/dev/sr*` / `/dev/cdrom` / `/dev/dvd` 或挂载 `/cdrom`/`/dvd` | - |
+| `disk_install_iso_full` | P3 | 自动挂载的安装 ISO（RHEL/CentOS/Ubuntu/...）使用率 100% — 设计如此 | `/run/media/...` 路径含发行版标签 | - |
+| `disk_removable_full` | P3 | 可移动介质（USB / 外置硬盘）使用率偏高 — 由设备所有者决定 | 其它 `/run/media/...` 自动挂载 | - |
+| `disk_pseudo_fs_full` | P3 | 系统伪文件系统（tmpfs 等）使用率偏高 | `tmpfs` / `devtmpfs` / `overlay` / `squashfs` | - |
 | `repl_thread_down` | **P0** | 复制线程异常，从库已不同步 | `Slave_IO_Running ≠ Yes` 或 `Slave_SQL_Running ≠ Yes` | - |
 | `repl_delay_high` | P1 | 从库延迟过大，故障切换会丢数据 | `Seconds_Behind_Master > 300s` | ⚙️ `replication.delay_p1_seconds` |
 | `repl_delay_low` | P2 | 从库延迟轻微但需关注趋势 | `Seconds_Behind_Master > 60s` | ⚙️ `replication.delay_p2_seconds` |
@@ -357,23 +361,40 @@ node scripts/extract.js <data-dir> --config /path/to/custom.json --out data.json
 
 ### 配置文件三个顶层段
 
-```json
+```jsonc
 {
   "thresholds": {        // ① 调整阈值
     "disk": { "critical_pct": 85, "high_pct": 75 },
     "innodb": { "bp_too_small_ratio": 0.5, "hll_warn": 5000 },
     "sql":   { "long_query_time_loose": 2 }
   },
-  "disabledRules": [     // ② 禁用规则（type 名见上文清单）
+  "disabledRules": [     // ② 禁用规则（命中即跳过 → 报告里完全不出现）
     "sql_mode_missing_strict",
-    "auth_plugin_native_on_80"
+    "auth_plugin_native_on_80",
+    // 光驱 / 安装 ISO / 可移动介质 — 默认是 P3「设计如此」说明性条目，
+    // 若希望完全静默（连说明都不出现）：
+    "disk_optical_full",
+    "disk_install_iso_full",
+    "disk_removable_full",
+    "disk_pseudo_fs_full"
   ],
   "priorities": {        // ③ 覆盖单条规则优先级
     "wildcard_medium": "P3",
-    "long_query_time_loose": "P2"
+    "long_query_time_loose": "P2",
+    "expire_logs_long": "P2"
   }
 }
 ```
+
+#### 常用「禁用规则」组合
+
+| 场景 | disabledRules 建议 |
+|---|---|
+| 只想屏蔽光驱误报 | `["disk_optical_full"]`（默认 P3 已说明，加这一条则报告里完全不出现） |
+| 屏蔽所有特殊介质 | `["disk_optical_full", "disk_install_iso_full", "disk_removable_full", "disk_pseudo_fs_full"]` |
+| 不在乎 sql_mode 严格 | `["sql_mode_missing_strict"]` |
+| 不做合规向规则 | `["sql_mode_missing_strict", "charset_not_utf8mb4", "auth_plugin_native_on_80", "performance_schema_off"]` |
+| 老旧系统不评估 EOL | 暂无直接 type 禁用（用 priorities 把 `mysql_version_eol` 降级 P3）|
 
 ### 三种典型场景
 
@@ -394,6 +415,16 @@ node scripts/extract.js <data-dir> --config scripts/config/samples/lenient.json
 
 `lenient.json` 阈值放宽 + 禁用 `sql_mode_missing_strict` / `charset_not_utf8mb4` / `auth_plugin_native_on_80` / `performance_schema_off` 等合规向规则。
 
+#### 场景 C：客户机器挂载了安装光盘 / USB 盘（避免误报）
+
+```bash
+echo '{"disabledRules":["disk_optical_full","disk_install_iso_full","disk_removable_full"]}' \
+  > /path/data/mysql-healthcheck.config.json
+node scripts/extract.js /path/data
+```
+
+注：v4.9 起这 4 条规则默认就是 **P3 说明性条目（"设计如此，无需处理"）**，不会再误报 P0。上面的配置是「**完全静默**」选项 — 仅在不希望它们出现在报告里时才用。
+
 #### 场景 C：单条阈值定制
 
 只想把磁盘 90% 改为 95%：
@@ -408,7 +439,7 @@ node scripts/extract.js /path/data
 
 | 分组 | 配置键 | 默认值 | 控制的规则 |
 |---|---|---|---|
-| **disk** | `critical_pct` / `high_pct` | 90 / 80 | `disk_critical` / `disk_high` |
+| **disk** | `critical_pct` / `high_pct` | 90 / 80 | `disk_critical` / `disk_high`（自动排除光驱 / 安装 ISO / USB / tmpfs）|
 | **memory** | `high_pct` | 90 | `mem_high` |
 | **innodb** | `hll_warn` / `hll_p1` | 10000 / 50000 | `innodb_hll_high` |
 | | `bp_hit_low_pct` / `bp_hit_warn_pct` | 95 / 99 | `bp_hit_low` / `bp_hit_sub99` |

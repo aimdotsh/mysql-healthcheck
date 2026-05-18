@@ -20,8 +20,12 @@ v4.8 新增字段（仅在 12 条 senior-DBA 规则上）：`currentValue` / `re
 | `mem_high` | P1 | 节点内存使用率 > 90% | `memory.high_pct` |
 | `swap_used` | P1 | Swap 已被使用（free < total） | - |
 | `os_version_eol` | P1/P2 | 操作系统发行版已 EOL | - |
-| `disk_critical` | **P0** | 任一挂载点使用率 ≥ 90% | `disk.critical_pct` |
-| `disk_high` | P1 | 任一挂载点使用率 ≥ 80% | `disk.high_pct` |
+| `disk_critical` | **P0** | 任一挂载点使用率 ≥ 90%（已自动排除光驱 / 安装 ISO / 可移动介质 / 系统伪文件系统）| `disk.critical_pct` |
+| `disk_high` | P1 | 任一挂载点使用率 ≥ 80%（同上排除规则）| `disk.high_pct` |
+| `disk_optical_full` | P3 | `/dev/sr*` 或 `/cdrom`/`/dvd` 类挂载使用率 ≥ 80% — 光盘只读「设计如此」| - |
+| `disk_install_iso_full` | P3 | `/run/media/...` 路径含 `RHEL-` / `CentOS-` / `Ubuntu-` / `Debian-` / `Fedora-` / `Rocky` / `Alma` 等发行版标签 — 自动挂载安装 ISO | - |
+| `disk_removable_full` | P3 | 其它 `/run/media/...` 自动挂载（USB / 外置硬盘）使用率 ≥ 80% | - |
+| `disk_pseudo_fs_full` | P3 | `tmpfs` / `devtmpfs` / `overlay` / `squashfs` 使用率 ≥ 80%（罕见，但显式归类）| - |
 
 ### 复制
 
@@ -230,3 +234,47 @@ v4.8 起 issue 可显式携带 `dimension` 字段直接命中对应维度；旧�
 - 现有 ~30 条 push 调用零改动
 
 `promoteAssessmentIssues` 的 `extras` 也走相同接管（backup / security 规则均支持）。
+
+### 常用「禁用规则」组合
+
+复制到 `mysql-healthcheck.config.json` 或 `--config <file>`：
+
+```jsonc
+{
+  "disabledRules": [
+    // ─── 光驱 / 可移动介质 / 安装 ISO ─────────────────────
+    // 默认已降级为 P3「设计如此」说明性条目，如完全不想在报告里出现：
+    "disk_optical_full",          // /dev/sr0 等光驱挂载
+    "disk_install_iso_full",      // /run/media/<user>/RHEL-7.6 等安装 ISO
+    "disk_removable_full",        // 其它 /run/media/ 自动挂载（USB / 移动盘）
+    "disk_pseudo_fs_full",        // tmpfs / devtmpfs / overlay / squashfs
+
+    // ─── 合规向规则 ─────────────────────────────────────────
+    "sql_mode_missing_strict",
+    "charset_not_utf8mb4",
+    "auth_plugin_native_on_80",
+    "performance_schema_off",
+    "auto_increment_exhausting",
+
+    // ─── 老版本/低优先级 ─────────────────────────────────────
+    "wait_timeout_too_long",
+    "lct_zero_linux"
+  ]
+}
+```
+
+每条规则的 type 名见上文清单。组合可任意自由：只想屏蔽光驱告警就只填 `disk_optical_full`；要全静默合规相关就把 5 条合规向都加上。
+
+### 优先级覆盖示例
+
+不删规则，但调整严重程度：
+
+```jsonc
+{
+  "priorities": {
+    "wildcard_medium": "P3",         // 业务账号 host=% 从 P2 降为 P3 观察
+    "expire_logs_long": "P2",         // binlog 保留过长从 P3 升为 P2 建议
+    "disk_optical_full": "P3"         // 显式确认光驱降级（默认就是 P3）
+  }
+}
+```
