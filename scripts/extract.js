@@ -1026,6 +1026,44 @@ function parseBackupDirs(text) {
   return dirs;
 }
 
+// v4.9.x：识别光盘 / 可移动介质 / 系统伪文件系统，避免它们的 100% 占用被误报为 P0。
+// 用户案例：/dev/sr0 挂载于 /run/media/root/RHEL-7.6 Server.x86_64，
+// 这是 GUI 自动挂载的安装 ISO，100% 占用是设计如此，不需要清理或扩容。
+//
+// 返回值：'optical' / 'removable' / 'install-iso' / 'pseudo-fs' / null（真实磁盘）
+function classifyDiskSpecial(d) {
+  const dev = String(d.filesystem || '').toLowerCase();
+  const mount = String(d.mount || '');
+  // 1. 设备路径 → 光驱
+  if (/^\/dev\/sr\d+/.test(dev) || /^\/dev\/cdrom/.test(dev) || /^\/dev\/dvd/.test(dev) || /^\/dev\/scd\d+/.test(dev)) {
+    return 'optical';
+  }
+  // 2. 挂载路径 → 光驱 / 安装 ISO
+  if (/^\/(mnt|media)\/(cdrom|dvd|cd-rom)/.test(mount.toLowerCase()) || /^\/(cdrom|dvd)\//.test(mount)) {
+    return 'optical';
+  }
+  // 3. RHEL / CentOS / Ubuntu / Debian 安装 ISO 自动挂载标签
+  //    （/run/media/<user>/<ISO-label> 是 systemd-udev 自动挂载点）
+  if (/^\/run\/media\//.test(mount)) {
+    if (/(RHEL|CentOS|Ubuntu|Debian|Fedora|SLES|openSUSE|Rocky|Alma)[-_ ]?\d/.test(mount)) {
+      return 'install-iso';
+    }
+    return 'removable';   // 其它 /run/media/ 自动挂载（USB 等）
+  }
+  // 4. 系统伪文件系统（理论上 90% 阈值难触发，但保持显式排除）
+  if (dev === 'tmpfs' || dev === 'devtmpfs' || dev === 'overlay' || dev === 'squashfs') {
+    return 'pseudo-fs';
+  }
+  return null;
+}
+
+const DISK_SPECIAL_LABEL = {
+  optical: '光驱（CD/DVD-ROM）',
+  'install-iso': '安装 ISO 镜像（自动挂载）',
+  removable: '可移动介质（USB / 移动硬盘）',
+  'pseudo-fs': '系统伪文件系统',
+};
+
 function parseDiskMount(text) {
   const lines = text.split(/\r?\n/).filter(l => l.trim() && !l.startsWith('Filesystem'));
   const disks = [];
@@ -2087,10 +2125,32 @@ function analyzeIssues(nodes) {
     }
 
     // v4.8：磁盘阈值改为读 cfg.thresholds.disk.*
+    // v4.9.x：识别光驱/安装 ISO/可移动介质 → 100% 占用降级为 P3 + 说明性文案
     const diskCriticalPct = T.disk?.critical_pct ?? 90;
     const diskHighPct = T.disk?.high_pct ?? 80;
     for (const d of (n.disks || [])) {
       const pct = parseInt((d.usePct || '0').replace('%', ''));
+      if (pct < diskHighPct) continue;
+      const special = classifyDiskSpecial(d);
+      if (special) {
+        // 特殊介质：仅 P3 观察，不告警
+        push({
+          type: `disk_${special.replace(/-/g, '_')}_full`,
+          priority: 'P3',
+          groupKey: `disk:${n.ip}:${d.mount}`,
+          description: `${DISK_SPECIAL_LABEL[special] || special}「${d.mount}」使用率 ${d.usePct}（${d.filesystem}，容量 ${d.total}）— 设计如此，无需处理`,
+          node: nodeLabel(n),
+          action: special === 'install-iso' || special === 'optical'
+            ? '光驱/安装 ISO 100% 占用是正常现象（只读介质本来就装满）；如确认无需保留挂载，可 umount 卸载'
+            : '可移动介质，使用率高时由设备所有者决定是否清理或卸载',
+          sql: null,
+          scope: 'node',
+          dimension: 'operations',
+          needsConfirmation: true,
+        });
+        continue;
+      }
+      // 真实磁盘按原有规则告警
       if (pct >= diskCriticalPct) {
         push({
           type: 'disk_critical', priority: 'P0', groupKey: `disk:${n.ip}:${d.mount}`,
@@ -2099,7 +2159,7 @@ function analyzeIssues(nodes) {
           sql: `df -h ${d.mount}\nfind ${d.mount} -type f -size +1G -mtime +30 -exec ls -lh {} \\;`,
           scope: 'node',
         });
-      } else if (pct >= diskHighPct) {
+      } else {
         push({
           type: 'disk_high', priority: 'P1', groupKey: `disk:${n.ip}:${d.mount}`,
           description: `磁盘 ${d.mount} 使用率 ${d.usePct}`,
@@ -3195,7 +3255,10 @@ function deriveCorrelations(nodes, issues) {
   // ====================================================================
   for (const n of nodes) {
     const v = n.variables || {};
-    const highDiskDisk = (n.disks || []).find(d => parseInt((d.usePct||'0').replace('%',''))>=80);
+    // v4.9.x：跳过光驱 / 安装 ISO / 可移动介质，避免它们的 100% 触发误关联
+    const highDiskDisk = (n.disks || []).find(d =>
+      parseInt((d.usePct || '0').replace('%', '')) >= 80 && !classifyDiskSpecial(d)
+    );
     if (!highDiskDisk) continue;
     const attr = n.diskAttribution;
     if (!attr || attr.totalBytes === 0) {
