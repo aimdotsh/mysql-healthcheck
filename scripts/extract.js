@@ -355,7 +355,10 @@ function parseIbtmp1FromTablespaces(text, configValue) {
     ?? initialSize
     ?? dataFree;
   const cfg = String(configValue || '');
-  const cfgInitial = (cfg.match(/ibtmp1:([^:]+)(?::|$)/i) || [])[1];
+  // v4.9.5：之前的 regex `ibtmp1:([^:]+)` 会越过 ; 边界
+  //         例如 `ibtmp1:500M;ibtmp2:500M:autoextend:max:5120M` 解出 `500M;ibtmp2`
+  //         多 datafile 之间用 ; 分隔，这里把 ; 也加入终止符
+  const cfgInitial = (cfg.match(/ibtmp1:([^:;]+)(?:[:;]|$)/i) || [])[1];
   const cfgAuto = /autoextend/i.test(cfg) ? 'autoextend' : '-';
   return {
     sizeBytes,

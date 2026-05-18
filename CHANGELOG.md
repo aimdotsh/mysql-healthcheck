@@ -6,6 +6,54 @@
 
 ---
 
+## [4.9.5] - 2026-05-18
+
+**ibtmp1 配置感知建议 + 多 datafile 解析修复**。
+
+### 客户反馈
+
+> ibtmp1 配置已经写了 `:max:5120M`，第八章 8.3 处置建议仍然劝我「设置上限」 — 这条建议是错的。
+
+### 修复
+
+1. **chapter 8.3 处置建议改为条件式（render.js `chapterIbtmp1`）**：
+   - 若至少有 1 个节点未配置 `:max:` → 显示「短期：设置上限」建议（点名哪些节点）
+   - 若**全部节点已配置 `:max:`** → 显示「✓ 全部节点的 innodb_temp_data_file_path 已配置 :max: 上限（XXX），无需调整」
+   - 始终保留「中期：通过慢查询日志定位触发临时表的 SQL」建议（这条独立于配置）
+   - 额外：若 ibtmp1 已偏大（> 5GB），额外提示「可在维护窗口重启 MySQL 让 ibtmp1 重建回收空间」
+
+2. **多 datafile 配置解析修复（extract.js `parseIbtmp1FromTablespaces`）**：
+
+   旧 regex `/ibtmp1:([^:]+)(?::|$)/i` 不识别 `;` datafile 分隔符。
+   对 `ibtmp1:500M;ibtmp2:500M:autoextend:max:5120M`，解析出的 "初始大小" 是 `500M;ibtmp2`（错误地把第二个 datafile 名称也包了进来）。
+
+   新 regex `/ibtmp1:([^:;]+)(?:[:;]|$)/i` 在 `;` 处也停止：
+
+   | 配置 | 旧解析 | 新解析 |
+   |---|---|---|
+   | `ibtmp1:12M:autoextend` | `12M` ✓ | `12M` ✓ |
+   | `ibtmp1:12M:autoextend:max:50G` | `12M` ✓ | `12M` ✓ |
+   | `ibtmp1:500M` | `500M` ✓ | `500M` ✓ |
+   | `ibtmp1:500M;ibtmp2:500M:autoextend:max:5120M` | **`500M;ibtmp2`** ❌ | **`500M`** ✓ |
+   | `ibtmp1:100M;ibtmp2:200M` | **`100M;ibtmp2`** ❌ | **`100M`** ✓ |
+
+### 影响
+
+- 用户案例：配置 `ibtmp1:500M;ibtmp2:500M:autoextend:max:5120M`
+  - 8.1 表「初始大小」从「500M;ibtmp2」纠正为「500M」
+  - 8.3 建议从「设置上限」改为「✓ 已配置 :max:，无需调整」+ 慢查询定位
+  - 中期建议保留
+
+- `ibtmp1_no_max` issue rule 本来就用 `/:max:/i.test()` 正确判断，本期不动 — 仅 chapter 8.3 静态文案误导。
+
+### 实现
+
+- `scripts/extract.js`: `parseIbtmp1FromTablespaces` 的 regex 修复
+- `scripts/render.js`: `chapterIbtmp1` 8.3 段重写为条件式（含点名节点 / 偏大提示）
+- `scripts/package.json`: 4.9.4 → 4.9.5
+
+---
+
 ## [4.9.4] - 2026-05-18
 
 **健康度评分模型重写** — 配合 v4.9.3 的咨询性措辞，把评分模型也改"温和"。

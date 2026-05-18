@@ -1277,10 +1277,28 @@ function chapterIbtmp1(data) {
   out.push(emptyLine());
 
   out.push(h2('8.3 处置建议'));
-  out.push(para('短期：在 my.cnf 中设置上限，避免无限增长：'));
-  out.push(code('innodb_temp_data_file_path = ibtmp1:12M:autoextend:max:50G'));
-  out.push(para('重启后 ibtmp1 将重建为 12MB 初始大小，最大增长至 50GB（达到上限后报错 1114 而非耗尽磁盘）。'));
-  out.push(para('中期：通过慢查询日志定位触发临时表的 SQL，优化业务查询。'));
+  // v4.9.5：根据节点实际配置生成建议，避免「已配置 :max:」也提醒「设置上限」
+  const nodesNoMax = data.nodes.filter(n => {
+    const cfg = n.variables?.innodb_temp_data_file_path || '';
+    return cfg && !/:max:/i.test(cfg);
+  });
+  const nodesWithMax = data.nodes.filter(n => /:max:/i.test(n.variables?.innodb_temp_data_file_path || ''));
+  const oversizeNodes = data.nodes.filter(n => n.ibtmp1?.sizeBytes && n.ibtmp1.sizeBytes > 5 * 1073741824);
+
+  if (nodesNoMax.length > 0) {
+    out.push(para(`短期：${nodesNoMax.length} 个节点（${nodesNoMax.map(n => n.ip).join('、')}）尚未配置 :max: 上限，建议在 my.cnf 中加入：`));
+    out.push(code('innodb_temp_data_file_path = ibtmp1:12M:autoextend:max:50G'));
+    out.push(para('重启后 ibtmp1 将重建为 12MB 初始大小，最大增长至 50GB（达到上限后报错 1114 而非耗尽磁盘）。'));
+  } else if (data.nodes.length > 0) {
+    out.push(noteParagraph(`✓ 全部节点的 innodb_temp_data_file_path 已配置 :max: 上限（${nodesWithMax[0].variables.innodb_temp_data_file_path}），无需调整。`));
+  }
+
+  if (oversizeNodes.length > 0) {
+    out.push(emptyLine());
+    out.push(para(`当前已偏大节点：${oversizeNodes.map(n => `${n.ip} (${n.ibtmp1.sizeFormatted})`).join('、')} — 可在维护窗口重启 MySQL 让 ibtmp1 重建回收空间。`));
+  }
+  out.push(emptyLine());
+  out.push(para('中期：通过慢查询日志定位触发临时表的 SQL（filesort / Using temporary），优化业务查询从源头降低 ibtmp1 增长速度。'));
   return out;
 }
 
