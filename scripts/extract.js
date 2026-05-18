@@ -1691,18 +1691,29 @@ function deriveOverallAssessment(issues, healthScore) {
 // ============== 健康度评分 ==============
 // 6 维度：可用性、安全性、性能、数据规范、持久化、运维规范
 function computeHealthScore(nodes, issues) {
+  // v4.9.3：评分模型重写 — 客户反馈「不能出现零分和很低的分数」。
+  // 新模型：
+  //   1) 单条规则惩罚减半（P0: 18→8, P1: 7→3, P2: 3→1.5, P3: 1→0.5）
+  //   2) 同维度同优先级多条 issue 用递减惩罚，避免线性堆叠（第 1 条 100%，
+  //      第 2 条 60%，第 3 条 40%，第 4 条 25%，第 5+ 条 15%）
+  //   3) 每个维度有 50 分的下限（数据库在跑，最低也能反映"操作中但需关注"）
+  //   4) 总分有 55 分下限，避免吓到客户
+  //   5) backup / security 二次惩罚同步减半，因为已通过 issues 扣过分
   const dim = {
-    availability: 100,   // 可用性（复制、磁盘、节点状态）
-    security: 100,       // 安全（账号、加密、审计）
-    performance: 100,    // 性能（命中率、慢查询、IO）
-    dataDesign: 100,     // 数据规范（主键、字符集、索引）
-    durability: 100,     // 持久化（sync_binlog、flush_log、GTID）
-    operations: 100,     // 运维（备份、监控、变更）
+    availability: 100,
+    security: 100,
+    performance: 100,
+    dataDesign: 100,
+    durability: 100,
+    operations: 100,
   };
 
+  const BASE_PENALTY = { P0: 8, P1: 3, P2: 1.5, P3: 0.5 };
+  const DIMINISH = [1.0, 0.6, 0.4, 0.25, 0.15];   // 同 (priority, dim) 第 1/2/3/4/5+ 条的倍率
+
+  // 把 issue 按 (priority, dimension) 分桶以便递减计算
+  const ordinalCounter = new Map();
   for (const i of issues) {
-    const penalty = { P0: 18, P1: 7, P2: 3, P3: 1 }[i.priority] || 0;
-    // v4.8：优先用显式 dimension 字段；旧规则没设则回退到 type 正则映射（零行为变化）
     let dimKey = i.dimension;
     if (!dimKey) {
       const t = i.type || '';
@@ -1713,32 +1724,35 @@ function computeHealthScore(nodes, issues) {
       else if (/flush_log|sync_binlog|gtid|ibtmp1|swap|master_readonly|slave_writable|expire_logs/.test(t)) dimKey = 'durability';
       else if (/param_inconsistent|backup|slow_log_off|os_version/.test(t)) dimKey = 'operations';
     }
-    if (dimKey && dim[dimKey] != null) {
-      dim[dimKey] -= penalty;
-    } else {
-      dim.availability -= penalty / 2;
-    }
+    if (!dimKey || dim[dimKey] == null) dimKey = 'availability';
+
+    const key = `${i.priority}:${dimKey}`;
+    const ord = (ordinalCounter.get(key) || 0) + 1;
+    ordinalCounter.set(key, ord);
+    const base = BASE_PENALTY[i.priority] || 0;
+    const mult = DIMINISH[Math.min(ord - 1, DIMINISH.length - 1)];
+    dim[dimKey] -= base * mult;
   }
 
-  // 备份维度：没备份 / 没备份工具 → 重扣
+  // 备份维度：没备份 / 没备份工具 → 二次扣分（已通过 issues 扣过一次，这里只补少量）
   const hasBackupTool = nodes.some(n => (n.backupTools || []).some(t => t.installed && /xtrabackup|mysqldump|mariabackup/.test(t.tool)));
   const hasBackupDir = nodes.some(n => (n.backupDirs || []).some(d => d.files && d.files.length > 0));
-  if (!hasBackupTool) dim.operations -= 15;
-  if (!hasBackupDir) dim.operations -= 15;
+  if (!hasBackupTool) dim.operations -= 4;
+  if (!hasBackupDir) dim.operations -= 4;
   const hasBackupCron = nodes.some(n => /mysql|backup|dump/i.test(n.mysqlCrontab || '') || /mysql|backup|dump/i.test(n.rootCrontab || '') || /mysql|backup|dump/i.test(n.systemCronBackup || ''));
-  if (!hasBackupCron && (hasBackupDir || hasBackupTool)) dim.operations -= 5;
+  if (!hasBackupCron && (hasBackupDir || hasBackupTool)) dim.operations -= 2;
 
-  // 安全维度：加密 / TLS / 审计 缺失各扣
+  // 安全维度：加密 / TLS / 审计 缺失各扣（同样减半）
   const hasEncryption = nodes.some(n => n.hasInnodbEncryption);
   const hasTls = nodes.some(n => n.tlsConfig?.have_ssl === 'YES');
   const hasAudit = nodes.some(n => n.hasAuditPlugin);
-  if (!hasEncryption) dim.security -= 5;
-  if (!hasTls) dim.security -= 5;
-  if (!hasAudit) dim.security -= 3;
+  if (!hasEncryption) dim.security -= 2;
+  if (!hasTls) dim.security -= 2;
+  if (!hasAudit) dim.security -= 1;
 
-  // clamp 0-100
+  // 每维度下限 50，上限 100（"数据库在跑，最差也是中等待改进"）
   for (const k of Object.keys(dim)) {
-    dim[k] = Math.max(0, Math.min(100, Math.round(dim[k])));
+    dim[k] = Math.max(50, Math.min(100, Math.round(dim[k])));
   }
 
   // 总分：加权平均
@@ -1749,6 +1763,8 @@ function computeHealthScore(nodes, issues) {
   let total = 0;
   for (const k of Object.keys(dim)) total += dim[k] * weights[k];
   total = Math.round(total);
+  // 总分下限 55（数据库正常运行的事实，应反映在评分里）
+  total = Math.max(55, Math.min(100, total));
 
   return { total, dimensions: dim };
 }

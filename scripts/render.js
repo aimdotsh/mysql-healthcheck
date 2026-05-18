@@ -514,12 +514,14 @@ function chapterExecutiveSummary(data) {
 }
 
 function levelOf(score) {
+  // v4.9.3：等级标签同步软化 — 不出现「严重」「较差」等过激词
+  // 配合 computeHealthScore 的 55 分下限，所有分段都是"操作中可改进"的语义
   if (score == null) return '-';
-  if (score >= 85) return '✅ 优秀';
-  if (score >= 70) return '✓ 良好';
-  if (score >= 55) return '⚠ 中等';
-  if (score >= 40) return '⚠ 较差';
-  return '🔴 严重';
+  if (score >= 90) return '✅ 优秀';
+  if (score >= 80) return '✓ 良好';
+  if (score >= 70) return '✓ 中等';
+  if (score >= 60) return '⚠ 关注';
+  return '⚠ 建议优化';
 }
 
 // ============== 目录页 ==============
