@@ -336,7 +336,9 @@ function makePriorityTable(headers, issues, title) {
 }
 
 function priorityLabel(p) {
-  return { P0: '紧急', P1: '重要', P2: '建议', P3: '观察' }[p] || '';
+  // v4.9.3：P0 措辞从「紧急」改为「关键」— 数据库实际在正常运行，
+  //         用「紧急」会过度警示客户；用「关键」保留高优先级语义而不 alarmist。
+  return { P0: '关键', P1: '重要', P2: '建议', P3: '观察' }[p] || '';
 }
 
 function noteParagraph(text) {
@@ -494,7 +496,7 @@ function chapterExecutiveSummary(data) {
       [isSingleNodeKF ? '采集范围' : '集群拓扑', `${data.cluster.topology}（${data.cluster.nodeCount} 节点）`],
       [isSingleNodeKF ? '节点 IP' : '集群 IP', data.cluster.ips.join('、')],
       ['整体评估', data.overallAssessment.replace(/（健康度评分.*?）/, '')],
-      ['问题分布', `P0 紧急 ${p0} 项 / P1 重要 ${p1} 项 / P2 建议 ${p2} 项 / P3 观察 ${p3} 项`],
+      ['问题分布', `P0 关键 ${p0} 项 / P1 重要 ${p1} 项 / P2 建议 ${p2} 项 / P3 观察 ${p3} 项`],
       ['备份能力', data.backupAssessment?.assessment || '-'],
       // v4.7.2：合规等级行已移除（连同第十六章「安全合规审计」一起，
       // 因为这部分内容属于咨询性/框架对照，不是日常巡检关注点）
@@ -561,7 +563,7 @@ function chapterSummary(data) {
     para(`整体评估：${data.overallAssessment}。`),
     para([
       { text: '问题分布：', bold: true },
-      { text: `P0 紧急 ${p0} 项 / P1 重要 ${p1} 项 / P2 建议 ${p2} 项 / P3 观察 ${p3} 项。` },
+      { text: `P0 关键 ${p0} 项 / P1 重要 ${p1} 项 / P2 建议 ${p2} 项 / P3 观察 ${p3} 项。` },
     ]),
   ];
   if (!isSingleNode) {
@@ -575,7 +577,7 @@ function chapterSummary(data) {
   // 问题分布饼图
   if (charts && data.issues.length > 0) {
     const pieP = chartParagraph(() => charts.pie([
-      { label: 'P0 紧急', value: p0, color: charts.COLORS.p0 },
+      { label: 'P0 关键', value: p0, color: charts.COLORS.p0 },
       { label: 'P1 重要', value: p1, color: charts.COLORS.p1 },
       { label: 'P2 建议', value: p2, color: charts.COLORS.p2 },
       { label: 'P3 观察', value: p3, color: charts.COLORS.p3 },
@@ -627,7 +629,7 @@ function chapterSummary(data) {
 
   out.push(para([
     { text: '说明：', bold: true, color: COLOR.muted },
-    { text: 'P0=立即处理（影响可用性），P1=本周内处理，P2=本月内规划，P3=持续观察。', color: COLOR.muted },
+    { text: 'P0=优先处置（潜在影响可用性），P1=近期规划处置，P2=本月内评估优化，P3=持续观察。', color: COLOR.muted },
   ]));
 
   return out;
@@ -1418,7 +1420,7 @@ function chapterUsers(data) {
   } else {
     const classify = (user) => {
       const u = (user || '').toLowerCase();
-      if (u === 'root' || /admin|dba|super/.test(u)) return { level: 'critical', label: '🔴 致命', reason: 'root / 管理员账号' };
+      if (u === 'root' || /admin|dba|super/.test(u)) return { level: 'critical', label: '🔴 关键', reason: 'root / 管理员账号' };
       if (u === 'repl' || /replic/.test(u)) return { level: 'high', label: '🔴 高危', reason: '复制账号，应限制为复制源 IP' };
       if (/backup|dump/.test(u)) return { level: 'high', label: '🟠 高危', reason: '备份账号，权限较广' };
       if (/zabbix|prometheus|nagios|monitor|exporter/.test(u)) return { level: 'low', label: '🟢 低危', reason: '监控只读账号' };
@@ -1435,7 +1437,7 @@ function chapterUsers(data) {
       groups.get(key).users.push(u.user);
     });
     const lvlOrder = { critical: 0, high: 1, medium: 2, low: 3 };
-    const advice = (lvl) => lvl === 'low' ? '可保留' : lvl === 'medium' ? '建议缩限网段' : '立即收紧到具体 IP/网段';
+    const advice = (lvl) => lvl === 'low' ? '可保留' : lvl === 'medium' ? '建议缩限网段' : '建议优先收紧到具体 IP/网段';
     const sortedGroups = [...groups.values()].sort((a, b) => lvlOrder[a.level] - lvlOrder[b.level]);
     const rows = sortedGroups.map(g => [
       g.label,
@@ -1455,7 +1457,7 @@ function chapterUsers(data) {
     const criticalUsers = sortedGroups.filter(g => g.level === 'critical' || g.level === 'high').flatMap(g => g.users);
     if (criticalUsers.length > 0) {
       out.push(para([
-        { text: `⚠️ 必须立即收紧 ${criticalUsers.length} 个高风险账号：`, bold: true, color: 'C00000' },
+        { text: `⚠ 建议优先收紧 ${criticalUsers.length} 个高风险账号：`, bold: true, color: 'C00000' },
         { text: criticalUsers.join('、') },
       ]));
     }
@@ -1471,7 +1473,7 @@ function chapterUsers(data) {
 
   if (criticalWildcards.length > 0) {
     const sqls = criticalWildcards.map(u => `DROP USER '${u.user}'@'%';`).join(' ');
-    out.push(bullet(`立即清理 host=% 的 root / 管理员账号（${criticalWildcards.map(u => u.user).join('、')}）：${sqls}`));
+    out.push(bullet(`建议优先收紧 host=% 的 root / 管理员账号（${criticalWildcards.map(u => u.user).join('、')}）：${sqls}`));
   }
   if (replWildcards.length > 0) {
     const name = replWildcards[0].user;
@@ -1693,9 +1695,9 @@ function chapterSchemaDesignAudit(data) {
   out.push(h2('13.6 自增主键使用率'));
   const autoInc = refNode.autoIncrementUsage || [];
   if (autoInc.length > 0) {
-    const rows = autoInc.slice(0, 20).map(a => [a.schema, a.table, a.column, a.autoIncrement, (a.rate * 100).toFixed(2) + '%', a.rate >= 0.8 ? '🔴 紧急' : a.rate >= 0.5 ? '🟠 关注' : '✅ 正常']);
+    const rows = autoInc.slice(0, 20).map(a => [a.schema, a.table, a.column, a.autoIncrement, (a.rate * 100).toFixed(2) + '%', a.rate >= 0.8 ? '🔴 关键' : a.rate >= 0.5 ? '🟠 关注' : '✅ 正常']);
     out.push(makeTable(['库名', '表名', '列名', '当前值', '使用率', '风险'], rows, `自增列使用率（前 20，共 ${autoInc.length}）`));
-    out.push(noteParagraph('使用率超过 80% 应立即扩容（如 INT→BIGINT 或重建表）；超过 50% 应纳入容量规划。'));
+    out.push(noteParagraph('使用率超过 80% 建议优先扩容（如 INT→BIGINT 或重建表）；超过 50% 应纳入容量规划。'));
   } else {
     out.push(para('未发现自增主键使用率超过 50% 的表。'));
   }
@@ -1894,7 +1896,7 @@ function chapterBackupRecovery(data) {
 
   out.push(h2('15.7 行动建议'));
   if (!ba.hasTool) {
-    out.push(bullet('🔴 立即安装备份工具：xtrabackup（推荐）或 mariabackup（MariaDB 兼容）'));
+    out.push(bullet('🔴 建议优先安装备份工具：xtrabackup（推荐）或 mariabackup（MariaDB 兼容）'));
   }
   if (!ba.hasBackupArtifact) {
     out.push(bullet('🔴 制定备份策略：全量 + 增量 + binlog，至少异地保存'));
@@ -2067,8 +2069,9 @@ function chapterConclusion(data) {
   const p1 = data.issues.filter(i => i.priority === 'P1');
   const p2 = data.issues.filter(i => i.priority === 'P2');
 
-  renderActionBlock('🔴 本周内（P0 紧急）', 'C00000', p0);
-  renderActionBlock('🟠 两周内（P1 重要）', 'BF8F00', p1);
+  // v4.9.3：标题措辞改为咨询性，避免"本周内/紧急"等急迫词汇
+  renderActionBlock('🔴 优先处置（P0 关键风险点）', 'C00000', p0);
+  renderActionBlock('🟠 近期规划（P1 重要风险点）', 'BF8F00', p1);
   renderActionBlock('🟡 本月内（P2 建议）', '548235', p2);
 
   const recs = data.recommendations || {};
@@ -2135,7 +2138,7 @@ function osLifecycleLabel(n) {
 }
 function diskHealthLabel(pctText) {
   const pct = parseInt((pctText || '0').replace('%', ''));
-  if (pct >= 90) return '紧急';
+  if (pct >= 90) return '关键';
   if (pct >= 80) return '关注';
   if (pct >= 70) return '正常';
   return '充裕';

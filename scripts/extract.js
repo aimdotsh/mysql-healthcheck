@@ -1680,10 +1680,12 @@ function deriveOverallAssessment(issues, healthScore) {
   const p0 = issues.filter(i => i.priority === 'P0').length;
   const p1 = issues.filter(i => i.priority === 'P1').length;
   const scoreText = healthScore ? `（健康度评分 ${healthScore.total}/100）` : '';
-  if (p0 > 0) return '存在紧急风险，需立即处理' + scoreText;
-  if (p1 > 0) return '总体平稳，存在需短期处理的重点问题' + scoreText;
-  if (issues.length > 0) return '运行平稳，存在建议优化项' + scoreText;
-  return '运行平稳，未发现明显问题' + scoreText;
+  // v4.9.3：措辞改为咨询性 — 数据库实际在正常运行，避免"紧急/立即"等
+  //         alarmist 词汇把客户吓到。保留风险等级但用建议性语气。
+  if (p0 > 0) return '运行整体稳定，识别出关键风险点，建议优先关注与处置' + scoreText;
+  if (p1 > 0) return '运行整体稳定，存在若干重要风险点，建议近期规划处置' + scoreText;
+  if (issues.length > 0) return '运行平稳，存在可优化项，建议持续完善' + scoreText;
+  return '运行平稳，未发现明显风险' + scoreText;
 }
 
 // ============== 健康度评分 ==============
@@ -1814,7 +1816,7 @@ function assessBackup(nodes) {
     const ageDays = Math.floor(ageMs / 86400000);
     if (ageDays <= 1) result.assessment = `最近备份在 ${ageDays} 天内，状态良好`;
     else if (ageDays <= 7) result.assessment = `最近备份在 ${ageDays} 天前，频率偏低`;
-    else result.assessment = `最近备份已 ${ageDays} 天前，存在数据丢失风险`;
+    else result.assessment = `最近备份已 ${ageDays} 天前，建议尽快重新执行全量备份并核实异地保存`;
     result.severity = ageDays <= 1 ? 'OK' : ageDays <= 7 ? 'P2' : 'P0';
   }
 
@@ -2155,7 +2157,7 @@ function analyzeIssues(nodes) {
         push({
           type: 'disk_critical', priority: 'P0', groupKey: `disk:${n.ip}:${d.mount}`,
           description: `磁盘 ${d.mount} 使用率 ${d.usePct}（容量 ${d.total}，已用 ${d.used}）`,
-          node: nodeLabel(n), action: '立即清理日志/历史数据 或 扩容',
+          node: nodeLabel(n), action: '建议优先清理日志 / 历史数据，或评估扩容',
           sql: `df -h ${d.mount}\nfind ${d.mount} -type f -size +1G -mtime +30 -exec ls -lh {} \\;`,
           scope: 'node',
         });
@@ -2163,7 +2165,7 @@ function analyzeIssues(nodes) {
         push({
           type: 'disk_high', priority: 'P1', groupKey: `disk:${n.ip}:${d.mount}`,
           description: `磁盘 ${d.mount} 使用率 ${d.usePct}`,
-          node: nodeLabel(n), action: '本周内规划清理或扩容',
+          node: nodeLabel(n), action: '近期内规划清理或评估扩容',
           scope: 'node',
         });
       }
@@ -2465,7 +2467,7 @@ function analyzeIssues(nodes) {
         type: 'expire_logs_zero', priority: 'P1', groupKey: `expire_logs_zero:${n.ip}`,
         description: `expire_logs_days = 0（binlog 永不过期，存在磁盘打爆风险）`,
         node: nodeLabel(n),
-        action: '建议改为 7-15 天；并立即手工清理冗余 binlog',
+        action: '建议改为 7-15 天；并尽快手工清理冗余 binlog',
         sql: "SET GLOBAL expire_logs_days = 7;\nPURGE BINARY LOGS BEFORE NOW() - INTERVAL 7 DAY;",
         scope: 'node',
       });
@@ -2630,7 +2632,7 @@ function analyzeIssues(nodes) {
         description: 'innodb_doublewrite = OFF — 半页写崩溃会导致页损坏且不可恢复（torn page），性能收益 < 5% 但风险远大于收益',
         currentValue: 'OFF',
         recommendedValue: 'ON',
-        action: '立即开启；仅在使用 ZFS 或支持原子写的存储（FusionIO 等）时才可关闭',
+        action: '建议开启；仅在使用 ZFS 或支持原子写的存储（FusionIO 等）时才可考虑关闭',
         sql: 'SET GLOBAL innodb_doublewrite = ON;\n-- my.cnf:\ninnodb_doublewrite = 1',
         node: nodeLabel(n),
         scope: 'node',
@@ -2774,7 +2776,7 @@ function analyzeIssues(nodes) {
           description: `slave_skip_errors = ${sse} — 复制错误被强制跳过，从库已经/将会与主库数据不一致；任何 binlog 错误都不会再暴露`,
           currentValue: sse,
           recommendedValue: 'OFF',
-          action: '立即关闭；用 pt-table-checksum / pt-table-sync 校验现有数据一致性',
+          action: '建议尽快关闭；并用 pt-table-checksum / pt-table-sync 校验现有数据一致性',
           sql: [
             '# slave_skip_errors 不能动态改，必须修改 my.cnf:',
             '# 删除该行或改为：',
@@ -2870,7 +2872,7 @@ function analyzeIssues(nodes) {
         groupKey: `wildcard_critical:${n.ip}`,
         description: desc,
         node: nodeLabel(n),
-        action: '立即收紧：限制为内网网段或固定 IP；至少删除 \'@\'%\' 项',
+        action: '建议优先收紧：限制为内网网段或固定 IP；至少删除 \'@\'%\' 项',
         sql: list.map(x => `DROP USER '${x.user}'@'%';\nCREATE USER '${x.user}'@'10.0.0.0/255.0.0.0' IDENTIFIED BY '<原密码>';\nGRANT <原权限> ON *.* TO '${x.user}'@'10.0.0.0/255.0.0.0';`).join('\n-- ----\n'),
         scope: 'cluster',
         affectedUsers: list.map(x => x.user),
@@ -3009,7 +3011,7 @@ function promoteAssessmentIssues(issues, backup, security, totalNodes) {
       node: '全部节点',
       action: backup.hasTool
         ? '完善备份调度 / 制定备份策略 / 定期恢复演练'
-        : '立即安装 xtrabackup（推荐）或 mariabackup；建立全量+增量+binlog 备份策略；异地保存',
+        : '建议优先安装 xtrabackup（推荐）或 mariabackup；建立全量+增量+binlog 备份策略；异地保存',
       sql: backup.hasTool ? null : '# 安装 xtrabackup 示例\nyum install percona-xtrabackup-80 -y\n# 或: apt install xtrabackup',
       status: '待处理',
       scope: 'cluster',
@@ -3075,7 +3077,7 @@ function complianceFailureDescription(item) {
 function complianceAction(id) {
   return ({
     strong_password_policy: '启用 validate_password 插件，强制密码复杂度与定期改密',
-    no_wildcard_root: "立即执行：DROP USER 'root'@'%';（先确保有 root@localhost 等可用入口）",
+    no_wildcard_root: "建议优先执行：DROP USER 'root'@'%';（先确保有 root@localhost 等可用入口）",
     audit_log: '加载 audit log 插件（如 server_audit / Audit Log 商业版）',
     tls_enabled: '配置 ssl_cert/ssl_key/ssl_ca 启用 TLS',
     require_secure_transport: 'SET GLOBAL require_secure_transport = ON;（确认所有客户端支持 TLS 后再开）',
@@ -3395,7 +3397,7 @@ function deriveCorrelations(nodes, issues) {
     corrs.push({
       title: '集群所有节点均存在 root@% 账号（已确认）',
       detail: `任意可达 3306 端口的网络位置都可尝试 root 登录。最高级别的远程入侵敞口；密码弱 / 泄漏即可拿到完整数据库控制权。`,
-      suggestion: `立即在所有节点执行：DROP USER 'root'@'%';   只保留 root@localhost / 127.0.0.1 / ::1。`,
+      suggestion: `建议优先在所有节点执行：DROP USER 'root'@'%';   只保留 root@localhost / 127.0.0.1 / ::1。`,
     });
   }
 
@@ -3541,7 +3543,7 @@ function deriveCorrelations(nodes, issues) {
     corrs.push({
       title: '持久化偏弱 + 复制延迟同时存在 — RPO 风险窗口被放大',
       detail: `主库持久化（commit=0 + sync_binlog=0）+ 最大从库延迟 ${worstSbm} 秒。\n若主库宕机：① 主库本地丢失最近 ~1 秒事务；② 由于从库还有 ${worstSbm} 秒延迟，故障切换到从库后还会"丢失" ${worstSbm} 秒未来得及复制的事务。RPO ≈ ${worstSbm + 1} 秒（可见数据丢失）。`,
-      suggestion: `两件事并行：① 主库立即改 sync_binlog=1 + innodb_flush_log_at_trx_commit=1（性能下降但可控）；② 开并行复制（slave_parallel_workers=16 + LOGICAL_CLOCK）把延迟压到 < 5 秒。`,
+      suggestion: `两件事并行：① 主库建议改 sync_binlog=1 + innodb_flush_log_at_trx_commit=1（性能下降但可控）；② 开并行复制（slave_parallel_workers=16 + LOGICAL_CLOCK）把延迟压到 < 5 秒。`,
     });
   }
 

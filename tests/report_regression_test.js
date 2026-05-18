@@ -89,8 +89,9 @@ assert(backupIssue, 'backup assessment issue should be promoted into issues');
 // （tbl_order_detail_20240729.sql 等）能被正确识别，因此 v3 测试集现在能正确判定为「备份过旧」P0
 // 而非旧版本错误的「未发现备份产物」。"655 天" 是相对当前日期计算的，用 startsWith 兼容。
 assert(
-  data.backupAssessment.assessment.startsWith('最近备份已 ') && data.backupAssessment.assessment.endsWith('天前，存在数据丢失风险'),
-  'backup assessment should detect the 2024-07 stale backup recovered by parseBackupDirs flushCurrent fix (v4.4 #9)'
+  data.backupAssessment.assessment.startsWith('最近备份已 ') &&
+    /天前，建议尽快重新执行全量备份/.test(data.backupAssessment.assessment),
+  'backup assessment should detect the 2024-07 stale backup recovered by parseBackupDirs flushCurrent fix (v4.4 #9; v4.9.3 reworded to consultative tone)'
 );
 assert.strictEqual(data.backupAssessment.severity, 'P0', 'stale backup (>180 days) should be P0 severity');
 assert.strictEqual(data.backupAssessment.hasBackupArtifact, true, 'parseBackupDirs flushCurrent fix should now recover real backup artifacts on 172.16.7.4 (v4.4 #9)');
