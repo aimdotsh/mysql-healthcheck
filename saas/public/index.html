@@ -94,6 +94,39 @@
     .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; margin-left: 8px; vertical-align: middle; }
     .badge-single { background: #e0f2fe; color: #075985; }
     .badge-cluster { background: #fef3c7; color: #92400e; }
+    /* v1.2：Tab 导航 */
+    .tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 2px solid #e5e7eb; }
+    .tab { padding: 10px 20px; cursor: pointer; border: none; background: none; font-size: 14px; color: #6b7280; font-weight: 500;
+           border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.15s; }
+    .tab:hover { color: #1f4e79; }
+    .tab.active { color: #1f4e79; border-bottom-color: #1f4e79; }
+    .tab-pane { display: none; }
+    .tab-pane.active { display: block; }
+    /* v1.2：批量下载按钮 + 历史记录条目 */
+    .batch-actions { display: flex; gap: 12px; margin-top: 16px; }
+    .history-list { background: #fff; border-radius: 12px; padding: 0; box-shadow: 0 4px 6px rgba(0,0,0,0.04); overflow: hidden; }
+    .history-toolbar { padding: 16px 20px; border-bottom: 1px solid #e5e7eb; display: flex; gap: 12px; align-items: center; }
+    .history-toolbar input { flex: 1; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; }
+    .history-item { padding: 16px 20px; border-bottom: 1px solid #f3f4f6; cursor: pointer; transition: background 0.1s; }
+    .history-item:hover { background: #f9fafb; }
+    .history-item:last-child { border-bottom: none; }
+    .history-item .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+    .history-item .title { font-size: 14px; font-weight: 600; color: #1f4e79; }
+    .history-item .time { font-size: 12px; color: #6b7280; }
+    .history-item .meta { font-size: 12px; color: #6b7280; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .history-item .meta .chip { padding: 2px 8px; background: #f3f4f6; border-radius: 4px; }
+    .history-item .meta .p0 { background: #fee2e2; color: #991b1b; }
+    .history-item .meta .p1 { background: #fed7aa; color: #9a3412; }
+    .history-item .meta .p2 { background: #fef3c7; color: #854d0e; }
+    .history-item .actions { display: flex; gap: 8px; margin-top: 8px; }
+    .history-item .actions a { padding: 4px 10px; font-size: 12px; border-radius: 4px; background: #1f4e79; color: #fff; text-decoration: none; }
+    .history-item .actions a.secondary { background: #6b7280; }
+    .history-item .actions a.danger { background: #fee2e2; color: #991b1b; }
+    .history-empty { padding: 60px 20px; text-align: center; color: #9ca3af; }
+    .history-detail { display: none; }
+    .history-detail.active { display: block; }
+    .back-link { display: inline-block; margin-bottom: 16px; color: #1f4e79; cursor: pointer; font-size: 13px; }
+    .back-link:hover { text-decoration: underline; }
     .error {
       display: none; padding: 16px; background: #fee2e2; border-left: 4px solid #dc2626;
       border-radius: 4px; color: #991b1b; font-size: 14px;
@@ -111,6 +144,14 @@
       <h1>🩺 MySQL 巡检报告生成器</h1>
       <div class="subtitle">上传 MySQLHealthCheck 采集脚本输出（*.txt），自动按复制拓扑分组 → 每个集群一份巡检报告（.docx）</div>
     </header>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="new">📤 新建报告</button>
+      <button class="tab" data-tab="history">📚 历史记录</button>
+    </div>
+
+    <!-- ============== Tab 1: 新建报告 ============== -->
+    <div id="tab-new" class="tab-pane active">
 
     <div class="card">
       <div id="dropZone" class="drop-zone">
@@ -149,6 +190,23 @@
     <div id="clustersContainer"></div>
 
     <div id="errorCard" class="error"></div>
+
+    </div> <!-- /tab-new -->
+
+    <!-- ============== Tab 2: 历史记录 ============== -->
+    <div id="tab-history" class="tab-pane">
+      <div id="historyListView" class="history-list">
+        <div class="history-toolbar">
+          <input type="text" id="historySearch" placeholder="搜索项目名 / batchId / 节点 IP …">
+          <button id="historyRefresh" class="btn btn-secondary" style="padding: 8px 14px; font-size: 13px;">刷新</button>
+        </div>
+        <div id="historyItems"></div>
+      </div>
+      <div id="historyDetailView" class="history-detail">
+        <div class="back-link" id="historyBack">← 返回历史列表</div>
+        <div id="historyDetailBody"></div>
+      </div>
+    </div>
 
     <div class="api-info">
       <strong>程序化调用？</strong> 见 REST API：

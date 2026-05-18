@@ -87,6 +87,15 @@ PORT=8080 API_KEY=$(openssl rand -hex 16) STORAGE_ROOT=/var/mysql-hc node server
 }
 ```
 
+### 历史记录与批量下载 (v1.2+)
+
+- **每次上传自动落盘成历史记录**：`storage/history/<batchId>.json` 持久化保存批次元数据 + 每个集群的 summary，进程重启后 Web UI 历史 Tab 仍能看到全部往期。
+- **批量 ZIP 下载**：一次上传识别出 N 份报告，可一键打包成 zip 下载（含 README.txt 清单）。
+
+Web UI 顶部有两个 Tab：
+- **📤 新建报告**：拖拽上传、生成、并发跟踪 + 一键 zip 下载全部
+- **📚 历史记录**：列出所有历史批次，支持按项目名 / batchId / 节点 IP 搜索；可查看详情、按集群下载、批量 zip 下载、删除整个批次
+
 ### `POST /api/v1/reports`
 
 上传采集文件 → 自动按复制拓扑分组 → 每个集群异步生成报告。**返回 batch 结构**（每个集群一个子作业）。
@@ -191,6 +200,62 @@ Content-Disposition: attachment; filename="..."
 ### `GET /api/v1/reports/:id/data.json`
 
 下载 `data.json`（便于二次加工 / 集成数据仓库）。
+
+### `GET /api/v1/reports/batch/:batchId/download` (v1.2+)
+
+把整个 batch 的所有已生成 docx 打包成 zip 下载。zip 内含：
+
+```
+<project>_<batchId-prefix>/
+├── <cluster1>_MySQL健康巡检报告_v1.0.docx
+├── <cluster2>_MySQL健康巡检报告_v1.0.docx
+├── ...
+└── README.txt                    ← 批次清单与每集群 P0/P1 摘要
+```
+
+至少 1 份 cluster 完成才能下载（否则返回 409）。
+
+### `GET /api/v1/history` (v1.2+)
+
+列出历史批次（按 createdAt 倒序）。
+
+**Query 参数**：
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `limit` | 50 | 最多返回条数（上限 200）|
+| `offset` | 0 | 分页偏移 |
+| `q` | - | 模糊搜索：项目名 / batchId / 节点 IP |
+
+**响应**：
+
+```json
+{
+  "total": 23,
+  "items": [
+    {
+      "batchId": "eb0e5f452af0d758",
+      "createdAt": "2026-05-18T03:00:30Z",
+      "updatedAt": "2026-05-18T03:01:09Z",
+      "project": "v12-test",
+      "receivedFiles": 4,
+      "clusterCount": 3,
+      "doneCount": 3,
+      "errorCount": 0,
+      "issueAggregate": { "p0": 4, "p1": 15, "p2": 27, "p3": 8 }
+    },
+    ...
+  ]
+}
+```
+
+### `GET /api/v1/history/:batchId` (v1.2+)
+
+单条批次详情，含每个 cluster 的完整 summary、状态、磁盘路径、错误信息（如有）。可在批次完成后随时回看（无 TTL，除非主动删除）。
+
+### `DELETE /api/v1/history/:batchId` (v1.2+)
+
+删除整个批次：从 history 移除 + 删除 `storage/uploads/<jobId>/` 与 `storage/reports/<jobId>/` 各子目录。返回 `{ ok: true, deletedBatchId: '...' }`。
 
 ---
 

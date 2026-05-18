@@ -1,6 +1,8 @@
 node_modules/
 storage/uploads/*
 storage/reports/*
+storage/history/*
 !storage/uploads/.gitkeep
 !storage/reports/.gitkeep
+!storage/history/.gitkeep
 *.log

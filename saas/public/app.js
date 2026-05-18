@@ -1,6 +1,7 @@
 (() => {
   'use strict';
 
+  // ============== DOM refs ==============
   const dropZone = document.getElementById('dropZone');
   const fileInput = document.getElementById('fileInput');
   const fileList = document.getElementById('fileList');
@@ -12,10 +13,31 @@
   const batchHeader = document.getElementById('batchHeader');
   const clustersContainer = document.getElementById('clustersContainer');
   const errorCard = document.getElementById('errorCard');
+  // 历史 Tab
+  const historyListView = document.getElementById('historyListView');
+  const historyDetailView = document.getElementById('historyDetailView');
+  const historyItems = document.getElementById('historyItems');
+  const historyDetailBody = document.getElementById('historyDetailBody');
+  const historyBack = document.getElementById('historyBack');
+  const historySearch = document.getElementById('historySearch');
+  const historyRefresh = document.getElementById('historyRefresh');
 
   let pendingFiles = [];
+  let currentBatchId = null;  // 用于显示「下载全部 zip」按钮
 
-  // === 拖放交互 ===
+  // ============== Tab 切换 ==============
+  document.querySelectorAll('.tab').forEach(t => {
+    t.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+      document.querySelectorAll('.tab-pane').forEach(x => x.classList.remove('active'));
+      t.classList.add('active');
+      const target = t.dataset.tab;
+      document.getElementById('tab-' + target).classList.add('active');
+      if (target === 'history') loadHistoryList();
+    });
+  });
+
+  // ============== 拖放 + 文件清单 ==============
   ['dragenter', 'dragover'].forEach(evt => {
     dropZone.addEventListener(evt, e => {
       e.preventDefault();
@@ -28,9 +50,7 @@
       dropZone.classList.remove('dragover');
     });
   });
-  dropZone.addEventListener('drop', e => {
-    addFiles(e.dataTransfer.files);
-  });
+  dropZone.addEventListener('drop', e => addFiles(e.dataTransfer.files));
   dropZone.addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', e => addFiles(e.target.files));
 
@@ -104,9 +124,9 @@
         throw new Error(err.error || `HTTP ${resp.status}`);
       }
       const batch = await resp.json();
+      currentBatchId = batch.batchId;
       renderBatch(batch);
-      // 并发轮询所有 job
-      batch.clusters.forEach(c => pollJob(c.jobId));
+      batch.clusters.forEach(c => pollJob(c.jobId, false));
     } catch (err) {
       showError(`提交失败：${err.message}`);
       submitBtn.disabled = false;
@@ -118,20 +138,19 @@
     batchHeader.classList.remove('active');
     batchHeader.innerHTML = '';
     clustersContainer.innerHTML = '';
+    currentBatchId = null;
   }
 
   function renderBatch(batch) {
-    // 批次头
     batchHeader.classList.add('active');
     const isMulti = batch.clusterCount > 1;
     batchHeader.innerHTML = `
       <div class="batch-summary">
         <h3>${isMulti ? '🔍 已自动识别 ' + batch.clusterCount + ' 个独立集群' : '✅ 上传完成'}</h3>
         <p>${batch.receivedFiles} 个文件 → ${batch.clusterCount} 份报告（每个集群一份，并发生成中）</p>
+        <div class="batch-actions" id="batchActions"></div>
       </div>
     `;
-
-    // 每个集群一张卡片
     for (const c of batch.clusters) {
       const card = document.createElement('div');
       card.className = 'card cluster-card';
@@ -161,7 +180,7 @@
     }
   }
 
-  async function pollJob(jobId) {
+  async function pollJob(jobId, fromHistory) {
     let lastStatus = '';
     while (true) {
       await sleep(2000);
@@ -210,7 +229,6 @@
       card.classList.add('cluster-error');
       return;
     }
-    // done — 渲染摘要 + 下载按钮
     const s = job.summary || {};
     card.classList.add('cluster-done');
     const metrics = [
@@ -223,16 +241,11 @@
     ];
     body.innerHTML = `
       <div class="summary-grid">
-        ${metrics.map(m => `
-          <div class="metric ${m.cls || ''}">
-            <div class="label">${m.label}</div>
-            <div class="value">${m.value}</div>
-          </div>
-        `).join('')}
+        ${metrics.map(m => `<div class="metric ${m.cls || ''}"><div class="label">${m.label}</div><div class="value">${m.value}</div></div>`).join('')}
       </div>
       <div class="cluster-actions">
-        <a class="btn" href="${job.downloadUrl}" download>📥 下载 docx</a>
-        <a class="btn btn-secondary" href="${job.dataJsonUrl}" download>📊 data.json</a>
+        <a class="btn" href="${job.downloadUrl || '/api/v1/reports/' + jobId + '/download'}" download>📥 下载 docx</a>
+        <a class="btn btn-secondary" href="${job.dataJsonUrl || '/api/v1/reports/' + jobId + '/data.json'}" download>📊 data.json</a>
       </div>
       ${s.overallAssessment ? '<div class="cluster-assessment">' + escapeHtml(s.overallAssessment) + '</div>' : ''}
     `;
@@ -244,11 +257,175 @@
     if (done >= total) {
       submitBtn.disabled = false;
       statusText.textContent = `已完成 ${done} / ${total}`;
+      // v1.2：所有集群完成 → 显示「下载全部 (zip)」按钮
+      const okCount = clustersContainer.querySelectorAll('.cluster-done').length;
+      if (okCount >= 1 && currentBatchId) {
+        const actions = document.getElementById('batchActions');
+        if (actions && !actions.querySelector('.btn-zip')) {
+          actions.innerHTML = `<a class="btn btn-zip" href="/api/v1/reports/batch/${currentBatchId}/download" download>📦 下载全部 (${okCount} 份, zip)</a>`;
+        }
+      }
     } else {
       statusText.textContent = `进度 ${done} / ${total} 已完成…`;
     }
   }
 
+  // ============== 历史记录 ==============
+  async function loadHistoryList() {
+    historyDetailView.classList.remove('active');
+    historyListView.style.display = 'block';
+    historyItems.innerHTML = '<div class="history-empty">加载中…</div>';
+    try {
+      const q = historySearch.value.trim();
+      const url = '/api/v1/history?limit=100' + (q ? '&q=' + encodeURIComponent(q) : '');
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      renderHistoryList(data);
+    } catch (err) {
+      historyItems.innerHTML = `<div class="history-empty">加载失败：${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  function renderHistoryList(data) {
+    if (data.total === 0) {
+      historyItems.innerHTML = '<div class="history-empty">📋 暂无历史记录<br><span style="font-size: 12px;">每次生成报告会自动保存到这里</span></div>';
+      return;
+    }
+    historyItems.innerHTML = data.items.map(it => {
+      const agg = it.issueAggregate || {};
+      const chips = [];
+      if (agg.p0 > 0) chips.push(`<span class="chip p0">P0 ${agg.p0}</span>`);
+      if (agg.p1 > 0) chips.push(`<span class="chip p1">P1 ${agg.p1}</span>`);
+      if (agg.p2 > 0) chips.push(`<span class="chip p2">P2 ${agg.p2}</span>`);
+      if (it.errorCount > 0) chips.push(`<span class="chip" style="background:#fecaca;color:#991b1b">❌ ${it.errorCount}</span>`);
+      return `
+        <div class="history-item" data-batch="${it.batchId}">
+          <div class="top">
+            <div class="title">${escapeHtml(it.project || '(未命名)')} <span style="color:#9ca3af;font-weight:normal;font-size:12px;">· ${it.batchId.slice(0, 8)}</span></div>
+            <div class="time">${formatTime(it.createdAt)}</div>
+          </div>
+          <div class="meta">
+            <span class="chip">${it.receivedFiles} 个 txt</span>
+            <span class="chip">${it.clusterCount} 个集群</span>
+            <span class="chip">${it.doneCount}/${it.clusterCount} 完成</span>
+            ${chips.join('')}
+          </div>
+          <div class="actions">
+            <a href="#" class="view-btn" data-batch="${it.batchId}">查看详情</a>
+            <a href="/api/v1/reports/batch/${it.batchId}/download" download>📦 下载全部</a>
+            <a href="#" class="danger delete-btn" data-batch="${it.batchId}">删除</a>
+          </div>
+        </div>
+      `;
+    }).join('');
+    // 绑定事件
+    historyItems.querySelectorAll('.history-item').forEach(item => {
+      item.addEventListener('click', e => {
+        if (e.target.closest('.actions')) return;   // 点 actions 不展开
+        showHistoryDetail(item.dataset.batch);
+      });
+    });
+    historyItems.querySelectorAll('.view-btn').forEach(a => {
+      a.addEventListener('click', e => {
+        e.preventDefault();
+        showHistoryDetail(a.dataset.batch);
+      });
+    });
+    historyItems.querySelectorAll('.delete-btn').forEach(a => {
+      a.addEventListener('click', async e => {
+        e.preventDefault();
+        if (!confirm('确定删除该批次及其所有报告文件？此操作不可恢复。')) return;
+        try {
+          const resp = await fetch(`/api/v1/history/${a.dataset.batch}`, { method: 'DELETE' });
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          loadHistoryList();
+        } catch (err) {
+          alert(`删除失败：${err.message}`);
+        }
+      });
+    });
+  }
+
+  async function showHistoryDetail(batchId) {
+    historyListView.style.display = 'none';
+    historyDetailView.classList.add('active');
+    historyDetailBody.innerHTML = '加载中…';
+    try {
+      const resp = await fetch(`/api/v1/history/${batchId}`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const entry = await resp.json();
+      renderHistoryDetail(entry);
+    } catch (err) {
+      historyDetailBody.innerHTML = `<div class="error active">加载失败：${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  function renderHistoryDetail(entry) {
+    const html = [];
+    html.push(`
+      <div class="batch-summary active">
+        <h3>${escapeHtml(entry.project || '(未命名)')}</h3>
+        <p>批次 <code>${entry.batchId}</code> · ${formatTime(entry.createdAt)} · ${entry.receivedFiles} 个 txt → ${entry.clusterCount} 份报告</p>
+        <div class="batch-actions">
+          <a class="btn" href="/api/v1/reports/batch/${entry.batchId}/download" download>📦 下载全部 (zip)</a>
+        </div>
+      </div>
+    `);
+    for (const c of entry.clusters) {
+      const topoBadge = c.topology === '单节点'
+        ? '<span class="badge badge-single">单节点</span>'
+        : '<span class="badge badge-cluster">' + escapeHtml(c.topology) + '</span>';
+      const isDone = c.status === 'done';
+      const isError = c.status === 'error';
+      const s = c.summary || {};
+      let bodyHtml;
+      if (isDone) {
+        bodyHtml = `
+          <div class="summary-grid">
+            <div class="metric p0"><div class="label">P0 紧急</div><div class="value">${s.p0 || 0}</div></div>
+            <div class="metric p1"><div class="label">P1 重要</div><div class="value">${s.p1 || 0}</div></div>
+            <div class="metric p2"><div class="label">P2 建议</div><div class="value">${s.p2 || 0}</div></div>
+            <div class="metric p3"><div class="label">P3 观察</div><div class="value">${s.p3 || 0}</div></div>
+            <div class="metric"><div class="label">健康度</div><div class="value">${s.healthScoreTotal != null ? s.healthScoreTotal + '/100' : '-'}</div></div>
+            <div class="metric"><div class="label">根因关联</div><div class="value">${s.correlationCount || 0}</div></div>
+          </div>
+          <div class="cluster-actions">
+            <a class="btn" href="/api/v1/reports/${c.jobId}/download" download>📥 下载 docx</a>
+            <a class="btn btn-secondary" href="/api/v1/reports/${c.jobId}/data.json" download>📊 data.json</a>
+          </div>
+          ${s.overallAssessment ? '<div class="cluster-assessment">' + escapeHtml(s.overallAssessment) + '</div>' : ''}
+        `;
+      } else if (isError) {
+        bodyHtml = `<div class="error active">⚠ ${escapeHtml(c.error || '生成失败')}</div>`;
+      } else {
+        bodyHtml = `<div class="cluster-progress"><div class="progress-bar"><div class="fill"></div></div><div class="stage">${escapeHtml(c.progress || 'queued')}</div></div>`;
+      }
+      html.push(`
+        <div class="card cluster-card ${isDone ? 'cluster-done' : isError ? 'cluster-error' : ''}">
+          <div class="cluster-header">
+            <div>
+              <h3>${escapeHtml(c.label)} ${topoBadge}</h3>
+              <div class="cluster-meta">节点：${c.nodes.map(n => escapeHtml(n)).join('、')} · ${c.fileCount} 个 txt · Job <code>${c.jobId}</code></div>
+            </div>
+          </div>
+          <div class="cluster-body">${bodyHtml}</div>
+        </div>
+      `);
+    }
+    historyDetailBody.innerHTML = html.join('');
+  }
+
+  historyBack.addEventListener('click', () => {
+    historyDetailView.classList.remove('active');
+    historyListView.style.display = 'block';
+  });
+  historyRefresh.addEventListener('click', loadHistoryList);
+  historySearch.addEventListener('keyup', e => {
+    if (e.key === 'Enter') loadHistoryList();
+  });
+
+  // ============== 辅助 ==============
   function showError(msg) {
     errorCard.classList.add('active');
     errorCard.textContent = '⚠ ' + msg;
@@ -256,13 +433,23 @@
   function hideError() {
     errorCard.classList.remove('active');
   }
-
   function formatSize(b) {
     if (b == null) return '-';
     if (b >= 1073741824) return (b / 1073741824).toFixed(1) + ' GB';
     if (b >= 1048576) return (b / 1048576).toFixed(1) + ' MB';
     if (b >= 1024) return (b / 1024).toFixed(0) + ' KB';
     return b + ' B';
+  }
+  function formatTime(iso) {
+    if (!iso) return '-';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    const now = new Date();
+    const ms = now.getTime() - d.getTime();
+    if (ms < 60_000) return Math.floor(ms / 1000) + ' 秒前';
+    if (ms < 3600_000) return Math.floor(ms / 60_000) + ' 分钟前';
+    if (ms < 86400_000) return Math.floor(ms / 3600_000) + ' 小时前';
+    return d.toLocaleString('zh-CN');
   }
   function escapeHtml(s) {
     return String(s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
