@@ -40,6 +40,35 @@ PORT=8080 API_KEY=$(openssl rand -hex 16) STORAGE_ROOT=/var/mysql-hc node server
 
 ---
 
+## 🔍 自动集群发现（v1.1+）
+
+**核心特性**：上传 N 个 `*.txt`，系统自动按 MySQL 复制拓扑分组，每个独立集群生成一份独立报告。
+
+举例：上传 14 个 txt（8 个单点 + 1 套一主三从 + 1 套一主一从）→ 系统自动识别 **10 个集群** → 并发生成 **10 份独立 docx**。
+
+### 分组算法
+
+1. 对每个 txt 做轻量解析（不调用完整 extract），提取：
+   - 节点 IP（文件名 `MySQLHealthCheck_<IP>_*.txt`）+ hostname
+   - `SHOW SLAVE STATUS` 的 `Master_Host`（若有）
+   - 「slave IP is: …」的从库 IP 列表（若有）
+2. **self-referencing slave 残留**（`Master_Host = 本机 IP/hostname/localhost`）自动识别为非真从库（v4.5 逻辑）
+3. 用 **Union-Find** 把节点连通：
+   - 若 A 的 `Master_Host` 指向集合中的另一个节点 B → A、B 同一簇
+   - 若 A 的 `slaveIps` 列出集合中的 B → A、B 同一簇
+4. 每个连通分量 = 一个集群；孤立节点（无连边）= 单节点集群
+
+### 边界场景
+
+| 场景 | 处理 |
+|---|---|
+| 从库的 master 不在上传集合中 | 该从库作为单节点处理（标 `hasOrphanSlave=true`，但仍生成报告）|
+| `Master_Host` 是 hostname 而非 IP | grouper 把每个节点的 hostname 也加入索引，能正确匹配 |
+| self-ref slave（曾是从库未 RESET SLAVE ALL） | 标 `selfRef=true`，作为单节点处理（不与其它节点合并）|
+| 双主 / M-M 拓扑 | 通过传递闭包自动合并为一个集群 |
+
+---
+
 ## REST API
 
 所有响应均为 JSON（下载除外）。
@@ -60,32 +89,51 @@ PORT=8080 API_KEY=$(openssl rand -hex 16) STORAGE_ROOT=/var/mysql-hc node server
 
 ### `POST /api/v1/reports`
 
-上传采集文件 → 异步生成报告。返回 `jobId`。
+上传采集文件 → 自动按复制拓扑分组 → 每个集群异步生成报告。**返回 batch 结构**（每个集群一个子作业）。
 
 **请求**（`multipart/form-data`）：
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `files` | file × N | ✅ | `MySQLHealthCheck_<IP>_<timestamp>.txt`，可多次出现 |
-| `project` | string | ❌ | 报告标题中的项目名，缺省随机生成 |
-| `configJson` | string | ❌ | 阈值配置 JSON 字符串，会落盘到上传目录的 `mysql-healthcheck.config.json`（采集目录自动发现） |
+| `files` | file × N | ✅ | `MySQLHealthCheck_<IP>_<timestamp>.txt`，可同时上传多个集群的文件 |
+| `project` | string | ❌ | 报告标题中的项目名前缀；多集群时自动加 `_<集群主库 IP>` 后缀 |
+| `configJson` | string | ❌ | 阈值配置 JSON 字符串，会落盘到每个子作业的 `mysql-healthcheck.config.json` |
 
 **响应**（HTTP 202 Accepted）：
 
 ```json
 {
-  "jobId": "89e2fa63982ece56",
-  "project": "Demo",
-  "status": "queued",
-  "progress": "queued",
-  "createdAt": "2026-05-17T09:24:56.916Z",
-  "completedAt": null,
-  "error": null,
-  "summary": null,
-  "downloadUrl": null,
-  "dataJsonUrl": null
+  "batchId": "c17aa90bd190b3b3",
+  "receivedFiles": 14,
+  "clusterCount": 10,
+  "project": "myproject",
+  "clusters": [
+    {
+      "jobId": "074206f9ebdc4a03",
+      "label": "172.16.7.2 集群（一主3从（异步复制））",
+      "topology": "一主3从（异步复制）",
+      "nodes": ["172.16.7.2", "172.16.7.3", "172.16.7.4", "172.16.128.101"],
+      "primaryIp": "172.16.7.2",
+      "fileCount": 4,
+      "files": ["MySQLHealthCheck_172.16.7.2_*.txt", ...],
+      "statusUrl": "/api/v1/reports/074206f9ebdc4a03"
+    },
+    {
+      "jobId": "da0f1d49701a141c",
+      "label": "10.0.128.236（单节点）",
+      "topology": "单节点",
+      "nodes": ["10.0.128.236"],
+      "primaryIp": "10.0.128.236",
+      "fileCount": 1,
+      "files": ["MySQLHealthCheck_10.0.128.236_*.txt"],
+      "statusUrl": "/api/v1/reports/da0f1d49701a141c"
+    }
+    // ... 其它集群
+  ]
 }
 ```
+
+**注意**：每个 cluster 是独立的 job，需用各自的 `jobId` 单独轮询和下载。所有集群并发处理。
 
 ### `GET /api/v1/reports/:id`
 
@@ -148,24 +196,48 @@ Content-Disposition: attachment; filename="..."
 
 ## 命令行调用示例
 
+### 单集群（最常见）
+
 ```bash
-# 1. 提交（多文件）
-curl -X POST http://localhost:3000/api/v1/reports \
+# 1. 提交一套主从集群的多个文件
+RESP=$(curl -s -X POST http://localhost:3000/api/v1/reports \
   -F "project=客户ACME" \
-  -F "files=@/path/MySQLHealthCheck_10.0.0.1_20260517.txt" \
-  -F "files=@/path/MySQLHealthCheck_10.0.0.2_20260517.txt"
-# → {"jobId":"abc123",...}
+  -F "files=@/path/MySQLHealthCheck_10.0.0.1_*.txt" \
+  -F "files=@/path/MySQLHealthCheck_10.0.0.2_*.txt")
+JOB=$(echo "$RESP" | jq -r '.clusters[0].jobId')
 
 # 2. 轮询
 while true; do
-  STATUS=$(curl -s http://localhost:3000/api/v1/reports/abc123 | jq -r .status)
+  STATUS=$(curl -s http://localhost:3000/api/v1/reports/$JOB | jq -r .status)
   echo "status=$STATUS"
   [ "$STATUS" = "done" -o "$STATUS" = "error" ] && break
   sleep 2
 done
 
 # 3. 下载
-curl -o report.docx http://localhost:3000/api/v1/reports/abc123/download
+curl -o report.docx http://localhost:3000/api/v1/reports/$JOB/download
+```
+
+### 批量混合（自动识别集群）
+
+```bash
+# 一次性上传多套集群的文件：8 个单点 + 1 套主从（4 节点） + 1 套主从（2 节点）= 14 个 txt
+# 系统会自动识别为 10 个独立集群 → 并发生成 10 份报告
+
+curl -s -X POST http://localhost:3000/api/v1/reports \
+  -F "project=monthly-batch" \
+  $(for f in /data/uploads/MySQLHealthCheck_*.txt; do printf -- '-F files=@%s ' "$f"; done) \
+  > batch.json
+
+# 解析每个集群的 jobId 并下载
+jq -r '.clusters[] | .jobId' batch.json | while read jid; do
+  # 等待完成
+  while [ "$(curl -s http://localhost:3000/api/v1/reports/$jid | jq -r .status)" != "done" ]; do sleep 2; done
+  # 下载
+  LABEL=$(curl -s http://localhost:3000/api/v1/reports/$jid | jq -r '.project // "report"')
+  curl -s -o "report_${LABEL}.docx" http://localhost:3000/api/v1/reports/$jid/download
+  echo "saved report_${LABEL}.docx"
+done
 ```
 
 ### 带 API key 调用

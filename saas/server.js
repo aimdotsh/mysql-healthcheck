@@ -22,9 +22,11 @@ const multer = require('multer');
 
 const { JobStore, STATUS } = require('./lib/jobs');
 const { generateReport, sanitizeFileName } = require('./lib/runner');
+const { groupIntoClusters } = require('./lib/grouper');
 
 const PORT = Number(process.env.PORT) || 3000;
-const API_KEY = process.env.API_KEY || null;   // 可选鉴权；未设置则全开
+const _apiKeyRaw = process.env.API_KEY || '';
+const API_KEY = (_apiKeyRaw && _apiKeyRaw !== '<no value>') ? _apiKeyRaw : undefined;   // 可选鉴权；未设置或空则全开
 const STORAGE_ROOT = process.env.STORAGE_ROOT || path.join(__dirname, 'storage');
 const UPLOADS_DIR = path.join(STORAGE_ROOT, 'uploads');
 const REPORTS_DIR = path.join(STORAGE_ROOT, 'reports');
@@ -108,62 +110,127 @@ app.get('/api/v1/health', (req, res) => {
 
 // POST /api/v1/reports  multipart/form-data
 // fields: files[] (one or more *.txt) + project (optional) + configJson (optional)
+//
+// v1.1 重大改进：自动按复制拓扑分组。如果上传的 N 个 txt 来自 K 个独立集群
+// （单点 / 主从），自动拆成 K 个子作业，每个子作业生成一份独立的报告。
+// 响应一律返回 batch 形式 { batchId, clusters: [{jobId, label, ...}] }。
 app.post('/api/v1/reports', upload.array('files', MAX_FILES), async (req, res) => {
   try {
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ error: '未收到任何文件。请用 multipart/form-data，字段名 files' });
     }
-    const jobId = req._pendingJobId;
-    const uploadDir = path.join(UPLOADS_DIR, jobId);
-    const outputDir = path.join(REPORTS_DIR, jobId);
-    fs.mkdirSync(outputDir, { recursive: true });
+    const batchId = req._pendingJobId;       // 用 multer 生成的 id 做 batch 父目录
+    const batchUploadDir = path.join(UPLOADS_DIR, batchId);
+    const projectBase = (req.body.project || '').trim();
 
-    const project = req.body.project || `Report_${jobId.slice(0, 6)}`;
-    const fileNames = req.files.map(f => f.originalname);
-
-    // 可选：客户端传入 configJson 字符串 → 落盘成 mysql-healthcheck.config.json 让 extract 自动发现
+    // 解析可选 configJson 一次，后面所有子作业共用
+    let parsedConfig = null;
     if (req.body.configJson) {
       try {
-        const parsed = JSON.parse(req.body.configJson);
-        fs.writeFileSync(path.join(uploadDir, 'mysql-healthcheck.config.json'), JSON.stringify(parsed, null, 2));
+        parsedConfig = JSON.parse(req.body.configJson);
       } catch (e) {
         return res.status(400).json({ error: `configJson 不是合法 JSON: ${e.message}` });
       }
     }
 
-    const job = jobs.create({ project, uploadDir, fileNames });
-    job.id = jobId;
-    jobs.jobs.set(jobId, job);   // 强制使用 multer 生成的 id 以便目录对齐
+    // 自动按复制拓扑分组
+    const filesForGrouper = req.files.map(f => ({ path: f.path, originalName: f.originalname }));
+    let groups;
+    try {
+      groups = groupIntoClusters(filesForGrouper);
+    } catch (e) {
+      console.error('grouper failed:', e);
+      return res.status(500).json({ error: `集群发现失败：${e.message}` });
+    }
+    if (groups.length === 0) {
+      return res.status(400).json({ error: '未能从上传文件中识别任何 MySQL 节点（请确认是 MySQLHealthCheck_*.txt 采集脚本输出）' });
+    }
 
-    // 异步执行（不阻塞 HTTP 响应）
-    setImmediate(async () => {
-      try {
-        jobs.update(jobId, { status: STATUS.RUNNING_EXTRACT, progress: 'extract' });
-        const { docxPath, dataJsonPath, summary } = await generateReport({
-          uploadDir,
-          outputDir,
-          project,
-          onProgress: (stage) => {
-            const next = stage === 'extract' ? STATUS.RUNNING_EXTRACT : STATUS.RUNNING_RENDER;
-            jobs.update(jobId, { status: next, progress: stage });
-          },
-        });
-        jobs.update(jobId, {
-          status: STATUS.DONE,
-          progress: 'done',
-          result: { docxPath, dataJsonPath, summary },
-        });
-        console.log(`[job ${jobId}] done — ${summary.issueCount} issues, ${(summary.docxSizeBytes/1024).toFixed(1)} KB docx`);
-      } catch (err) {
-        console.error(`[job ${jobId}] error:`, err.message);
-        jobs.update(jobId, {
-          status: STATUS.ERROR,
-          error: err.message,
-        });
+    console.log(`[batch ${batchId}] 收到 ${req.files.length} 个 txt → 自动识别 ${groups.length} 个集群`);
+
+    // 为每个集群创建独立的 jobId + 子目录 + 子作业
+    const clusterInfo = [];
+    for (let idx = 0; idx < groups.length; idx++) {
+      const g = groups[idx];
+      const subJobId = crypto.randomBytes(8).toString('hex');
+      const subUploadDir = path.join(UPLOADS_DIR, subJobId);
+      const subOutputDir = path.join(REPORTS_DIR, subJobId);
+      fs.mkdirSync(subUploadDir, { recursive: true });
+      fs.mkdirSync(subOutputDir, { recursive: true });
+
+      // 把该集群涉及的 txt 移动到独立目录（用 hard link 节省空间）
+      for (const f of g.files) {
+        const dst = path.join(subUploadDir, path.basename(f.originalName));
+        try {
+          fs.linkSync(f.path, dst);
+        } catch (_) {
+          fs.copyFileSync(f.path, dst);
+        }
       }
-    });
+      // 落盘共享 config
+      if (parsedConfig) {
+        fs.writeFileSync(path.join(subUploadDir, 'mysql-healthcheck.config.json'),
+                         JSON.stringify(parsedConfig, null, 2));
+      }
 
-    res.status(202).json(jobs.toPublic(job));
+      // 项目名：用户给的优先；多集群时附加 「(集群标签)」 后缀
+      const subProject = projectBase
+        ? (groups.length > 1 ? `${projectBase}_${g.primaryIp || idx + 1}` : projectBase)
+        : `Report_${g.primaryIp || subJobId.slice(0, 6)}`;
+
+      const fileNames = g.files.map(f => f.originalName);
+      const job = jobs.create({ project: subProject, uploadDir: subUploadDir, fileNames });
+      job.id = subJobId;
+      jobs.jobs.set(subJobId, job);
+      job.batchId = batchId;
+      job.clusterLabel = g.label;
+      job.clusterTopology = g.topology;
+      job.clusterNodes = g.nodes.map(n => n.ip || n.hostname || '?');
+
+      // 异步执行
+      setImmediate(async () => {
+        try {
+          jobs.update(subJobId, { status: STATUS.RUNNING_EXTRACT, progress: 'extract' });
+          const { docxPath, dataJsonPath, summary } = await generateReport({
+            uploadDir: subUploadDir,
+            outputDir: subOutputDir,
+            project: subProject,
+            onProgress: (stage) => {
+              const next = stage === 'extract' ? STATUS.RUNNING_EXTRACT : STATUS.RUNNING_RENDER;
+              jobs.update(subJobId, { status: next, progress: stage });
+            },
+          });
+          jobs.update(subJobId, {
+            status: STATUS.DONE,
+            progress: 'done',
+            result: { docxPath, dataJsonPath, summary },
+          });
+          console.log(`[job ${subJobId}] (${g.label}) done — ${summary.issueCount} issues, ${(summary.docxSizeBytes / 1024).toFixed(1)} KB`);
+        } catch (err) {
+          console.error(`[job ${subJobId}] (${g.label}) error:`, err.message);
+          jobs.update(subJobId, { status: STATUS.ERROR, error: err.message });
+        }
+      });
+
+      clusterInfo.push({
+        jobId: subJobId,
+        label: g.label,
+        topology: g.topology,
+        nodes: g.nodes.map(n => n.ip || n.hostname || '?'),
+        primaryIp: g.primaryIp,
+        fileCount: g.files.length,
+        files: g.files.map(f => f.originalName),
+        statusUrl: `/api/v1/reports/${subJobId}`,
+      });
+    }
+
+    res.status(202).json({
+      batchId,
+      receivedFiles: req.files.length,
+      clusterCount: groups.length,
+      project: projectBase || null,
+      clusters: clusterInfo,
+    });
   } catch (err) {
     console.error('POST /api/v1/reports failed:', err);
     res.status(500).json({ error: err.message });

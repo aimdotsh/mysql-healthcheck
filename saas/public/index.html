@@ -58,11 +58,9 @@
     .btn-secondary:hover { background: #4b5563; }
     .actions { margin-top: 24px; display: flex; justify-content: space-between; align-items: center; }
     .actions .right { display: flex; gap: 12px; }
-    .progress { display: none; }
-    .progress.active { display: block; }
     .progress-bar {
       height: 6px; background: #e5e7eb; border-radius: 3px; overflow: hidden;
-      margin-bottom: 16px;
+      margin-bottom: 8px;
     }
     .progress-bar .fill {
       height: 100%; background: linear-gradient(90deg, #1f4e79, #3b82f6);
@@ -70,19 +68,32 @@
       animation: pulse 1.5s ease-in-out infinite;
     }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
-    .progress-stage { color: #374151; font-size: 14px; }
-    .progress-stage strong { color: #1f4e79; }
-    .summary { display: none; }
-    .summary.active { display: block; }
-    .summary h3 { margin: 0 0 16px 0; color: #1f4e79; }
-    .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
-    .metric { padding: 12px; background: #f9fafb; border-radius: 8px; }
+    .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 16px; }
+    .metric { padding: 10px 12px; background: #f9fafb; border-radius: 8px; }
     .metric .label { font-size: 12px; color: #6b7280; margin-bottom: 4px; }
     .metric .value { font-size: 20px; font-weight: 600; color: #1f4e79; }
     .metric.p0 .value { color: #dc2626; }
     .metric.p1 .value { color: #ea580c; }
     .metric.p2 .value { color: #ca8a04; }
     .metric.p3 .value { color: #65a30d; }
+    .batch-summary { display: none; padding: 20px 24px; background: #fff; border-radius: 12px; margin-bottom: 16px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.04); }
+    .batch-summary.active { display: block; }
+    .batch-summary h3 { margin: 0 0 6px 0; color: #1f4e79; font-size: 18px; }
+    .batch-summary p { margin: 0; color: #6b7280; font-size: 13px; }
+    .cluster-card { padding: 20px 24px; }
+    .cluster-header h3 { margin: 0 0 6px 0; color: #1f4e79; font-size: 16px; font-weight: 600; }
+    .cluster-meta { color: #6b7280; font-size: 12px; }
+    .cluster-meta code { background: #f3f4f6; padding: 1px 6px; border-radius: 3px; font-family: 'SF Mono', Monaco, monospace; font-size: 11px; }
+    .cluster-body { margin-top: 14px; }
+    .cluster-progress .stage { color: #374151; font-size: 13px; }
+    .cluster-actions { display: flex; gap: 10px; margin-top: 4px; }
+    .cluster-actions .btn { padding: 8px 16px; font-size: 13px; }
+    .cluster-assessment { margin-top: 12px; color: #6b7280; font-size: 12px; font-style: italic; }
+    .cluster-done { border-left: 4px solid #10b981; }
+    .cluster-error { border-left: 4px solid #dc2626; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; margin-left: 8px; vertical-align: middle; }
+    .badge-single { background: #e0f2fe; color: #075985; }
+    .badge-cluster { background: #fef3c7; color: #92400e; }
     .error {
       display: none; padding: 16px; background: #fee2e2; border-left: 4px solid #dc2626;
       border-radius: 4px; color: #991b1b; font-size: 14px;
@@ -98,14 +109,15 @@
   <div class="container">
     <header>
       <h1>🩺 MySQL 巡检报告生成器</h1>
-      <div class="subtitle">上传 MySQLHealthCheck 采集脚本输出（*.txt），自动生成商业可交付级巡检报告（.docx）</div>
+      <div class="subtitle">上传 MySQLHealthCheck 采集脚本输出（*.txt），自动按复制拓扑分组 → 每个集群一份巡检报告（.docx）</div>
     </header>
 
     <div class="card">
       <div id="dropZone" class="drop-zone">
         <div class="icon">📁</div>
         <h2>拖拽 MySQLHealthCheck_*.txt 到这里</h2>
-        <p>或点击选择文件 · 单次最多 16 个 · 单个最大 50 MB</p>
+        <p>支持混合上传不同集群的文件，系统会自动按 Master_Host / 从库列表识别集群拓扑<br>
+        单次最多 16 个 · 单个最大 50 MB</p>
       </div>
       <input type="file" id="fileInput" multiple accept=".txt,.log">
       <div id="fileList" class="file-list"></div>
@@ -133,22 +145,8 @@
       </div>
     </div>
 
-    <div id="progressCard" class="card progress">
-      <h3 style="margin: 0 0 16px 0; color: #1f4e79;">⏳ 报告生成中…</h3>
-      <div class="progress-bar"><div class="fill"></div></div>
-      <div class="progress-stage">当前阶段：<strong id="progressStage">排队中</strong></div>
-      <div style="margin-top: 8px; color: #6b7280; font-size: 13px;">Job ID: <code id="jobIdDisplay"></code></div>
-    </div>
-
-    <div id="summaryCard" class="card summary">
-      <h3>✅ 报告已生成</h3>
-      <div id="summaryGrid" class="summary-grid"></div>
-      <div id="summaryExtra" style="color: #6b7280; font-size: 13px; margin-bottom: 16px;"></div>
-      <div style="display: flex; gap: 12px;">
-        <a id="downloadDocx" class="btn" href="#" download>📥 下载 docx 报告</a>
-        <a id="downloadJson" class="btn btn-secondary" href="#" download>📊 下载 data.json</a>
-      </div>
-    </div>
+    <div id="batchHeader" class="batch-summary"></div>
+    <div id="clustersContainer"></div>
 
     <div id="errorCard" class="error"></div>
 
