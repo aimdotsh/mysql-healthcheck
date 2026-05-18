@@ -950,34 +950,130 @@ function analyzeSlowLog(text) {
 }
 
 // ============== 错误日志分析 ==============
-function analyzeErrorLog(text) {
+// v4.9.6 重写：
+//  - 解析时间戳（ISO 8.0 / 5.7 老格式 / 5.6 老格式三种），计算距今天数
+//  - 把内容按"模式签名"去重（同一个 [MY-011068] deprecated 警告打印 100 次只算一类）
+//  - 把 MySQL 8.0 deprecation 警告（MY-011068 / MY-011069）单独归类
+//    — 这类不是"错误"，是升级提示，全集群打印千百次仍然是 1 条信息量
+//  - 区分"近 90 天内"vs"历史"（默认）
+function analyzeErrorLog(text, opts = {}) {
   if (!text || text.trim().length === 0 || /不可读|未启用/.test(text)) {
     return { available: false, reason: '错误日志不可读' };
   }
+  const recentDays = opts.recentDays || 90;
+  const now = Date.now();
+  const cutoff = now - recentDays * 86400 * 1000;
   const lines = text.split(/\r?\n/);
-  const errors = [];
-  const warnings = [];
+
+  const parseLineTs = (line) => {
+    // 8.0 ISO 8601: 2022-12-07T14:50:40.341511+08:00
+    let m = line.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+    if (m) return Date.parse(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`);
+    // 5.7 vendor: 2018-07-30 11:12:13
+    m = line.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/);
+    if (m) return Date.parse(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`);
+    // 5.6 老格式：180730 11:12:13
+    m = line.match(/^(\d{2})(\d{2})(\d{2})\s+(\d{1,2}):(\d{2}):(\d{2})/);
+    if (m) {
+      const yr = Number(m[1]) > 70 ? 1900 + Number(m[1]) : 2000 + Number(m[1]);
+      return Date.parse(`${yr}-${m[2]}-${m[3]}T${String(m[4]).padStart(2,'0')}:${m[5]}:${m[6]}Z`);
+    }
+    return null;
+  };
+
+  // 内容签名：把数字、IP、路径、时间替换成占位符做去重
+  const sig = (line) =>
+    line.replace(/\d{4}-\d{2}-\d{2}T?\s*[\d:.+-Z]+/g, '<TS>')
+        .replace(/\d+\.\d+\.\d+\.\d+/g, '<IP>')
+        .replace(/\b\d{4,}\b/g, '<N>')
+        .replace(/'[^']+'/g, "'<X>'")
+        .replace(/`[^`]+`/g, '`<X>`')
+        .replace(/\/[\w./-]+/g, '<PATH>')
+        .replace(/\s+/g, ' ').trim().slice(0, 240);
+
+  const buckets = {
+    deprecated: new Map(),   // MySQL 8.0 deprecation 警告（去重）
+    error: new Map(),
+    warning: new Map(),
+  };
   const startupEvents = [];
+  let firstTs = null, lastTs = null;
+  let recentErrors = 0, historicalErrors = 0;
+  let recentWarnings = 0, historicalWarnings = 0;
 
   for (const line of lines) {
     if (!line.trim()) continue;
-    if (/\[ERROR\]/.test(line) || /\bERROR\b/.test(line) && !/\[Note\]/i.test(line)) {
-      errors.push(line);
-    } else if (/\[Warning\]/i.test(line) || /\bWarning\b/.test(line) && !/\[Note\]/i.test(line)) {
-      warnings.push(line);
+    const ts = parseLineTs(line);
+    if (ts) {
+      if (firstTs == null || ts < firstTs) firstTs = ts;
+      if (lastTs == null || ts > lastTs) lastTs = ts;
+    }
+    const isRecent = ts != null ? ts >= cutoff : true;   // 无时间戳的行按"近期"算（兼容老格式）
+
+    const isErr = /\[ERROR\]/.test(line) || (/\bERROR\b/.test(line) && !/\[Note\]/i.test(line));
+    const isWarn = /\[Warning\]/i.test(line) || (/\bWarning\b/.test(line) && !/\[Note\]/i.test(line));
+    // MY-011068 / MY-011069 是 8.0 重命名相关的 deprecation 通知（log_slave_updates / log_replica_updates 等）
+    const isDeprecated = isWarn && /MY-01106[89]|deprecated/i.test(line);
+
+    if (isDeprecated) {
+      const k = sig(line);
+      const bucket = buckets.deprecated.get(k) || { count: 0, sample: line, ts: ts };
+      bucket.count++;
+      bucket.ts = ts || bucket.ts;
+      buckets.deprecated.set(k, bucket);
+    } else if (isErr) {
+      const k = sig(line);
+      const bucket = buckets.error.get(k) || { count: 0, sample: line, ts: ts, recentCount: 0 };
+      bucket.count++;
+      if (isRecent) { bucket.recentCount++; recentErrors++; } else { historicalErrors++; }
+      bucket.ts = ts || bucket.ts;
+      buckets.error.set(k, bucket);
+    } else if (isWarn) {
+      const k = sig(line);
+      const bucket = buckets.warning.get(k) || { count: 0, sample: line, ts: ts, recentCount: 0 };
+      bucket.count++;
+      if (isRecent) { bucket.recentCount++; recentWarnings++; } else { historicalWarnings++; }
+      bucket.ts = ts || bucket.ts;
+      buckets.warning.set(k, bucket);
     } else if (/ready for connections|shutdown|starting|aborted|crash/i.test(line)) {
       startupEvents.push(line);
     }
   }
 
+  const fmtIso = (ts) => ts ? new Date(ts).toISOString().slice(0, 19).replace('T', ' ') : null;
+  const ageDays = lastTs ? Math.floor((now - lastTs) / 86400 / 1000) : null;
+  const spanDays = (firstTs && lastTs) ? Math.floor((lastTs - firstTs) / 86400 / 1000) : null;
+
+  // 把 buckets 转换为按次数排序的数组
+  const toTopArr = (m, limit = 5) => [...m.values()]
+    .sort((a, b) => b.count - a.count)
+    .slice(0, limit)
+    .map(x => ({ count: x.count, recentCount: x.recentCount, lastTs: fmtIso(x.ts), sample: x.sample.slice(0, 280) }));
+
+  // 错误数 / 警告数：还是按"原始行数"返回（兼容老 issue 规则 errorCount 字段）
+  const errorCount = [...buckets.error.values()].reduce((s, x) => s + x.count, 0);
+  const warningCount = [...buckets.warning.values()].reduce((s, x) => s + x.count, 0);
+  const deprecatedCount = [...buckets.deprecated.values()].reduce((s, x) => s + x.count, 0);
+
   return {
     available: true,
     totalLines: lines.length,
-    errorCount: errors.length,
-    warningCount: warnings.length,
-    errors: errors.slice(-20),       // 最后 20 条
-    warnings: warnings.slice(-10),
+    firstTs: fmtIso(firstTs),
+    lastTs: fmtIso(lastTs),
+    ageDays,                          // 距今多少天（最后一条相对 now）
+    spanDays,                         // 时间跨度
+    recentDaysWindow: recentDays,
+    errorCount, warningCount,
+    deprecatedCount,                  // 8.0 deprecation 警告，独立计数
+    recentErrors, historicalErrors,
+    recentWarnings, historicalWarnings,
+    topErrors: toTopArr(buckets.error, 5),
+    topWarnings: toTopArr(buckets.warning, 5),
+    deprecatedTop: toTopArr(buckets.deprecated, 5),
     startupEvents: startupEvents.slice(-20),
+    // v4.9.6：兼容旧版字段（render 与 correlation 用过）
+    errors: [...buckets.error.values()].slice(-20).map(x => x.sample),
+    warnings: [...buckets.warning.values()].slice(-10).map(x => x.sample),
   };
 }
 

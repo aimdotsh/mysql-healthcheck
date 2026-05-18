@@ -1409,6 +1409,92 @@ function chapterTransactions(data) {
   } else {
     out.push(noteParagraph('本次采集时 INNODB LOCKS / INNODB LOCK WAITS / LOCK DETAILS / Metadata locks 未返回等待记录，说明采集瞬间未发现阻塞；该结论不代表历史上没有发生过锁等待，历史趋势需结合监控或错误日志判断。'));
   }
+  out.push(emptyLine());
+
+  // v4.9.6：10.4 错误日志摘要 — 之前数据已采集（n.errorLogAnalysis）但未渲染
+  out.push(h2('10.4 错误日志摘要'));
+  const nodesWithLog = data.nodes.filter(n => n.errorLogAnalysis?.available);
+  if (nodesWithLog.length === 0) {
+    out.push(noteParagraph('本次采集中错误日志均不可读 / 未启用 / 未采集。'));
+    return out;
+  }
+
+  const logSummaryRows = nodesWithLog.map(n => {
+    const a = n.errorLogAnalysis;
+    const path = (n.errorLogStatus || '').match(/log_error:\s*(\S+)/)?.[1] || '-';
+    const span = (a.firstTs && a.lastTs) ? `${a.firstTs} → ${a.lastTs}` : '-';
+    const age = a.ageDays != null
+      ? (a.ageDays === 0 ? '今日' : a.ageDays + ' 天前')
+      : '-';
+    const realErrCnt = `${a.recentErrors} 近期 / ${a.historicalErrors} 历史`;
+    const realWarnCnt = `${a.recentWarnings} 近期 / ${a.historicalWarnings} 历史`;
+    return [n.ip, path, n.errorLogSizeBytes ? formatBytesNum(n.errorLogSizeBytes) : '-', span, age, realErrCnt, realWarnCnt, a.deprecatedCount > 0 ? a.deprecatedCount + ' 条' : '-'];
+  });
+  out.push(makeTable(
+    ['节点 IP', '错误日志路径', '文件大小', '采集时间跨度', '最后一条距今', `真实错误（${nodesWithLog[0].errorLogAnalysis.recentDaysWindow}天内/历史）`, '真实警告（同上）', '8.0 deprecation 提示'],
+    logSummaryRows,
+    `错误日志采集摘要（采集行数：tail ${nodesWithLog[0].errorLogAnalysis.totalLines} 行）`,
+  ));
+  out.push(emptyLine());
+
+  // 整体诊断：日志静默 vs 活跃
+  const allStale = nodesWithLog.every(n => n.errorLogAnalysis.ageDays > 30);
+  const anyActive = nodesWithLog.some(n => n.errorLogAnalysis.recentErrors > 0 || n.errorLogAnalysis.recentWarnings > 5);
+  if (allStale) {
+    out.push(noteParagraph(`✓ 所有节点错误日志最后一条均在 30 天前 — 说明数据库长期稳定运行，近期未触发新的错误或警告。${nodesWithLog[0].errorLogAnalysis.spanDays != null ? `（日志总跨度 ${nodesWithLog[0].errorLogAnalysis.spanDays} 天，多为历史记录。）` : ''}`));
+  } else if (anyActive) {
+    out.push(noteParagraph('近期（采集时间窗口内）发现真实错误或警告，建议下方 TOP 模式表逐项核查。'));
+  }
+  out.push(emptyLine());
+
+  // TOP 错误模式聚合（所有节点合并）
+  const aggPatterns = (kind) => {
+    const map = new Map();
+    for (const n of nodesWithLog) {
+      const arr = n.errorLogAnalysis['top' + kind] || [];
+      for (const p of arr) {
+        const e = map.get(p.sample) || { sample: p.sample, count: 0, recentCount: 0, ips: new Set(), lastTs: p.lastTs };
+        e.count += p.count;
+        e.recentCount += (p.recentCount || 0);
+        e.ips.add(n.ip);
+        if (p.lastTs && (!e.lastTs || p.lastTs > e.lastTs)) e.lastTs = p.lastTs;
+        map.set(p.sample, e);
+      }
+    }
+    return [...map.values()].sort((a, b) => b.count - a.count).slice(0, 5);
+  };
+
+  const topErrors = aggPatterns('Errors');
+  if (topErrors.length > 0) {
+    out.push(para([{ text: '🔴 TOP 错误模式（按出现次数）：', bold: true }]));
+    out.push(makeTable(
+      ['模式样例', '总次数', '近期次数', '出现节点', '最近时间'],
+      topErrors.map(e => [truncate(e.sample, 100), e.count, e.recentCount, [...e.ips].join('、'), e.lastTs || '-']),
+      '错误日志 TOP 错误模式',
+    ));
+    out.push(emptyLine());
+  }
+
+  const topWarnings = aggPatterns('Warnings');
+  if (topWarnings.length > 0) {
+    out.push(para([{ text: '🟠 TOP 警告模式：', bold: true }]));
+    out.push(makeTable(
+      ['模式样例', '总次数', '近期次数', '出现节点', '最近时间'],
+      topWarnings.map(e => [truncate(e.sample, 100), e.count, e.recentCount, [...e.ips].join('、'), e.lastTs || '-']),
+      '错误日志 TOP 警告模式',
+    ));
+    out.push(emptyLine());
+  }
+
+  // Deprecation 提示折叠为一行
+  const totalDeprecated = nodesWithLog.reduce((s, n) => s + (n.errorLogAnalysis.deprecatedCount || 0), 0);
+  if (totalDeprecated > 0) {
+    const sample = nodesWithLog.find(n => n.errorLogAnalysis.deprecatedTop?.length > 0)?.errorLogAnalysis.deprecatedTop[0];
+    out.push(noteParagraph(`ℹ️ 共采集到 ${totalDeprecated} 条 MySQL 8.0 deprecation 警告（如 log_slave_updates → log_replica_updates 等参数重命名提示）— 不影响运行，仅在未来升级 8.4+ 时需要调整。示例：${sample?.sample?.slice(0, 120) || '-'}`));
+  }
+
+  out.push(noteParagraph('注：「近期 / 历史」按错误日志最后一条时间向前回溯 90 天划分；日志模式按内容签名去重，反复打印的同一类信息只算一类。'));
+
   return out;
 }
 

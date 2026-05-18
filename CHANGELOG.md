@@ -6,6 +6,93 @@
 
 ---
 
+## [4.9.6] - 2026-05-18
+
+**错误日志摘要分析（新增章节 10.4）+ 智能时间窗口 + 去重聚合**。
+
+### 客户反馈
+
+> 巡检报告里没有错误日志的分析，脚本已经采集了错误日志，但是报告里没有提及，且采集 last 1000 lines 可能会采集到好几年前的日志，没必要。
+
+### 问题
+
+1. `n.errorLogAnalysis` 数据**已被采集和解析**，但 render.js 没有任何章节渲染它 — 完全没在报告里露面
+2. 老 `analyzeErrorLog` 不区分时间窗 — 5 年前的一个 deprecation warning 和昨天的真实 ERROR 同样对待
+3. 同一类 deprecation warning（`[Warning] [MY-011068] 'log_slave_updates' is deprecated...`）反复打印 100 次也会被算作 100 个 warning，污染统计
+4. collector 默认 `ERROR_LOG_LINES=1000` 对低流量日志过宽，会把多年前的内容采集进来
+
+### 解决方案
+
+#### 1) `analyzeErrorLog` 完全重写
+
+- **时间戳解析**：识别 3 种格式
+  - 8.0 ISO `2022-12-07T14:50:40.341511+08:00`
+  - 5.7 vendor `2018-07-30 11:12:13`
+  - 5.6 老格式 `180730 11:12:13`
+- **距今天数 / 时间跨度**：`ageDays`（最后一条距 now）、`spanDays`（首尾跨度）
+- **90 天窗口**（可配置）：每条分类为 `recent` 或 `historical`
+- **模式签名去重**：把数字 / IP / 路径 / 时间戳替换成占位符（`<N>` / `<IP>` / `<PATH>` / `<TS>`）做签名，相同模式的多次出现只算一类
+- **MySQL 8.0 deprecation 单独归类**：识别 `MY-011068` / `MY-011069` 等 deprecation 提示码，独立到 `deprecated` bucket — 这类是升级提示，不是"错误"
+- **TOP N 模式**：返回前 5 个最常见的错误 / 警告 / deprecation 模式，含 `count` / `recentCount` / `lastTs` / `sample`
+
+新 `errorLogAnalysis` schema：
+```
+{ available, totalLines,
+  firstTs, lastTs, ageDays, spanDays, recentDaysWindow,
+  errorCount, warningCount, deprecatedCount,
+  recentErrors, historicalErrors,
+  recentWarnings, historicalWarnings,
+  topErrors[], topWarnings[], deprecatedTop[],
+  startupEvents[]
+}
+```
+
+#### 2) render.js 新增章节 10.4「错误日志摘要」
+
+位置：第十章「事务与锁分析」末尾（错误日志常与锁等待、复制错误同属诊断域）。
+
+内容：
+- **采集摘要表**：节点 IP / 日志路径 / 文件大小 / 时间跨度 / 最后一条距今 / 真实错误（近期/历史）/ 真实警告（近期/历史）/ 8.0 deprecation 数量
+- **整体诊断**：
+  - 全部节点 `ageDays > 30` → 「✓ 长期稳定运行，近期未触发新错误」
+  - 任何节点有近期真实错误 → 「建议下方 TOP 模式表逐项核查」
+- **TOP 错误模式表**（跨节点聚合）：前 5 个最常见模式 + 总次数 + 近期次数 + 出现节点 + 最近时间
+- **TOP 警告模式表**（同上）
+- **Deprecation 折叠**：「ℹ️ 共采集到 N 条 MySQL 8.0 deprecation 警告（如 log_slave_updates → log_replica_updates）— 不影响运行，仅在升级 8.4+ 时需调整」加 1 条样例
+
+#### 3) collector 默认采集行数 1000 → 500
+
+`ERROR_LOG_LINES=500`（仍可 `--error-log-lines` 覆盖）。tail 取最近 N 行，500 行对绝大多数活跃日志足够；老的"千百年前的内容"由 90 天窗口在分析侧自动过滤。
+
+### 实测
+
+**用户的样例**（5 条 deprecation warnings，时间 2022-12-07，距今约 3.5 年）：
+
+| 字段 | 旧行为 | 新行为 |
+|---|---|---|
+| 报告章节 | 无 | **10.4 错误日志摘要** |
+| warningCount | 5 | warningCount=0 / deprecatedCount=5 |
+| recent vs historical | 不区分 | **0 近期 / 5 历史** |
+| 措辞 | 无（不展示）| 「✓ 长期稳定运行... 5 条 MySQL 8.0 deprecation 警告」|
+| TOP 模式聚合 | 无 | 5 条重复 deprecation 合并为 5 类签名（示例只显示一条）|
+
+v3 测试集（117 条 deprecation warnings）：所有归入 deprecated bucket，errorCount=0，渲染为单条 ℹ️ 折叠提示，不再污染 P0/P1 统计。
+
+### 实现
+
+- `scripts/extract.js`：`analyzeErrorLog()` 完全重写（保留 errors/warnings 字段兼容旧 issue 规则）
+- `scripts/render.js`：`chapterTransactions` 末尾新增 10.4 节
+- `collectors/mysqlHealthCheckV3.0.sh`：`ERROR_LOG_LINES=1000` → `500`
+- `scripts/package.json`：4.9.5 → 4.9.6
+
+### 验证
+
+- `npm test` 全绿
+- v3 样本：10.4 章节正常渲染，含采集摘要表 + deprecation 折叠提示
+- 老样本（无错误日志段）：章节显示「错误日志均不可读 / 未启用 / 未采集」，不崩溃
+
+---
+
 ## [4.9.5] - 2026-05-18
 
 **ibtmp1 配置感知建议 + 多 datafile 解析修复**。

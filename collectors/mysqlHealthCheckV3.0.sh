@@ -40,7 +40,9 @@ DB_HOST="127.0.0.1"
 DB_PORT="3306"
 OUT_DIR="."
 SLOW_LOG_LINES=5000
-ERROR_LOG_LINES=1000
+ERROR_LOG_LINES=500   # v4.9.6：默认 1000 → 500。是 tail，不影响最近活动；
+                       #         可用 --error-log-lines 覆盖。报告侧会做去重 + 按 90 天窗口分类，
+                       #         不再因为"老日志被采集进来"而吓人。
 BACKUP_PATHS="/backup,/data/backup,/data/mysql/backup,/home/backup,/data/backup_mysql,/opt/backup,/opt/db_bak,/opt/db_bak/bak_dir"
 SKIP_MODULES=""
 NON_INTERACTIVE=0
