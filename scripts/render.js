@@ -1734,35 +1734,137 @@ function chapterSchemaDesignAudit(data) {
 
   out.push(h2('13.2 未使用索引（Schema Unused Indexes）'));
   const unused = refNode.unusedIndexes || [];
-  if (unused.length > 0) {
-    const unusedSummary = summarizeTableCategories(unused);
-    out.push(para([{ text: `检测到 ${unused.length} 个长期未使用的索引（自 MySQL 启动以来从未被读取），占用空间且拖慢写入：`, bold: true }]));
-    out.push(noteParagraph(`未使用索引分类汇总：业务表索引 ${unusedSummary.business} 个，历史/归档表索引 ${unusedSummary.history} 个，临时/测试表索引 ${unusedSummary.temp} 个。`));
-    const rows = unused.slice(0, 30).map(u => [u.schema, u.table, tableCategory(u.table).label, u.index]);
-    out.push(makeTable(['库名', '表名', '类型', '索引名'], rows, `Top 30 未使用索引（共 ${unused.length}）`));
-    out.push(emptyLine());
-    out.push(code(`-- 示例：DROP INDEX ${unused[0].index} ON ${unused[0].schema}.${unused[0].table};`));
-    out.push(noteParagraph('Schema_unused_indexes 视图依赖 performance_schema，结果只反映 MySQL 运行期间未被使用的索引。业务表索引删除前建议至少观察一个完整业务周期；历史、临时、测试类表建议先评估归档、清理或下线策略，再决定是否单独删索引。'));
-  } else {
+  if (unused.length === 0) {
     out.push(para('未检测到未使用索引（或采集源不含该数据）。'));
+  } else {
+    // v4.9.7：之前只截取 TOP 30，剩余 N - 30 个无任何展示位置，客户无法看到全量
+    // 现在补足：分类计数 + TOP 受影响表（聚合）+ TOP 30 明细 + 数据出口 + 三步处置流程
+    const unusedSummary = summarizeTableCategories(unused);
+    out.push(para([{ text: `检测到 ${unused.length} 个长期未使用的索引（自 MySQL 启动以来从未被读取），占用空间且拖慢写入。`, bold: true }]));
+    out.push(noteParagraph(`分类：业务表索引 ${unusedSummary.business} 个 / 历史归档表 ${unusedSummary.history} 个 / 临时/测试表 ${unusedSummary.temp} 个。`));
+    out.push(emptyLine());
+
+    // TOP 受影响表（按索引数排序）— 帮 DBA 锁定"哪几张表上无用索引最多"
+    const byTable = new Map();
+    for (const u of unused) {
+      const k = `${u.schema}.${u.table}`;
+      const e = byTable.get(k) || { schema: u.schema, table: u.table, indexes: [] };
+      e.indexes.push(u.index);
+      byTable.set(k, e);
+    }
+    const topTables = [...byTable.values()].sort((a, b) => b.indexes.length - a.indexes.length).slice(0, 10);
+    if (topTables.length > 0 && byTable.size > 3) {
+      out.push(para([{ text: `📊 TOP ${Math.min(10, topTables.length)} 受影响表（按未使用索引数排序，共涉及 ${byTable.size} 张表）：`, bold: true }]));
+      out.push(makeTable(
+        ['库名', '表名', '类型', '未使用索引数', '索引名'],
+        topTables.map(t => [t.schema, t.table, tableCategory(t.table).label, t.indexes.length, truncate(t.indexes.join('、'), 100)]),
+        `未使用索引 — 受影响表 TOP ${topTables.length}`,
+      ));
+      out.push(emptyLine());
+    }
+
+    // TOP 30 明细（含截断状态）
+    const showLimit = 30;
+    const rows = unused.slice(0, showLimit).map(u => [u.schema, u.table, tableCategory(u.table).label, u.index]);
+    out.push(para([{ text: `📋 明细 TOP ${Math.min(showLimit, unused.length)} 条`, bold: true }, { text: unused.length > showLimit ? `（共 ${unused.length} 条；剩余 ${unused.length - showLimit} 条详见 data.json 的 nodes[].unusedIndexes 字段或附录）` : '' }]));
+    out.push(makeTable(['库名', '表名', '类型', '索引名'], rows, `未使用索引明细（${rows.length}/${unused.length}）`));
+    out.push(emptyLine());
+
+    // 处置流程：三步走 + 可批量生成 DROP 语句的 SQL
+    out.push(para([{ text: '✦ 建议处置流程（三步走）：', bold: true, color: '548235' }]));
+    out.push(bullet('① 用以下 SQL 查出每个索引的真实大小，先聚焦"大且无用"的索引：'));
+    out.push(code(`SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME,
+       ROUND(SUM(STAT_VALUE) * @@innodb_page_size / 1024 / 1024, 2) AS size_mb
+FROM mysql.innodb_index_stats
+WHERE STAT_NAME = 'size'
+  AND INDEX_NAME != 'PRIMARY'
+  AND (TABLE_SCHEMA, TABLE_NAME, INDEX_NAME) IN (
+    -- 这里粘贴本节明细表里的 (库名, 表名, 索引名) 组合
+    ('${unused[0].schema}', '${unused[0].table}', '${unused[0].index}')
+    ${unused.length > 1 ? `, ('${unused[1].schema}', '${unused[1].table}', '${unused[1].index}')` : ''}
+    -- ...
+  )
+GROUP BY TABLE_SCHEMA, TABLE_NAME, INDEX_NAME
+ORDER BY size_mb DESC;`));
+    out.push(bullet('② 观察至少 1 个完整业务周期（含月初/月末/促销/月度报表）后再确认；可重置统计后定期复查：'));
+    out.push(code(`-- 重置 performance_schema 索引访问统计（重置后从 0 计数，需等 1 周期再看）
+TRUNCATE TABLE performance_schema.table_io_waits_summary_by_index_usage;`));
+    out.push(bullet('③ 维护窗口批量删除（建议 pt-online-schema-change 在大表上执行避免锁表）：'));
+    out.push(code((unused.length <= 5
+      ? unused.map(u => `DROP INDEX ${u.index} ON ${u.schema}.${u.table};`).join('\n')
+      : unused.slice(0, 3).map(u => `DROP INDEX ${u.index} ON ${u.schema}.${u.table};`).join('\n') + `\n-- 还有 ${unused.length - 3} 条 DROP 语句，可基于明细表批量生成：\n-- awk -F'\\t' '{print "DROP INDEX " $4 " ON " $1 "." $2 ";"}' unused_indexes.tsv`)));
+    out.push(emptyLine());
+    out.push(noteParagraph('Schema_unused_indexes 视图依赖 performance_schema，结果只反映 MySQL 运行期间未被使用的索引（重启后归零）。业务表索引在删除前**建议至少观察一个完整业务周期**；历史、临时、测试类表建议先评估归档/清理/下线策略后再决定是否单独删索引。完整 N 条清单见 data.json 的 `nodes[].unusedIndexes` 字段。'));
   }
   out.push(emptyLine());
 
   out.push(h2('13.3 冗余索引'));
   const redundant = refNode.redundantIndexes || [];
-  if (redundant.length > 0) {
+  if (redundant.length === 0) {
+    out.push(para('未检测到明显冗余索引。'));
+  } else {
+    // v4.9.7：与 13.2 同样改造，提示截断状态 + 数据出口 + 处置流程
     const redundantSummary = summarizeTableCategories(redundant);
-    out.push(para(`检测到 ${redundant.length} 组冗余索引（左前缀重复或完全覆盖），可考虑删除被覆盖的索引。`));
-    out.push(noteParagraph(`冗余索引分类汇总：业务表索引 ${redundantSummary.business} 组，历史/归档表索引 ${redundantSummary.history} 组，临时/测试表索引 ${redundantSummary.temp} 组。`));
-    const rows = redundant.slice(0, 15).map(r => [
+    out.push(para([{ text: `检测到 ${redundant.length} 组冗余索引（左前缀重复或完全覆盖），删除"被覆盖"的索引可直接节省空间并加速写入。`, bold: true }]));
+    out.push(noteParagraph(`分类：业务表索引 ${redundantSummary.business} 组 / 历史归档表 ${redundantSummary.history} 组 / 临时/测试表 ${redundantSummary.temp} 组。`));
+    out.push(emptyLine());
+
+    // TOP 受影响表（按冗余组数排序）
+    const byTableR = new Map();
+    for (const r of redundant) {
+      const k = `${r.schema}.${r.table}`;
+      const e = byTableR.get(k) || { schema: r.schema, table: r.table, count: 0 };
+      e.count += 1;
+      byTableR.set(k, e);
+    }
+    const topTablesR = [...byTableR.values()].sort((a, b) => b.count - a.count).slice(0, 10);
+    if (topTablesR.length > 0 && byTableR.size > 3) {
+      out.push(para([{ text: `📊 TOP ${Math.min(10, topTablesR.length)} 受影响表（按冗余组数排序，共涉及 ${byTableR.size} 张表）：`, bold: true }]));
+      out.push(makeTable(
+        ['库名', '表名', '类型', '冗余组数'],
+        topTablesR.map(t => [t.schema, t.table, tableCategory(t.table).label, t.count]),
+        `冗余索引 — 受影响表 TOP ${topTablesR.length}`,
+      ));
+      out.push(emptyLine());
+    }
+
+    // 明细表（含截断状态）
+    const showLimitR = 15;
+    const rows = redundant.slice(0, showLimitR).map(r => [
       r.schema || '-', r.table || '-', tableCategory(r.table).label,
       r.redundantIndex || '-', r.dominantIndex || '-',
       truncate(r.redundantColumns, 36), truncate(r.dominantColumns, 36),
     ]);
-    out.push(makeTable(['库名', '表名', '类型', '冗余索引', '覆盖索引', '冗余列', '覆盖列'], rows, '冗余索引（前 15 组）'));
-    out.push(noteParagraph('冗余索引建议优先处理正式业务表；历史/临时表上的冗余索引应与表归档、清理动作合并评估，避免对已准备下线的数据对象做重复优化。'));
-  } else {
-    out.push(para('未检测到明显冗余索引。'));
+    out.push(para([{ text: `📋 明细 TOP ${Math.min(showLimitR, redundant.length)} 组`, bold: true }, { text: redundant.length > showLimitR ? `（共 ${redundant.length} 组；剩余 ${redundant.length - showLimitR} 组详见 data.json 的 nodes[].redundantIndexes 字段）` : '' }]));
+    out.push(makeTable(['库名', '表名', '类型', '冗余索引', '覆盖索引', '冗余列', '覆盖列'], rows, `冗余索引明细（${rows.length}/${redundant.length}）`));
+    out.push(emptyLine());
+
+    // 处置流程：三步走
+    out.push(para([{ text: '✦ 建议处置流程（三步走）：', bold: true, color: '548235' }]));
+    out.push(bullet('① 用 EXPLAIN 复核覆盖关系，确认删除"冗余索引"后执行计划不会回退到"覆盖索引"以外的扫描方式：'));
+    out.push(code(`-- 示例：在删除前对涉及 ${redundant[0].redundantIndex || 'IDX_A'} 的核心 SQL 做 EXPLAIN
+EXPLAIN SELECT ... FROM ${redundant[0].schema || 'db'}.${redundant[0].table || 'tbl'}
+WHERE ${(redundant[0].redundantColumns || 'col1').split(',')[0]} = ?;
+-- 期望：key 应命中"${redundant[0].dominantIndex || 'IDX_B'}"（覆盖索引）`));
+    out.push(bullet('② 用以下 SQL 查出"冗余索引"实际占用，先聚焦"大且冗余"的索引：'));
+    out.push(code(`SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME,
+       ROUND(SUM(STAT_VALUE) * @@innodb_page_size / 1024 / 1024, 2) AS size_mb
+FROM mysql.innodb_index_stats
+WHERE STAT_NAME = 'size'
+  AND INDEX_NAME != 'PRIMARY'
+  AND (TABLE_SCHEMA, TABLE_NAME, INDEX_NAME) IN (
+    ('${redundant[0].schema}', '${redundant[0].table}', '${redundant[0].redundantIndex}')
+    ${redundant.length > 1 ? `, ('${redundant[1].schema}', '${redundant[1].table}', '${redundant[1].redundantIndex}')` : ''}
+    -- ...
+  )
+GROUP BY TABLE_SCHEMA, TABLE_NAME, INDEX_NAME
+ORDER BY size_mb DESC;`));
+    out.push(bullet('③ 维护窗口批量删除（大表建议 pt-online-schema-change 避免锁表）：'));
+    out.push(code((redundant.length <= 5
+      ? redundant.map(r => `DROP INDEX ${r.redundantIndex} ON ${r.schema}.${r.table};  -- 已被 ${r.dominantIndex} 覆盖`).join('\n')
+      : redundant.slice(0, 3).map(r => `DROP INDEX ${r.redundantIndex} ON ${r.schema}.${r.table};  -- 已被 ${r.dominantIndex} 覆盖`).join('\n') + `\n-- 还有 ${redundant.length - 3} 条 DROP 语句，可从 data.json 的 nodes[].redundantIndexes 批量生成：\n-- jq -r '.nodes[].redundantIndexes[] | "DROP INDEX " + .redundantIndex + " ON " + .schema + "." + .table + ";"' data.json`)));
+    out.push(emptyLine());
+    out.push(noteParagraph('优先处理正式业务表上的冗余；历史/临时表上的冗余索引应与表归档、清理动作合并评估，避免对已准备下线的数据对象做重复优化。完整清单见 data.json 的 `nodes[].redundantIndexes` 字段。'));
   }
   out.push(emptyLine());
 

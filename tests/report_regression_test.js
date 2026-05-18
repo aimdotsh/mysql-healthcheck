@@ -174,7 +174,9 @@ assert(bodyText.includes('172.16.128.101（灾备）=10'), 'parameter difference
 assert(bodyText.includes('无主键表分类汇总'), 'no primary key section should summarize business/history/temp table counts');
 assert(bodyText.includes('V3 采集脚本已采集 innodb_tablespaces'), 'ibtmp1 section should explain data source and collection coverage');
 assert(bodyText.includes('采集脚本已采集 INNODB LOCKS / INNODB LOCK WAITS / INNODB TRX / Metadata locks'), 'lock section should reflect actual collector coverage');
-assert(bodyText.includes('未使用索引分类汇总'), 'unused index section should summarize table categories');
-assert(bodyText.includes('冗余索引分类汇总'), 'redundant index section should summarize table categories');
+assert(bodyText.includes('个长期未使用的索引') && bodyText.includes('业务表索引'), 'unused index section should summarize table categories (v4.9.7 reworded)');
+assert(bodyText.includes('组冗余索引') && bodyText.includes('业务表索引'), 'redundant index section should summarize table categories (v4.9.7 reworded)');
+assert(bodyText.includes('nodes[].unusedIndexes') || bodyText.includes('nodes[].redundantIndexes'), 'v4.9.7: index sections should point users to data.json for the complete dataset');
+assert(bodyText.includes('建议处置流程（三步走）'), 'v4.9.7: index sections should include the 3-step processing workflow');
 
 console.log('report regression test passed');

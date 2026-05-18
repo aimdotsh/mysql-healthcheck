@@ -6,6 +6,62 @@
 
 ---
 
+## [4.9.7] - 2026-05-18
+
+**13.2 / 13.3 索引章节交付完整化 — 截断提示 + 完整数据出口 + 三步处置流程**。
+
+### 客户反馈
+
+> 13.2 未使用索引（Schema Unused Indexes）这里写了 110 个长期未使用的索引，但是很显然没有全部列出来，但是也没有写只列出前多少行，也没写完整数据从哪里看，也没写具体的建议等。
+
+### 问题
+
+报告里两节索引建议都存在共性 UX 缺陷：
+
+1. **截断隐式**：13.2 写「110 个未使用索引」，但只列了 30 行表，剩下 80 条去哪里看？客户无法判断是 bug 还是设计
+2. **数据出口缺失**：完整 N 条清单实际写在 `data.json` 的 `nodes[].unusedIndexes` / `nodes[].redundantIndexes` 里，但报告从未告知客户这件事
+3. **建议泛而无用**：「建议清理未使用索引」过于笼统 — DBA 拿到报告不知道下一步该执行什么 SQL、观察多长时间、怎么批量生成 DROP 语句
+4. **冗余索引同样缺位**：13.3 只列 15 行，TOP 受影响表也没聚合
+
+### 解决方案
+
+#### 1) 13.2 未使用索引 — 完整改造
+
+- 标题段加粗强调「占用空间且拖慢写入」(softening 兼提示价值)
+- 分类计数：业务表 / 历史归档 / 临时测试，DBA 一眼看清重点
+- **TOP 10 受影响表聚合**（共涉及 N 张表）：业务上"哪张表索引最浪费"立刻锁定，仅在 byTable.size > 3 时展示
+- **明细 TOP 30 + 截断提示**："（共 N 条；剩余 N-30 条详见 data.json 的 nodes[].unusedIndexes 字段或附录）"
+- **三步处置流程**：
+  - ① 先查真实大小（mysql.innodb_index_stats SQL，自动用前 2 条作示例）
+  - ② 观察一个完整业务周期 + 重置 P_S 统计（TRUNCATE SQL）
+  - ③ 批量 DROP（≤5 条直接列全；否则 head 3 条 + awk one-liner 模板从 TSV 生成）
+- 末尾 noteParagraph 重复指出 `nodes[].unusedIndexes` 完整数据出口
+
+#### 2) 13.3 冗余索引 — 同等改造
+
+- 同样的截断提示 + 数据出口 + 三步处置流程
+- **EXPLAIN 复核**：删除前用 EXPLAIN 验证执行计划不会回退到非覆盖索引，自动用第一条冗余对生成示例 SQL
+- 「冗余索引」单独查大小，**`DROP INDEX ... -- 已被 XXX 覆盖`** 注释让批量脚本可读
+- 批量出口：`jq -r ... data.json` 一行命令从 JSON 生成所有 DROP 语句
+
+#### 3) 数据出口规范化
+
+`nodes[].unusedIndexes` 和 `nodes[].redundantIndexes` 在 data.json 中已经是完整数组（extract.js 不截断），仅 render.js 在 docx 输出端截断显示。
+v4.9.7 起两节都明确在正文里指向 data.json 字段名，DBA 可直接：
+
+```bash
+jq -r '.nodes[] | .ip + " " + (.unusedIndexes | length | tostring)' data.json
+jq '.nodes[].unusedIndexes' data.json | less
+```
+
+### 关联文件
+
+- `scripts/render.js` 13.2 / 13.3 完整改造（约 +85 行）
+- `scripts/package.json` 4.9.6 → 4.9.7
+- `tests/report_regression_test.js` 更新断言：从「索引分类汇总」改为更稳定的「业务表索引」+「三步走」+「nodes[].xxxIndexes」三条断言
+
+---
+
 ## [4.9.6] - 2026-05-18
 
 **错误日志摘要分析（新增章节 10.4）+ 智能时间窗口 + 去重聚合**。
