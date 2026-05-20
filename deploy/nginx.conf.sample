@@ -1,0 +1,54 @@
+# MySQL Healthcheck SaaS — nginx 反向代理样例
+#
+# 用法：
+#   sudo cp deploy/nginx.conf.sample /etc/nginx/conf.d/mysql-healthcheck.conf
+#   sudo vim /etc/nginx/conf.d/mysql-healthcheck.conf  # 改 server_name
+#   sudo nginx -t && sudo systemctl reload nginx
+#   sudo certbot --nginx -d mysql-hc.example.com   # 自动加 HTTPS
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name mysql-hc.example.com;       # ←←← 改成你的域名
+
+    # 上传体积上限：≥ MAX_FILE_SIZE_MB × MAX_FILES + 余量
+    # 16 × 50 MB = 800 MB，留点 buffer
+    client_max_body_size 1024m;
+
+    # 大文件 / 复杂报告生成超时
+    proxy_connect_timeout 60s;
+    proxy_send_timeout    600s;
+    proxy_read_timeout    600s;
+
+    # gzip 让 docx 下载更快（docx 已经是 zip，但 data.json 较大）
+    gzip on;
+    gzip_types application/json text/plain text/html application/javascript text/css;
+    gzip_min_length 1024;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+
+        # 把客户端真实信息传给后端
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # 长连接 / WebSocket（虽然本服务暂未用，预留）
+        proxy_set_header Connection "";
+
+        # 关闭缓冲，docx 下载更顺滑
+        proxy_buffering off;
+    }
+
+    # 隐藏 nginx 版本
+    server_tokens off;
+
+    # 简单访问日志
+    access_log /var/log/nginx/mysql-healthcheck.access.log;
+    error_log  /var/log/nginx/mysql-healthcheck.error.log;
+}
+
+# 提示：执行 certbot --nginx 后，certbot 会自动在本文件上面插入 listen 443 ssl
+# + 把 80 改成跳转 443。无需手动配置 SSL。

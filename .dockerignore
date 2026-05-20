@@ -1,0 +1,52 @@
+# 缩小 docker build context — 越小越快
+.git
+.gitignore
+.gitattributes
+.github
+.DS_Store
+**/.DS_Store
+**/Thumbs.db
+
+# 已有的本地构建产物
+**/node_modules
+**/npm-debug.log*
+
+# 运行产物 / 本地测试输出
+saas/storage/
+saas/storage/**/*
+*.docx
+data.json
+scripts/data.json
+
+# 编辑器 / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 文档（容器里不需要）
+*.md
+!saas/README.md
+docs/
+
+# 测试样例 / 本地测试输出
+tests/
+test/
+sample/
+samples/
+
+# 自己（避免递归）
+Dockerfile
+docker-compose.yml
+.dockerignore
+deploy/
+
+# 历史 plan / 内部笔记
+plans/
+plan-archive/
+
+# Skill 相关（容器内不需要 LLM 协议文档）
+SKILL.md
+AGENTS.md
+USAGE.md
+references/

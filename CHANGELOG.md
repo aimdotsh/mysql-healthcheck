@@ -6,6 +6,98 @@
 
 ---
 
+## [5.0.4] - 2026-05-20
+
+**生产级 Docker 部署套件：refined Dockerfile + docker-compose.yml + 完整运维文档**。
+
+### 客户反馈
+
+> 现在要把 SaaS 部署到 Linux 服务器上，如何部署？有 docker。
+
+### 新增
+
+#### 1. `.dockerignore`（缩小 build context）
+
+排除 `.git` / `node_modules` / 测试样本 / 文档 / IDE 文件等，构建上下文从 ~150 MB 减到 ~5 MB，build 速度显著提升。
+
+#### 2. Dockerfile 升级到生产级
+
+- **两阶段构建**：deps 阶段单独装依赖（含 @resvg/resvg-js 原生模块），runtime 阶段只保留运行所需
+- **非 root 用户运行**：容器内 uid=1001 mysqlhc，宿主机数据目录需 `chown 1001:1001`
+- **tini 作 PID 1**：信号正确转发（`docker stop` 时 graceful shutdown），回收僵尸子进程
+- **HEALTHCHECK**：每 30s 测一次 `/api/v1/health`（用 wget --spider，无需额外依赖）
+- **基础镜像**：`node:20-slim`（Debian-based，避免 alpine 的 musl libc 问题）
+- 镜像大小：~250 MB
+
+#### 3. `docker-compose.yml`（production-ready）
+
+- 默认绑 `127.0.0.1:3000`，由 host 上的 nginx 转发（强制走反代）
+- 环境变量从 `.env` 自动读，支持 `${API_KEY:-}` / `${STORAGE_HOST_DIR:-...}` 默认值
+- 资源限制：4G 内存 / 2 CPU（够 8 节点报告并发 2）
+- 日志轮转：20m × 5 files，不撑爆磁盘
+- 健康检查与 Dockerfile 一致
+
+#### 4. `deploy/` 目录
+
+| 文件 | 用途 |
+|---|---|
+| `DEPLOY.md` | 完整部署指南（TL;DR + 6 步详细流程 + 运维 + 故障排查 + 卸载） |
+| `env.example` | `.env` 模板，标注每个变量含义 |
+| `nginx.conf.sample` | nginx 反向代理配置（含 client_max_body_size / gzip / 长超时） |
+| `upgrade.sh` | 一键升级脚本（git pull → build → rolling restart → 健康验证） |
+
+#### 5. 修正
+
+发现 `Dockerfile` 和 `compose.yml` 的 HEALTHCHECK 之前写错了端点（`/api/v1/version` 不存在），改成实际存在的 `/api/v1/health`。本地构建 + smoke test 全套验证通过。
+
+### 端到端验证（本地 macOS Docker）
+
+```bash
+docker compose build                          # 成功，~250 MB 镜像
+docker compose up -d                          # 启动
+docker inspect mysql-hc-saas --format='{{.State.Health.Status}}'
+# → healthy
+
+curl -sS -X POST http://127.0.0.1:3000/api/v1/reports \
+  -F 'files=@desensitized/*.txt' \
+  -F 'project=Docker Smoke Test' \
+  -F 'configJson={"disabledRules":["backup_capability"]}'
+# → batchId + 1 个集群（v5.0.2 脱敏集群识别在容器内正常）
+# → docx 生成成功 123 KB Word 2007+
+# → backup_capability 正确禁用（P0: 4 而非默认 5）
+```
+
+### 用户怎么用
+
+```bash
+# 1. 拉代码
+cd /opt && git clone -b SaaS https://github.com/aimdotsh/mysql-healthcheck.git
+cd mysql-healthcheck
+
+# 2. 准备数据目录
+sudo mkdir -p /var/lib/mysql-healthcheck
+sudo chown 1001:1001 /var/lib/mysql-healthcheck
+
+# 3. 起服务
+cp deploy/env.example .env
+vim .env                          # 至少改 API_KEY
+docker compose up -d
+
+# 4. 配 nginx + 域名（可选但推荐）
+sudo cp deploy/nginx.conf.sample /etc/nginx/conf.d/mysql-healthcheck.conf
+sudo certbot --nginx -d <domain>
+```
+
+升级：`./deploy/upgrade.sh`
+
+### 影响
+
+- 零代码改动（service / app 逻辑完全不变）
+- 仅基础设施层资产新增 / 优化
+- 已部署用户：`git pull` 即可看到新的 docker-compose.yml，原本的 docker run 命令也不冲突
+
+---
+
 ## [5.0.3] - 2026-05-20
 
 **SaaS UI 巡检项开关 + Skill 流程加交互询问 — 灵活禁用客户场景不适用的规则**。
