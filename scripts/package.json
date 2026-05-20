@@ -11,7 +11,7 @@
     "extract": "node extract.js",
     "render": "node render.js",
     "build": "node build.js",
-    "test": "bash ../tests/collector_autodiscovery_test.sh && node ../tests/report_regression_test.js"
+    "test": "bash ../tests/collector_autodiscovery_test.sh && node ../tests/rule_engine_test.js && node ../tests/report_regression_test.js"
   },
   "dependencies": {
     "@resvg/resvg-js": "^2.6.2",
