@@ -81,7 +81,7 @@ vim .env
 ```
 
 至少建议改：
-- `API_KEY`：长随机字符串。设置后所有 `/api/v1/*` 调用要带 `Authorization: Bearer <key>`
+- `API_KEY`：长随机字符串。设置后所有 `/api/v1/*` 调用要带 `X-API-Key: <key>`（或 `?api_key=<key>` query 参数）
 - `MAX_FILE_SIZE_MB`：单文件上限。默认 50 MB；若客户 collector 输出很大可调高
 
 ### 5. 起服务
