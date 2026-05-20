@@ -1,9 +1,11 @@
 # 巡检规则手册（自动生成）
 
 > **本文档由 `scripts/gen-rules-md.js` 从 `scripts/rules/*.json` 自动生成。请勿手动编辑。**
-> 生成时间：2026-05-20　|　已迁移规则数：10
+> 生成时间：2026-05-20　|　规则总数：42
 
-v5.0.0-alpha 阶段：仅已迁移到声明式 JSON 的规则在此列出。未迁移的规则仍由 `references/rules.md`（手写）覆盖。完整覆盖见 v5.0 GA。
+v5.0 GA：所有 ~51 条巡检规则（节点级 + 集群级）全部以声明式 JSON 描述，由 `scripts/rule-engine.js` 加载并求值；复杂规则通过 `scripts/rule-helpers/index.js` 注册的 handler 计算。详细 schema 见 [`scripts/rules/SCHEMA.md`](../scripts/rules/SCHEMA.md)。
+
+某条规则不适用于客户场景时，可在 `mysql-healthcheck.config.json` 加 `disabledRules: ["rule_id"]` 关闭；阈值类规则通过 `thresholds.<group>.<key>` 覆盖；任意规则可通过 `priorities.<rule_id>: "P3"` 改优先级。
 
 ---
 
@@ -11,43 +13,80 @@ v5.0.0-alpha 阶段：仅已迁移到声明式 JSON 的规则在此列出。未�
 
 | 维度 | 规则数 |
 |---|---|
-| 可用性 (availability) | 2 |
-| 持久化 (durability) | 5 |
-| 性能 (performance) | 1 |
-| 运维 (operations) | 2 |
+| 可用性 (availability) | 10 |
+| 持久化 (durability) | 10 |
+| 性能 (performance) | 8 |
+| 安全 (security) | 3 |
+| 数据设计 (dataDesign) | 6 |
+| 运维 (operations) | 5 |
 
 ## 可用性 (availability)
 
-### `innodb_hll_high`
+### `disks`
 
-**InnoDB History List Length 偏高**
+**磁盘使用率告警（含光驱/ISO/可移动介质识别）**
 
-> undo 历史清理滞后，长事务/长查询阻塞 purge 线程；过大会影响读性能并占用大量回滚段。
+> 高使用率磁盘是 P0 故障源；但需识别光驱/安装 ISO 等设计性 100% 占用，避免误报。
 
 | 字段 | 值 |
 |---|---|
 | 维度 | `availability` |
 | Scope | `node` |
-| 优先级（分级） | **P1 / P2** |
-| 文件 | `scripts/rules/availability/innodb_hll_high.json` |
+| Handler | `evalDisks` |
+| 文件 | `scripts/rules/availability/disks.json` |
 
-**触发（按顺序匹配，命中即停）**：
+**触发**：调用 helper `evalDisks`（详见 `scripts/rule-helpers/`）
 
-- P1：`node.innodb.historyListLength >= cfg.thresholds.innodb.hll_p1`
-- P2：`node.innodb.historyListLength > cfg.thresholds.innodb.hll_warn`
+---
 
-**说明文本**：
-> History List Length = {{node.innodb.historyListLength}}（超过 {{cfg.thresholds.innodb.hll_warn}} 预警线，undo 历史清理滞后）
+### `innodb_hll`
 
-**建议行动**：
-> 排查长事务/长查询和 purge 线程压力；优先确认 PROCESSLIST 与 INNODB TRX 中是否存在长期未提交事务
+**InnoDB History List Length 偏高**
 
-**示例 SQL / 配置**：
-```sql
-SHOW ENGINE INNODB STATUS\G
-SELECT * FROM information_schema.INNODB_TRX\G
-SHOW FULL PROCESSLIST;
-```
+> undo 历史清理滞后，长事务阻塞 purge；过大会拉低读性能并占用回滚段。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `availability` |
+| Scope | `node` |
+| Handler | `evalInnodbHll` |
+| 文件 | `scripts/rules/availability/innodb_hll.json` |
+
+**触发**：调用 helper `evalInnodbHll`（详见 `scripts/rule-helpers/`）
+
+---
+
+### `long_running_session`
+
+**长时间运行会话**
+
+> 可能阻塞 purge、消耗资源；需人工确认业务影响后再决定是否 KILL。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `availability` |
+| Scope | `node` |
+| Handler | `evalLongRunningSession` |
+| 文件 | `scripts/rules/availability/long_running_session.json` |
+
+**触发**：调用 helper `evalLongRunningSession`（详见 `scripts/rule-helpers/`）
+
+---
+
+### `max_connections_vs_memory`
+
+**max_connections × 单连接 buffer 超 RAM**
+
+> 并发上来时所有连接都按峰值分配，可能触发 OOM。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `availability` |
+| Scope | `node` |
+| Handler | `evalMaxConnectionsVsMemory` |
+| 文件 | `scripts/rules/availability/max_connections_vs_memory.json` |
+
+**触发**：调用 helper `evalMaxConnectionsVsMemory`（详见 `scripts/rule-helpers/`）
 
 ---
 
@@ -74,6 +113,107 @@ node.memUsagePct > cfg.thresholds.memory.high_pct
 
 **建议行动**：
 > 关注业务负载与缓冲池配置，必要时扩容
+
+---
+
+### `os_version_eol`
+
+**操作系统版本已停止维护**
+
+> EOL 系统不再接收安全补丁，存在合规与安全风险。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `availability` |
+| Scope | `node` |
+| Handler | `evalOsVersionEol` |
+| 文件 | `scripts/rules/availability/os_version_eol.json` |
+
+**触发**：调用 helper `evalOsVersionEol`（详见 `scripts/rule-helpers/`）
+
+---
+
+### `replication`
+
+**复制线程与延迟**
+
+> thread_down 立即影响可用性；secondsBehindMaster 分级反映恢复 RPO 风险。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `availability` |
+| Scope | `node` |
+| Handler | `evalReplication` |
+| 文件 | `scripts/rules/availability/replication.json` |
+
+**触发**：调用 helper `evalReplication`（详见 `scripts/rule-helpers/`）
+
+---
+
+### `role_read_only`
+
+**主从角色与 read_only 一致性**
+
+> 主库错误置为只读 → 写入失败；从库可写 → 数据漂移；DR 灾备节点切换设计需识别区分。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `availability` |
+| Scope | `node` |
+| Handler | `evalRoleReadOnly` |
+| 文件 | `scripts/rules/availability/role_read_only.json` |
+
+**触发**：调用 helper `evalRoleReadOnly`（详见 `scripts/rule-helpers/`）
+
+---
+
+### `slave_parallel_workers_zero`
+
+**从库未启用并行复制 + 集群数据量大**
+
+> 单线程应用 binlog 在大事务下会延迟积压。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `availability` |
+| Scope | `node` |
+| Handler | `evalSlaveParallelWorkersZero` |
+| 文件 | `scripts/rules/availability/slave_parallel_workers_zero.json` |
+
+**触发**：调用 helper `evalSlaveParallelWorkersZero`（详见 `scripts/rule-helpers/`）
+
+---
+
+### `swap_used`
+
+**Swap 已被使用**
+
+> OS 进入 swap，MySQL 响应延迟会显著拉长。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `availability` |
+| Scope | `node` |
+| 优先级 | **P1** |
+| 文件 | `scripts/rules/availability/swap_used.json` |
+
+**触发**：
+```
+node.swapUsed == true
+```
+
+**说明文本**：
+> Swap 已使用（Total {{node.swapTotal}} / Free {{node.swapFree}}）
+
+**建议行动**：
+> 将 vm.swappiness 调至 1 或禁用 Swap；同时核查 innodb_buffer_pool_size 是否过大挤占内存
+
+**示例 SQL / 配置**：
+```sql
+sysctl -w vm.swappiness=1
+echo "vm.swappiness=1" >> /etc/sysctl.conf
+# 或直接：swapoff -a（确认无 OOM 风险后）
+```
 
 ---
 
@@ -112,6 +252,64 @@ node.variables.innodb_doublewrite == 'OFF' || node.variables.innodb_doublewrite 
 SET GLOBAL innodb_doublewrite = ON;
 -- my.cnf:
 innodb_doublewrite = 1
+```
+
+---
+
+### `expire_logs_long`
+
+**expire_logs_days 保留过长**
+
+> 保留过长会占用磁盘空间；评估业务回滚需求。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `durability` |
+| Scope | `node` |
+| 优先级 | **P3** |
+| 文件 | `scripts/rules/durability/expire_logs_long.json` |
+
+**触发**：
+```
+node.variables.expire_logs_days != '0' && node.variables.expire_logs_days > cfg.thresholds.binlog.expire_logs_max_days
+```
+
+**说明文本**：
+> expire_logs_days = {{node.variables.expire_logs_days}}（保留过长，> {{cfg.thresholds.binlog.expire_logs_max_days}} 天）
+
+**建议行动**：
+> 评估磁盘成本与回滚需求
+
+---
+
+### `expire_logs_zero`
+
+**expire_logs_days = 0**
+
+> binlog 永不过期，存在磁盘打爆风险。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `durability` |
+| Scope | `node` |
+| 优先级 | **P1** |
+| 文件 | `scripts/rules/durability/expire_logs_zero.json` |
+
+**触发**：
+```
+node.variables.expire_logs_days == '0'
+```
+
+**说明文本**：
+> expire_logs_days = 0（binlog 永不过期，存在磁盘打爆风险）
+
+**建议行动**：
+> 建议改为 7-15 天；并尽快手工清理冗余 binlog
+
+**示例 SQL / 配置**：
+```sql
+SET GLOBAL expire_logs_days = 7;
+PURGE BINARY LOGS BEFORE NOW() - INTERVAL 7 DAY;
 ```
 
 ---
@@ -218,6 +416,110 @@ innodb_temp_data_file_path = ibtmp1:12M:autoextend:max:50G
 
 ---
 
+### `ibtmp1_oversize`
+
+**ibtmp1 超大**
+
+> 临时表空间无上限，已增长到危险体积。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `durability` |
+| Scope | `node` |
+| 优先级 | **P2** |
+| 文件 | `scripts/rules/durability/ibtmp1_oversize.json` |
+
+**触发**：
+```
+node.ibtmp1.sizeBytes > cfg.thresholds.innodb.ibtmp1_max_gb * 1073741824
+```
+
+**说明文本**：
+> ibtmp1 已增长至 {{node.ibtmp1.sizeFormatted}}
+
+**建议行动**：
+> 配置 innodb_temp_data_file_path 上限，维护窗口重启回收
+
+**示例 SQL / 配置**：
+```sql
+-- my.cnf:
+innodb_temp_data_file_path = ibtmp1:12M:autoextend:max:50G
+-- 重启 MySQL 后生效
+```
+
+---
+
+### `self_ref_slave_residue`
+
+**self-referencing slave 残留**
+
+> Master_Host 指向本机，通常是历史从库被提升为主后未 RESET SLAVE ALL。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `durability` |
+| Scope | `node` |
+| 优先级 | **P2** |
+| 文件 | `scripts/rules/durability/self_ref_slave_residue.json` |
+
+**触发**：
+```
+node.selfRefSlaveHost != null
+```
+
+**说明文本**：
+> 节点 {{node.ip}} 存在 SHOW SLAVE STATUS 残留（Master_Host 指向自身 {{node.selfRefSlaveHost}}），通常是历史从库被提升为主后未执行 RESET SLAVE ALL
+
+**建议行动**：
+> 执行 STOP SLAVE; RESET SLAVE ALL; 清理残留复制元数据，避免 SHOW SLAVE STATUS 输出误导监控/巡检工具
+
+**示例 SQL / 配置**：
+```sql
+STOP SLAVE;
+RESET SLAVE ALL;
+```
+
+---
+
+### `slave_skip_errors_set`
+
+**slave_skip_errors 已设置**
+
+> 复制错误被强制跳过，从库数据漂移；任何 binlog 错误都不会再暴露。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `durability` |
+| Scope | `node` |
+| 优先级 | **P0** |
+| 文件 | `scripts/rules/durability/slave_skip_errors_set.json` |
+
+**触发**：
+```
+node.slaveSkipErrorsSet == true
+```
+
+**说明文本**：
+> slave_skip_errors = {{node.slaveSkipErrorsValue}} — 复制错误被强制跳过，从库已经/将会与主库数据不一致；任何 binlog 错误都不会再暴露
+
+**值对照**：
+- 当前：`{{node.slaveSkipErrorsValue}}`
+- 推荐：`OFF`
+
+**建议行动**：
+> 建议尽快关闭；并用 pt-table-checksum / pt-table-sync 校验现有数据一致性
+
+**示例 SQL / 配置**：
+```sql
+# slave_skip_errors 不能动态改，必须修改 my.cnf:
+# 删除该行或改为：
+slave_skip_errors = OFF
+# 重启 slave 后校验数据：
+pt-table-checksum --replicate=percona.checksums h=<primary>,u=<user>,p=<pwd>
+```
+
+---
+
 ### `sync_binlog_weak`
 
 **sync_binlog 弱化**
@@ -252,6 +554,111 @@ SET GLOBAL sync_binlog = 1;
 
 ## 性能 (performance)
 
+### `bp_hit`
+
+**Buffer Pool 命中率分级**
+
+> 命中率 < 95% 严重；< 99% 关注。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `performance` |
+| Scope | `node` |
+| Handler | `evalBpHit` |
+| 文件 | `scripts/rules/performance/bp_hit.json` |
+
+**触发**：调用 helper `evalBpHit`（详见 `scripts/rule-helpers/`）
+
+---
+
+### `buffer_pool_size`
+
+**InnoDB Buffer Pool 与 RAM 比例**
+
+> 过小（< 40% RAM）→ 命中率低、IO 拖累；过大（> 80% RAM）→ OS/连接无余量，OOM/Swap 风险。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `performance` |
+| Scope | `node` |
+| Handler | `evalBufferPoolSize` |
+| 文件 | `scripts/rules/performance/buffer_pool_size.json` |
+
+**触发**：调用 helper `evalBufferPoolSize`（详见 `scripts/rule-helpers/`）
+
+---
+
+### `data_to_memory_ratio_high`
+
+**数据集 vs RAM 比例过高**
+
+> 工作集装不下 buffer pool，会持续磁盘 IO；架构层调整。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `performance` |
+| Scope | `node` |
+| Handler | `evalDataToMemoryRatio` |
+| 文件 | `scripts/rules/performance/data_to_memory_ratio_high.json` |
+
+**触发**：调用 helper `evalDataToMemoryRatio`（详见 `scripts/rule-helpers/`）
+
+---
+
+### `flush_method_not_o_direct`
+
+**Linux 下 innodb_flush_method 非 O_DIRECT**
+
+> OS page cache + buffer pool 双重缓存，浪费内存并增加冗余 IO。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `performance` |
+| Scope | `node` |
+| 优先级 | **P2** |
+| 文件 | `scripts/rules/performance/flush_method_not_o_direct.json` |
+
+**触发**：
+```
+node.flushMethodNotODirect == true
+```
+
+**说明文本**：
+> innodb_flush_method = {{node.variables.innodb_flush_method}} — Linux 下默认 fsync 会同时占用 OS page cache 与 buffer pool（双重缓存），浪费内存并增加冗余 IO
+
+**值对照**：
+- 当前：`{{node.variables.innodb_flush_method}}`
+- 推荐：`O_DIRECT`
+
+**建议行动**：
+> Linux 推荐 O_DIRECT；该参数不可动态修改，需重启 MySQL
+
+**示例 SQL / 配置**：
+```sql
+-- my.cnf:
+innodb_flush_method = O_DIRECT
+# 重启 MySQL 生效
+```
+
+---
+
+### `heavy_frag_tables`
+
+**高碎片大表**
+
+> 碎片≥70%+ 且 free≥100MB 的表，扫描成本浪费明显。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `performance` |
+| Scope | `node` |
+| Handler | `evalHeavyFragTables` |
+| 文件 | `scripts/rules/performance/heavy_frag_tables.json` |
+
+**触发**：调用 helper `evalHeavyFragTables`（详见 `scripts/rule-helpers/`）
+
+---
+
 ### `long_query_time_loose`
 
 **long_query_time 阈值过宽**
@@ -278,7 +685,331 @@ node.variables.long_query_time >= cfg.thresholds.sql.long_query_time_loose
 
 ---
 
+### `redo_log_too_small`
+
+**InnoDB redo log 偏小**
+
+> 频繁切换拉低写吞吐 + 放大恢复时间。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `performance` |
+| Scope | `node` |
+| Handler | `evalRedoLog` |
+| 文件 | `scripts/rules/performance/redo_log_too_small.json` |
+
+**触发**：调用 helper `evalRedoLog`（详见 `scripts/rule-helpers/`）
+
+---
+
+### `slow_queries_abs`
+
+**累计慢查询数量分级**
+
+> 1M+ 次需立即治理；100K-1M 次需定期分析。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `performance` |
+| Scope | `node` |
+| Handler | `evalSlowQueriesAbs` |
+| 文件 | `scripts/rules/performance/slow_queries_abs.json` |
+
+**触发**：调用 helper `evalSlowQueriesAbs`（详见 `scripts/rule-helpers/`）
+
+---
+
+## 安全 (security)
+
+### `auth_plugin_native_on_80`
+
+**MySQL 8.0+ 默认 mysql_native_password**
+
+> 派生 SHA1 已弃用；8.4 起默认 disabled。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `security` |
+| Scope | `node` |
+| 优先级 | **P2** |
+| 文件 | `scripts/rules/security/auth_plugin_native_on_80.json` |
+
+**触发**：
+```
+node.authPluginNativeOn80 == true
+```
+
+**说明文本**：
+> MySQL 8.0+ 默认认证插件仍为 mysql_native_password — 该插件派生 SHA1，已被弃用；8.4 起 mysql_native_password 默认 disabled
+
+**值对照**：
+- 当前：`mysql_native_password`
+- 推荐：`caching_sha2_password`
+
+**建议行动**：
+> 新账号默认走 caching_sha2_password；存量账号灰度迁移；客户端驱动需 ≥ Connector/J 8.0、PyMySQL 1.0+
+
+**示例 SQL / 配置**：
+```sql
+-- my.cnf:
+default_authentication_plugin = caching_sha2_password
+-- 单账号迁移：
+ALTER USER 'app'@'10.%' IDENTIFIED WITH caching_sha2_password BY '<pwd>';
+```
+
+---
+
+### `tls_weak_protocol`
+
+**TLS 配置含已废弃协议**
+
+> TLSv1 / TLSv1.1 存在已知漏洞，仅应保留 TLSv1.2+。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `security` |
+| Scope | `node` |
+| 优先级 | **P2** |
+| 文件 | `scripts/rules/security/tls_weak_protocol.json` |
+
+**触发**：
+```
+node.tlsWeakDetail != null
+```
+
+**说明文本**：
+> TLS 配置包含已废弃协议：{{node.tlsWeakDetail}}
+
+**建议行动**：
+> 禁用 TLSv1/TLSv1.1，仅保留 TLSv1.2+；同时确认业务客户端驱动版本兼容
+
+---
+
+### `wildcard_users`
+
+**host=% 用户安全分级**
+
+> root/admin → P0；复制/备份/监控 → P1；业务用户 → P2。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `security` |
+| Scope | `node` |
+| Handler | `evalWildcardUsers` |
+| 文件 | `scripts/rules/security/wildcard_users.json` |
+
+**触发**：调用 helper `evalWildcardUsers`（详见 `scripts/rule-helpers/`）
+
+---
+
+## 数据设计 (dataDesign)
+
+### `auto_increment_exhausting`
+
+**自增列接近耗尽**
+
+> INT UNSIGNED 上限 ~42 亿，耗尽后 INSERT 报错；建议提前扩 BIGINT。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `dataDesign` |
+| Scope | `node` |
+| Handler | `evalAutoIncrementExhausting` |
+| 文件 | `scripts/rules/dataDesign/auto_increment_exhausting.json` |
+
+**触发**：调用 helper `evalAutoIncrementExhausting`（详见 `scripts/rule-helpers/`）
+
+---
+
+### `charset_not_utf8mb4`
+
+**character_set_server 非 utf8mb4**
+
+> utf8 实际是 utf8mb3，已被 MySQL 标记 deprecated；无法存 emoji。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `dataDesign` |
+| Scope | `node` |
+| 优先级 | **P2** |
+| 文件 | `scripts/rules/dataDesign/charset_not_utf8mb4.json` |
+
+**触发**：
+```
+node.charsetNotUtf8mb4 == true
+```
+
+**说明文本**：
+> character_set_server = {{node.variables.character_set_server}}，无法存储 emoji / 4 字节字符；utf8 实际是 utf8mb3，已被 MySQL 标记为 deprecated
+
+**值对照**：
+- 当前：`{{node.variables.character_set_server}}`
+- 推荐：`utf8mb4`
+
+**建议行动**：
+> 服务端 + 库 + 表 + 列四级都需要改；新建表前先改服务端默认，存量表用 CONVERT TO
+
+**示例 SQL / 配置**：
+```sql
+-- my.cnf:
+character_set_server = utf8mb4
+collation_server = utf8mb4_0900_ai_ci  # MySQL 8.0
+# collation_server = utf8mb4_general_ci  # MySQL 5.7
+-- 库级转换：
+ALTER DATABASE <dbname> CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+```
+
+---
+
+### `ghost_tables`
+
+**gh-ost / pt-osc 残留 ghost 表**
+
+> 在线 DDL 未清理的中间表，占空间，确认无业务引用可 DROP。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `dataDesign` |
+| Scope | `node` |
+| Handler | `evalGhostTables` |
+| 文件 | `scripts/rules/dataDesign/ghost_tables.json` |
+
+**触发**：调用 helper `evalGhostTables`（详见 `scripts/rule-helpers/`）
+
+---
+
+### `no_pk_tables`
+
+**无主键表**
+
+> ROW 复制下全表扫描匹配，无法 MTS 并行；区分业务/临时降级。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `dataDesign` |
+| Scope | `node` |
+| Handler | `evalNoPkTables` |
+| 文件 | `scripts/rules/dataDesign/no_pk_tables.json` |
+
+**触发**：调用 helper `evalNoPkTables`（详见 `scripts/rule-helpers/`）
+
+---
+
+### `non_utf8_tables`
+
+**非 utf8/utf8mb4 表**
+
+> 无法存储 emoji / 4 字节字符；统一字符集减少业务踩坑。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `dataDesign` |
+| Scope | `node` |
+| Handler | `evalNonUtf8Tables` |
+| 文件 | `scripts/rules/dataDesign/non_utf8_tables.json` |
+
+**触发**：调用 helper `evalNonUtf8Tables`（详见 `scripts/rule-helpers/`）
+
+---
+
+### `sql_mode_missing_strict`
+
+**sql_mode 缺少 STRICT_TRANS_TABLES**
+
+> 宽松模式下错误数据被静默截断（INT 越界写 0、字符串超长被裁），存在数据完整性风险。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `dataDesign` |
+| Scope | `node` |
+| 优先级 | **P2** |
+| 文件 | `scripts/rules/dataDesign/sql_mode_missing_strict.json` |
+
+**触发**：
+```
+node.sqlModeMissingStrict == true
+```
+
+**说明文本**：
+> sql_mode 未包含 STRICT_TRANS_TABLES — 错误数据会被静默截断（INT 越界写 0、字符串超长被裁），存在数据完整性风险
+
+**值对照**：
+- 当前：`{{node.sqlModeStr}}`
+- 推荐：`加上 STRICT_TRANS_TABLES + NO_ENGINE_SUBSTITUTION`
+
+**建议行动**：
+> 评估业务影响（旧应用可能依赖宽松模式静默成功）后再切换；建议先在测试环境验证
+
+**示例 SQL / 配置**：
+```sql
+SET GLOBAL sql_mode = CONCAT(@@sql_mode, ',STRICT_TRANS_TABLES');
+-- 评估后持久化到 my.cnf:
+sql_mode = STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION,NO_ZERO_DATE,NO_ZERO_IN_DATE,ERROR_FOR_DIVISION_BY_ZERO
+```
+
+---
+
 ## 运维 (operations)
+
+### `lct_zero_linux`
+
+**Linux 下 lower_case_table_names=0**
+
+> 大小写敏感导致跨平台迁移容易报 ER_NO_SUCH_TABLE。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `operations` |
+| Scope | `node` |
+| 优先级 | **P3** |
+| 文件 | `scripts/rules/operations/lct_zero_linux.json` |
+
+**触发**：
+```
+node.lctZeroLinux == true
+```
+
+**说明文本**：
+> lower_case_table_names = 0（Linux 下大小写敏感，存在跨平台迁移风险）
+
+**建议行动**：
+> 若需 Windows/macOS 兼容，建议设为 1（注意：MySQL 8.0 只能在 initdb 时设置）
+
+---
+
+### `mysql_version_eol`
+
+**MySQL 版本接近/已 EOL**
+
+> EOL 版本不再有安全补丁，应规划升级。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `operations` |
+| Scope | `node` |
+| Handler | `evalMysqlVersionEol` |
+| 文件 | `scripts/rules/operations/mysql_version_eol.json` |
+
+**触发**：调用 helper `evalMysqlVersionEol`（详见 `scripts/rule-helpers/`）
+
+---
+
+### `param_inconsistent`
+
+**集群级参数不一致**
+
+> 节点间关键参数差异会导致故障切换后行为不可预测。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `operations` |
+| Scope | `cluster` |
+| Handler | `evalParamInconsistent` |
+| 文件 | `scripts/rules/operations/param_inconsistent.json` |
+
+**触发**：调用 helper `evalParamInconsistent`（详见 `scripts/rule-helpers/`）
+
+---
 
 ### `performance_schema_off`
 

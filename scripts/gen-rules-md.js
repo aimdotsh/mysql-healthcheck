@@ -4,8 +4,8 @@
 // 用法：
 //   node scripts/gen-rules-md.js [--out references/rules-auto.md]
 //
-// v5.0.0-alpha：只生成已迁移到 JSON 的规则。未迁移的 ~42 条仍在 extract.js 里，
-// 由 references/rules.md（手写）维护。v5.0 GA 完整迁移后此脚本接管全部规则手册。
+// v5.0 GA：全部 ~51 条规则均以 JSON 描述，本脚本是规则手册的唯一来源。
+// references/rules.md 退役为指针，跳转到本脚本产出的 references/rules-auto.md。
 
 'use strict';
 
@@ -50,9 +50,11 @@ const total = rules.length;
 out.push(`# 巡检规则手册（自动生成）`);
 out.push('');
 out.push(`> **本文档由 \`scripts/gen-rules-md.js\` 从 \`scripts/rules/*.json\` 自动生成。请勿手动编辑。**`);
-out.push(`> 生成时间：${now}　|　已迁移规则数：${total}`);
+out.push(`> 生成时间：${now}　|　规则总数：${total}`);
 out.push('');
-out.push(`v5.0.0-alpha 阶段：仅已迁移到声明式 JSON 的规则在此列出。未迁移的规则仍由 \`references/rules.md\`（手写）覆盖。完整覆盖见 v5.0 GA。`);
+out.push(`v5.0 GA：所有 ~51 条巡检规则（节点级 + 集群级）全部以声明式 JSON 描述，由 \`scripts/rule-engine.js\` 加载并求值；复杂规则通过 \`scripts/rule-helpers/index.js\` 注册的 handler 计算。详细 schema 见 [\`scripts/rules/SCHEMA.md\`](../scripts/rules/SCHEMA.md)。`);
+out.push('');
+out.push(`某条规则不适用于客户场景时，可在 \`mysql-healthcheck.config.json\` 加 \`disabledRules: ["rule_id"]\` 关闭；阈值类规则通过 \`thresholds.<group>.<key>\` 覆盖；任意规则可通过 \`priorities.<rule_id>: "P3"\` 改优先级。`);
 out.push('');
 out.push('---');
 out.push('');

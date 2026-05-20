@@ -6,6 +6,100 @@
 
 ---
 
+## [5.0.0] - 2026-05-20
+
+**v5.0 GA — 声明式规则引擎全量上线，extract.js 收缩 25%**。
+
+### 总览
+
+继 v5.0.0-alpha.1 的引擎 + 10 条规则后，本次一次性完成剩余 ~32 条规则的迁移、handler 注册、旧 JS 路径删除、规则手册自动化。
+
+| 指标 | 状态 |
+|---|---|
+| 规则迁移完成度 | **42 个 JSON 文件覆盖 ~55 个 issue type（全部）** |
+| 测试 | npm test 三套全绿（collector + 32 engine + report regression） |
+| 真实数据冒烟 | 6 节点 → **68 issues**（P0:7 / P1:19 / P2:37 / P3:5）— 与 v4.9.7 完全一致 |
+| extract.js 行数 | 3852 → **2920**（-932 行 / -24%） |
+| 旧 JS 规则路径 | 已完全删除（不再"双轨"，唯一真相是 JSON） |
+| 规则手册 | `references/rules-auto.md` 1092 行自动生成；`references/rules.md` 退役为指针 |
+
+### 改动详情
+
+#### 1. 规则全量迁移（42 个 rule JSON）
+
+按维度分布：
+- **availability** (10)：mem_high, swap_used, innodb_hll, disks, replication, role_read_only, max_connections_vs_memory, slave_parallel_workers_zero, os_version_eol, long_running_session
+- **durability** (10)：flush_log_weak, sync_binlog_weak, gtid_off, doublewrite_off, ibtmp1_no_max, ibtmp1_oversize, expire_logs_zero, expire_logs_long, slave_skip_errors_set, self_ref_slave_residue
+- **performance** (8)：long_query_time_loose, bp_hit, slow_queries_abs, buffer_pool_size, redo_log_too_small, data_to_memory_ratio_high, heavy_frag_tables, flush_method_not_o_direct
+- **operations** (5)：slow_log_off, performance_schema_off, mysql_version_eol, param_inconsistent, lct_zero_linux
+- **dataDesign** (6)：no_pk_tables, ghost_tables, non_utf8_tables, auto_increment_exhausting, charset_not_utf8mb4, sql_mode_missing_strict
+- **security** (3)：wildcard_users, tls_weak_protocol, auth_plugin_native_on_80
+
+部分规则一个 JSON 文件触发多个 issue type（如 `disks` → disk_critical / disk_high / disk_optical_full / disk_install_iso_full / disk_removable_full / disk_pseudo_fs_full；`wildcard_users` → wildcard_critical / wildcard_high / wildcard_medium；`replication` → repl_thread_down / repl_delay_high / repl_delay_low；`role_read_only` → master_readonly / dr_writable / slave_writable；`buffer_pool_size` → bp_too_small / bp_too_large）。
+
+#### 2. Handler 注册表（`scripts/rule-helpers/index.js` ~640 行）
+
+21 个 handler 覆盖 D/F 类复杂规则：evalDisks / evalReplication / evalRoleReadOnly / evalNoPkTables / evalGhostTables / evalNonUtf8Tables / evalHeavyFragTables / evalBufferPoolSize / evalRedoLog / evalMaxConnectionsVsMemory / evalDataToMemoryRatio / evalAutoIncrementExhausting / evalWildcardUsers / evalSlaveParallelWorkersZero / evalMysqlVersionEol / evalOsVersionEol / evalParamInconsistent / evalLongRunningSession / evalBpHit / evalSlowQueriesAbs / evalInnodbHll。
+
+#### 3. extract.js 节点预处理（`preprocessNode`）
+
+引擎不支持函数调用 / 正则的表达式，所以下列派生字段在节点级预计算：
+
+`label / memGB / bpMB / swapUsed / tlsWeakDetail / ibtmp1NoMax / isLinux / is80Plus / osEolStatus / mysqlEolStatus / sqlModeMissingStrict / sqlModeStr / bpHitPct / bpHitDisplay / longSessTop / isDrNode / selfRefSlaveHost / lctZeroLinux / charsetNotUtf8mb4 / flushMethodNotODirect / authPluginNativeOn80 / slaveSkipErrorsSet / slaveSkipErrorsValue`
+
+#### 4. 旧 JS push() 路径删除
+
+`analyzeIssues()` 之前 ~970 行的 if/else + push({...}) 规则逻辑全部删除，函数现在只剩：
+1. `preprocessNode()` 循环（一次性派生字段）
+2. `createRuleEngine().run()` 调用
+3. `aggregateIssues()` 调用
+
+`migrated` Set 与 `push()` 函数同步删除（不再需要双轨守卫）。
+
+#### 5. 规则手册自动化
+
+- `scripts/gen-rules-md.js` 文案更新为 GA 状态
+- `references/rules-auto.md` 1092 行覆盖全部规则
+- `references/rules.md` 退役为指针，跳转 `rules-auto.md` + 给出客户化配置入口表
+
+### 验证
+
+```bash
+cd scripts && npm test                                              # 全绿
+node extract.js /Users/liups/ai/skill/test/v3 --out /tmp/v5ga.json   # 68 issues
+diff <(jq -S '.issues | map(.type) | sort' /tmp/v49.json) \
+     <(jq -S '.issues | map(.type) | sort' /tmp/v5ga.json)           # 完全相同
+```
+
+### 客户能力增强
+
+| 能力 | v4.x | v5.0 GA |
+|---|---|---|
+| 查看规则定义 | 翻 extract.js 找 push() | 读 `scripts/rules/<dim>/*.json` 或 `rules-auto.md` |
+| 改阈值 | ✓（v4.8 起） | ✓ |
+| 禁用规则 | ✓（v4.8 起） | ✓ |
+| 覆盖优先级 | ✓（v4.8 起） | ✓ |
+| 新增规则 | 编辑 JS 代码 + PR | **写一个 JSON 文件 + PR**（简单情形） |
+| 审计可读性 | 中（夹在 3000 行 JS 里） | **高**（一规则一文件，平均 < 30 行） |
+| 单元测试 | 无 | 32 个引擎测试 |
+
+### 不变项
+
+- collector 脚本完全不变（`collectors/mysqlHealthCheckV3.0.sh`）
+- render.js 不变
+- data.json 结构不变
+- 报告 docx 内容字字相同（regression test 是金本位）
+- 三层 cfg 机制（thresholds / disabledRules / priorities）不变
+- backup_capability 仍走 `promoteAssessmentIssues` 独立路径
+
+### 下一步路线（v5.1+）
+
+- v5.1：**混合分层** — `scripts/narrate.js` 调 LLM 生成执行摘要 / 根因关联 / 措辞润色等 3-4 个软章节（详见 plan 文件 v5.0 章节）
+- v5.2+：可选「AI 二次审视」章节
+- v4.10 章节里发现的差距（sys 三视图 / Schema 反模式 3 规则 / 长事务 TOP / 元数据锁详情 / MGR 专章 / Audit Plugin 规则化）按价值独立排期
+
+---
+
 ## [5.0.0-alpha.1] - 2026-05-20
 
 **架构重构：JS 硬编码规则 → 声明式 JSON 规则引擎（v5.0 起步）**。
