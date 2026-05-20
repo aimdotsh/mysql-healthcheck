@@ -86,9 +86,19 @@
       animation: pulse 1.5s ease-in-out infinite;
     }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
-    .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 16px; }
-    .metric { padding: 10px 12px; background: #f9fafb; border-radius: 8px; }
-    .metric .label { font-size: 12px; color: #6b7280; margin-bottom: 4px; }
+    /* 6 个指标卡的自适应布局：
+       - 宽屏（≥ 901px）：6 列单行
+       - 中屏（481-900px）：3 列 2 行（平均分布，不再 5+1）
+       - 窄屏（≤ 480px）：2 列 3 行 */
+    .summary-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-bottom: 16px; }
+    @media (max-width: 900px) {
+      .summary-grid { grid-template-columns: repeat(3, 1fr); }
+    }
+    @media (max-width: 480px) {
+      .summary-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    .metric { padding: 10px 12px; background: #f9fafb; border-radius: 8px; min-width: 0; }
+    .metric .label { font-size: 12px; color: #6b7280; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .metric .value { font-size: 20px; font-weight: 600; color: #1f4e79; }
     .metric.p0 .value { color: #dc2626; }
     .metric.p1 .value { color: #ea580c; }
