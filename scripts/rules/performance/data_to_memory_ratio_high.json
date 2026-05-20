@@ -1,0 +1,7 @@
+{
+  "id": "data_to_memory_ratio_high",
+  "scope": "node",
+  "handler": "evalDataToMemoryRatio",
+  "title": "数据集 vs RAM 比例过高",
+  "rationale": "工作集装不下 buffer pool，会持续磁盘 IO；架构层调整。"
+}

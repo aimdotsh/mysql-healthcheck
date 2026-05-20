@@ -1,0 +1,12 @@
+{
+  "id": "swap_used",
+  "scope": "node",
+  "priority": "P1",
+  "title": "Swap 已被使用",
+  "rationale": "OS 进入 swap，MySQL 响应延迟会显著拉长。",
+  "trigger": "node.swapUsed == true",
+  "groupKeyTpl": "swap:{{node.ip}}",
+  "descriptionTpl": "Swap 已使用（Total {{node.swapTotal}} / Free {{node.swapFree}}）",
+  "actionTpl": "将 vm.swappiness 调至 1 或禁用 Swap；同时核查 innodb_buffer_pool_size 是否过大挤占内存",
+  "sqlTpl": "sysctl -w vm.swappiness=1\necho \"vm.swappiness=1\" >> /etc/sysctl.conf\n# 或直接：swapoff -a（确认无 OOM 风险后）"
+}

@@ -1,0 +1,12 @@
+{
+  "id": "self_ref_slave_residue",
+  "scope": "node",
+  "priority": "P2",
+  "title": "self-referencing slave 残留",
+  "rationale": "Master_Host 指向本机，通常是历史从库被提升为主后未 RESET SLAVE ALL。",
+  "trigger": "node.selfRefSlaveHost != null",
+  "groupKeyTpl": "self_ref_slave_residue:{{node.ip}}",
+  "descriptionTpl": "节点 {{node.ip}} 存在 SHOW SLAVE STATUS 残留（Master_Host 指向自身 {{node.selfRefSlaveHost}}），通常是历史从库被提升为主后未执行 RESET SLAVE ALL",
+  "actionTpl": "执行 STOP SLAVE; RESET SLAVE ALL; 清理残留复制元数据，避免 SHOW SLAVE STATUS 输出误导监控/巡检工具",
+  "sqlTpl": "STOP SLAVE;\nRESET SLAVE ALL;"
+}

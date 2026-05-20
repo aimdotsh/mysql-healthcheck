@@ -1,0 +1,7 @@
+{
+  "id": "wildcard_users",
+  "scope": "node",
+  "handler": "evalWildcardUsers",
+  "title": "host=% 用户安全分级",
+  "rationale": "root/admin → P0；复制/备份/监控 → P1；业务用户 → P2。"
+}

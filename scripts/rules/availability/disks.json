@@ -1,0 +1,7 @@
+{
+  "id": "disks",
+  "scope": "node",
+  "handler": "evalDisks",
+  "title": "磁盘使用率告警（含光驱/ISO/可移动介质识别）",
+  "rationale": "高使用率磁盘是 P0 故障源；但需识别光驱/安装 ISO 等设计性 100% 占用，避免误报。"
+}

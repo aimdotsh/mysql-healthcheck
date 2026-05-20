@@ -1,0 +1,7 @@
+{
+  "id": "buffer_pool_size",
+  "scope": "node",
+  "handler": "evalBufferPoolSize",
+  "title": "InnoDB Buffer Pool 与 RAM 比例",
+  "rationale": "过小（< 40% RAM）→ 命中率低、IO 拖累；过大（> 80% RAM）→ OS/连接无余量，OOM/Swap 风险。"
+}

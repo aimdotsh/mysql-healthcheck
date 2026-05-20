@@ -1,0 +1,7 @@
+{
+  "id": "no_pk_tables",
+  "scope": "node",
+  "handler": "evalNoPkTables",
+  "title": "无主键表",
+  "rationale": "ROW 复制下全表扫描匹配，无法 MTS 并行；区分业务/临时降级。"
+}

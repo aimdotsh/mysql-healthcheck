@@ -1,0 +1,7 @@
+{
+  "id": "slow_queries_abs",
+  "scope": "node",
+  "handler": "evalSlowQueriesAbs",
+  "title": "累计慢查询数量分级",
+  "rationale": "1M+ 次需立即治理；100K-1M 次需定期分析。"
+}

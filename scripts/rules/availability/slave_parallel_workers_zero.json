@@ -1,0 +1,7 @@
+{
+  "id": "slave_parallel_workers_zero",
+  "scope": "node",
+  "handler": "evalSlaveParallelWorkersZero",
+  "title": "从库未启用并行复制 + 集群数据量大",
+  "rationale": "单线程应用 binlog 在大事务下会延迟积压。"
+}

@@ -1,0 +1,14 @@
+{
+  "id": "flush_method_not_o_direct",
+  "scope": "node",
+  "priority": "P2",
+  "title": "Linux 下 innodb_flush_method 非 O_DIRECT",
+  "rationale": "OS page cache + buffer pool 双重缓存，浪费内存并增加冗余 IO。",
+  "trigger": "node.flushMethodNotODirect == true",
+  "groupKeyTpl": "flush_method_default",
+  "descriptionTpl": "innodb_flush_method = {{node.variables.innodb_flush_method}} — Linux 下默认 fsync 会同时占用 OS page cache 与 buffer pool（双重缓存），浪费内存并增加冗余 IO",
+  "currentValueTpl": "{{node.variables.innodb_flush_method}}",
+  "recommendedValueTpl": "O_DIRECT",
+  "actionTpl": "Linux 推荐 O_DIRECT；该参数不可动态修改，需重启 MySQL",
+  "sqlTpl": "-- my.cnf:\ninnodb_flush_method = O_DIRECT\n# 重启 MySQL 生效"
+}

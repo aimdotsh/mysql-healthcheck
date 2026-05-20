@@ -294,11 +294,24 @@ function evalSingleNodeRule(rule, ctx, helpersRegistry) {
     const fn = helpersRegistry && helpersRegistry[rule.handler];
     if (!fn) throw new Error(`unknown handler '${rule.handler}' in rule ${rule.id}`);
     const patches = fn({ ...ctx, rule }) || [];
-    // handler returns array of issues; each rendered separately
     const out = [];
+    // Handler patches can either:
+    //   (a) supply { priority, match: {...} } and let the rule's *Tpl fields render
+    //   (b) override any field directly (type / description / action / sql / dimension
+    //       / scope / groupKey / currentValue / recommendedValue / node /
+    //       needsConfirmation / affectedUsers) — useful for multi-variant rules where
+    //       one handler emits issues of different types (e.g. evalDisks → disk_critical
+    //       AND disk_high AND disk_optical_full).
+    const OVERRIDABLE = ['type', 'description', 'action', 'sql', 'dimension', 'scope',
+      'groupKey', 'currentValue', 'recommendedValue', 'node', 'needsConfirmation',
+      'affectedUsers'];
     for (const p of patches) {
       const pctx = { ...ctx, match: p.match || {}, value: p.value };
-      out.push(buildIssue(rule, p.priority || rule.priority, pctx));
+      const issue = buildIssue(rule, p.priority || rule.priority, pctx);
+      for (const k of OVERRIDABLE) {
+        if (p[k] !== undefined) issue[k] = p[k];
+      }
+      out.push(issue);
     }
     return out;
   }
@@ -350,38 +363,32 @@ function createEngine(opts = {}) {
     const overrides = cfg.priorities || {};
     const issues = [];
 
+    // Helper: filter issues by both rule.id and issue.type (so disabling a
+    // multi-variant rule by EITHER name works).
+    const applyOverrides = (rule, produced) => {
+      for (const it of produced) {
+        if (disabled.has(it.type)) continue;
+        if (overrides[it.type]) it.priority = overrides[it.type];
+        issues.push(it);
+      }
+    };
+
     for (const rule of rules) {
       if (disabled.has(rule.id)) continue;
 
       if (rule.scope === 'node') {
-        // Per-node trigger / tiers / handler evaluation.
-        // Note: even rules that emit "cluster-scoped" issues (output.scope =
-        // 'cluster') typically still iterate per node and rely on downstream
-        // groupKey dedup. They should declare rule.scope='node' here unless
-        // they truly need full cluster context (in which case use a handler).
         for (const node of nodes) {
           const ctx = { node, cluster, nodes, cfg };
           try {
-            const produced = evalSingleNodeRule(rule, ctx, helpers);
-            for (const it of produced) {
-              if (overrides[rule.id]) it.priority = overrides[rule.id];
-              issues.push(it);
-            }
+            applyOverrides(rule, evalSingleNodeRule(rule, ctx, helpers));
           } catch (e) {
             console.error(`[rule-engine] rule ${rule.id} failed on node ${node.ip || '?'}: ${e.message}`);
           }
         }
       } else if (rule.scope === 'cluster') {
-        // Single evaluation with full cluster context. Typically used with
-        // handler-based rules (D/F class), but trigger / tiers also supported
-        // for rules whose expression only references `cluster.*` or `nodes`.
         const ctx = { cluster, nodes, cfg };
         try {
-          const produced = evalSingleNodeRule(rule, ctx, helpers);
-          for (const it of produced) {
-            if (overrides[rule.id]) it.priority = overrides[rule.id];
-            issues.push(it);
-          }
+          applyOverrides(rule, evalSingleNodeRule(rule, ctx, helpers));
         } catch (e) {
           console.error(`[rule-engine] cluster rule ${rule.id} failed: ${e.message}`);
         }

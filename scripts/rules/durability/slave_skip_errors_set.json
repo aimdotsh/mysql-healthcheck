@@ -1,0 +1,14 @@
+{
+  "id": "slave_skip_errors_set",
+  "scope": "node",
+  "priority": "P0",
+  "title": "slave_skip_errors 已设置",
+  "rationale": "复制错误被强制跳过，从库数据漂移；任何 binlog 错误都不会再暴露。",
+  "trigger": "node.slaveSkipErrorsSet == true",
+  "groupKeyTpl": "slave_skip_errors:{{node.ip}}",
+  "descriptionTpl": "slave_skip_errors = {{node.slaveSkipErrorsValue}} — 复制错误被强制跳过，从库已经/将会与主库数据不一致；任何 binlog 错误都不会再暴露",
+  "currentValueTpl": "{{node.slaveSkipErrorsValue}}",
+  "recommendedValueTpl": "OFF",
+  "actionTpl": "建议尽快关闭；并用 pt-table-checksum / pt-table-sync 校验现有数据一致性",
+  "sqlTpl": "# slave_skip_errors 不能动态改，必须修改 my.cnf:\n# 删除该行或改为：\nslave_skip_errors = OFF\n# 重启 slave 后校验数据：\npt-table-checksum --replicate=percona.checksums h=<primary>,u=<user>,p=<pwd>"
+}

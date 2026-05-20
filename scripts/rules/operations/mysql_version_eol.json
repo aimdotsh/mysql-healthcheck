@@ -1,0 +1,7 @@
+{
+  "id": "mysql_version_eol",
+  "scope": "node",
+  "handler": "evalMysqlVersionEol",
+  "title": "MySQL 版本接近/已 EOL",
+  "rationale": "EOL 版本不再有安全补丁，应规划升级。"
+}

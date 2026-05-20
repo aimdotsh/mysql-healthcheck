@@ -1,0 +1,7 @@
+{
+  "id": "innodb_hll",
+  "scope": "node",
+  "handler": "evalInnodbHll",
+  "title": "InnoDB History List Length 偏高",
+  "rationale": "undo 历史清理滞后，长事务阻塞 purge；过大会拉低读性能并占用回滚段。"
+}

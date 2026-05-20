@@ -1,0 +1,7 @@
+{
+  "id": "redo_log_too_small",
+  "scope": "node",
+  "handler": "evalRedoLog",
+  "title": "InnoDB redo log 偏小",
+  "rationale": "频繁切换拉低写吞吐 + 放大恢复时间。"
+}

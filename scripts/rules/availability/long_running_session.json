@@ -1,0 +1,7 @@
+{
+  "id": "long_running_session",
+  "scope": "node",
+  "handler": "evalLongRunningSession",
+  "title": "长时间运行会话",
+  "rationale": "可能阻塞 purge、消耗资源；需人工确认业务影响后再决定是否 KILL。"
+}

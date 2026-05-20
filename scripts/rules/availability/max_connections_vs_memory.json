@@ -1,0 +1,7 @@
+{
+  "id": "max_connections_vs_memory",
+  "scope": "node",
+  "handler": "evalMaxConnectionsVsMemory",
+  "title": "max_connections × 单连接 buffer 超 RAM",
+  "rationale": "并发上来时所有连接都按峰值分配，可能触发 OOM。"
+}
