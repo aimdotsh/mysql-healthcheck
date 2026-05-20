@@ -6,6 +6,102 @@
 
 ---
 
+## [5.0.2] - 2026-05-20
+
+**SaaS 集群拓扑识别：脱敏数据 1 主 3 从被错判为 4 个孤立节点 — 修复 + 10 个单元测试**。
+
+### 客户反馈
+
+> 现在 saas 的分组有问题，`/Users/liups/ai/skill/test/v3/desensitized` 这里是一套集群，1 主 3 从，但是检测到了 4 个主库。
+
+### 根因
+
+样本数据是脱敏后的 1 主 3 从集群：
+- 主库 7.2：`server_id = 1`，hostname = `masked-hostname`
+- 3 个从库（128.101 / 7.3 / 7.4）：`Master_Host = masked-hostname`、`Master_Server_Id = 1`，自身 hostname 也是 `masked-hostname`
+
+`saas/lib/grouper.js` 的 `parseReplicationLight` 触发了 v4.5 的 self-reference 检测：
+
+```js
+// 旧代码（误判）
+const selfHost = (result.hostname || '').toLowerCase();  // = 'masked-hostname'
+if (mh === selfHost) {                                    // 'masked-hostname' === 'masked-hostname' → TRUE!
+  result.isSlave = false;                                 // 三个从库都被错判
+  result.selfRefResidue = true;
+}
+```
+
+→ 4 个文件全部 `isSlave = false` → union-find 找不到任何 slave→master 边 → 4 个孤立 cluster。
+
+### 修复
+
+#### 1) `parseReplicationLight`：hostname 维度 self-ref 判定下移
+
+旧 v4.5 逻辑「`masterHost == own hostname` → 自指残留」在脱敏场景下不可靠（多节点 hostname 相同）。改为：
+- 只在 IP 维度做 self-ref（`masterHost == own IP` / `localhost` / `127.0.0.1`），始终可靠
+- hostname 维度的 self-ref 判定挪到 `groupIntoClusters`（那里能看到批次内所有节点，可识别脱敏）
+- 顺便补抓 `Master_Server_Id`（Phase 2 需要）
+
+#### 2) `groupIntoClusters`：hostname 冲突感知 + server_id 兜底
+
+新逻辑：
+1. 先统计 hostname 出现次数，**冲突 hostname 不进 ipIndex**（脱敏批次直接绕过 hostname 映射）
+2. hostname 唯一时再回填 self-ref 判定（v4.5 合理场景仍能识别）
+3. **Phase 2 server_id 匹配**：
+   - 把同一 `masterHost` 字符串的 orphan slaves 先 union 在一起（脱敏占位符也是有用信号 — 同一占位符 = 大概率同一集群）
+   - 在非 slave 节点里找 `server_id == 该 slave 组的 Master_Server_Id` 的候选
+   - **唯一候选 → 自动 union**，标 `_inferredViaServerIdMatch: true`
+   - 多候选（如多集群都用默认 `server_id=1`）→ 不强行 union，slaves 仍同组，UI 端可显眼标注
+
+#### 3) 主库选取顺序优化
+
+集群内挑主库时优先级：
+1. `non-slave + server_id == 组内 slave 的 Master_Server_Id`（强信号）
+2. `role == primary && !isSlave`
+3. 有 `slaveIps`
+4. 唯一非 slave 节点
+5. 第一个节点（兜底）
+
+避免把 self-ref residue slave 或 slave 节点错挑为主库。
+
+### 验证
+
+```js
+// 客户场景：实际 /Users/liups/ai/skill/test/v3/desensitized
+node -e "
+  const {groupIntoClusters}=require('./saas/lib/grouper.js');
+  const fs=require('fs'), dir='/Users/liups/ai/skill/test/v3/desensitized';
+  console.log(groupIntoClusters(fs.readdirSync(dir).filter(f=>f.endsWith('.txt')).map(name=>({path:dir+'/'+name,originalName:name}))).map(g=>g.label));
+"
+// 修复前：['172.16.128.101（单节点）', '172.16.7.2（单节点）', '172.16.7.3（单节点）', '172.16.7.4（单节点）']
+// 修复后：['172.16.7.2 集群（一主3从（异步复制））']
+```
+
+### 新增测试（`tests/grouper_test.js`）
+
+10 个测试覆盖：
+1. parseReplicationLight 基础：primary 无 slave 段 / slave 抓 masterServerId
+2. IP self-ref 仍识别（v4.5 合理场景）
+3. localhost / 127.0.0.1 self-ref 仍识别
+4. **hostname 自指不再立即消除 isSlave**（修复点）
+5. 1 主 3 从（IP/hostname 都正常）→ 1 集群
+6. **脱敏：所有 hostname 都是 `masked-hostname` → server_id 兜底成功**（关键测试）
+7. **脱敏 + 多 `server_id=1` 候选 → slave 同组、主库不强行 union**（防御性）
+8. IP 自指 self-ref 残留：单文件批次 → 单节点 primary
+9. hostname 唯一时的 self-ref（v4.5 场景）仍能识别
+10. (覆盖全部 grouper 主要分支)
+
+`npm test` 现在跑 4 套测试：collector autodiscovery + 34 engine + **10 grouper** + report regression，全绿。
+
+### 影响范围
+
+- `saas/lib/grouper.js`：parseReplicationLight + groupIntoClusters 重写关键路径
+- `tests/grouper_test.js`：新增
+- `scripts/package.json`：测试脚本加入 grouper_test
+- **零影响**：CLI extract.js（grouper 只在 SaaS 端用）、规则引擎、render.js、报告 docx 内容
+
+---
+
 ## [5.0.1] - 2026-05-20
 
 **文件布局整合：42 个 JSON → 6 个按维度合并文件**。
