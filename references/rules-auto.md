@@ -33,7 +33,7 @@ v5.0 GA：所有 ~51 条巡检规则（节点级 + 集群级）全部以声明�
 | 维度 | `availability` |
 | Scope | `node` |
 | Handler | `evalDisks` |
-| 文件 | `scripts/rules/availability/disks.json` |
+| 文件 | `scripts/rules/availability.json` |
 
 **触发**：调用 helper `evalDisks`（详见 `scripts/rule-helpers/`）
 
@@ -50,7 +50,7 @@ v5.0 GA：所有 ~51 条巡检规则（节点级 + 集群级）全部以声明�
 | 维度 | `availability` |
 | Scope | `node` |
 | Handler | `evalInnodbHll` |
-| 文件 | `scripts/rules/availability/innodb_hll.json` |
+| 文件 | `scripts/rules/availability.json` |
 
 **触发**：调用 helper `evalInnodbHll`（详见 `scripts/rule-helpers/`）
 
@@ -67,7 +67,7 @@ v5.0 GA：所有 ~51 条巡检规则（节点级 + 集群级）全部以声明�
 | 维度 | `availability` |
 | Scope | `node` |
 | Handler | `evalLongRunningSession` |
-| 文件 | `scripts/rules/availability/long_running_session.json` |
+| 文件 | `scripts/rules/availability.json` |
 
 **触发**：调用 helper `evalLongRunningSession`（详见 `scripts/rule-helpers/`）
 
@@ -84,7 +84,7 @@ v5.0 GA：所有 ~51 条巡检规则（节点级 + 集群级）全部以声明�
 | 维度 | `availability` |
 | Scope | `node` |
 | Handler | `evalMaxConnectionsVsMemory` |
-| 文件 | `scripts/rules/availability/max_connections_vs_memory.json` |
+| 文件 | `scripts/rules/availability.json` |
 
 **触发**：调用 helper `evalMaxConnectionsVsMemory`（详见 `scripts/rule-helpers/`）
 
@@ -101,7 +101,7 @@ v5.0 GA：所有 ~51 条巡检规则（节点级 + 集群级）全部以声明�
 | 维度 | `availability` |
 | Scope | `node` |
 | 优先级 | **P1** |
-| 文件 | `scripts/rules/availability/mem_high.json` |
+| 文件 | `scripts/rules/availability.json` |
 
 **触发**：
 ```
@@ -127,7 +127,7 @@ node.memUsagePct > cfg.thresholds.memory.high_pct
 | 维度 | `availability` |
 | Scope | `node` |
 | Handler | `evalOsVersionEol` |
-| 文件 | `scripts/rules/availability/os_version_eol.json` |
+| 文件 | `scripts/rules/availability.json` |
 
 **触发**：调用 helper `evalOsVersionEol`（详见 `scripts/rule-helpers/`）
 
@@ -144,7 +144,7 @@ node.memUsagePct > cfg.thresholds.memory.high_pct
 | 维度 | `availability` |
 | Scope | `node` |
 | Handler | `evalReplication` |
-| 文件 | `scripts/rules/availability/replication.json` |
+| 文件 | `scripts/rules/availability.json` |
 
 **触发**：调用 helper `evalReplication`（详见 `scripts/rule-helpers/`）
 
@@ -161,7 +161,7 @@ node.memUsagePct > cfg.thresholds.memory.high_pct
 | 维度 | `availability` |
 | Scope | `node` |
 | Handler | `evalRoleReadOnly` |
-| 文件 | `scripts/rules/availability/role_read_only.json` |
+| 文件 | `scripts/rules/availability.json` |
 
 **触发**：调用 helper `evalRoleReadOnly`（详见 `scripts/rule-helpers/`）
 
@@ -178,7 +178,7 @@ node.memUsagePct > cfg.thresholds.memory.high_pct
 | 维度 | `availability` |
 | Scope | `node` |
 | Handler | `evalSlaveParallelWorkersZero` |
-| 文件 | `scripts/rules/availability/slave_parallel_workers_zero.json` |
+| 文件 | `scripts/rules/availability.json` |
 
 **触发**：调用 helper `evalSlaveParallelWorkersZero`（详见 `scripts/rule-helpers/`）
 
@@ -195,7 +195,7 @@ node.memUsagePct > cfg.thresholds.memory.high_pct
 | 维度 | `availability` |
 | Scope | `node` |
 | 优先级 | **P1** |
-| 文件 | `scripts/rules/availability/swap_used.json` |
+| 文件 | `scripts/rules/availability.json` |
 
 **触发**：
 ```
@@ -230,7 +230,7 @@ echo "vm.swappiness=1" >> /etc/sysctl.conf
 | 维度 | `durability` |
 | Scope | `node` |
 | 优先级 | **P1** |
-| 文件 | `scripts/rules/durability/doublewrite_off.json` |
+| 文件 | `scripts/rules/durability.json` |
 
 **触发**：
 ```
@@ -267,7 +267,7 @@ innodb_doublewrite = 1
 | 维度 | `durability` |
 | Scope | `node` |
 | 优先级 | **P3** |
-| 文件 | `scripts/rules/durability/expire_logs_long.json` |
+| 文件 | `scripts/rules/durability.json` |
 
 **触发**：
 ```
@@ -293,7 +293,7 @@ node.variables.expire_logs_days != '0' && node.variables.expire_logs_days > cfg.
 | 维度 | `durability` |
 | Scope | `node` |
 | 优先级 | **P1** |
-| 文件 | `scripts/rules/durability/expire_logs_zero.json` |
+| 文件 | `scripts/rules/durability.json` |
 
 **触发**：
 ```
@@ -325,7 +325,7 @@ PURGE BINARY LOGS BEFORE NOW() - INTERVAL 7 DAY;
 | 维度 | `durability` |
 | Scope | `node` |
 | 优先级 | **P1** |
-| 文件 | `scripts/rules/durability/flush_log_weak.json` |
+| 文件 | `scripts/rules/durability.json` |
 
 **触发**：
 ```
@@ -357,7 +357,7 @@ SET GLOBAL innodb_flush_log_at_trx_commit = 1;
 | 维度 | `durability` |
 | Scope | `node` |
 | 优先级 | **P2** |
-| 文件 | `scripts/rules/durability/gtid_off.json` |
+| 文件 | `scripts/rules/durability.json` |
 
 **触发**：
 ```
@@ -395,7 +395,7 @@ node.variables.gtid_mode == 'OFF'
 | 维度 | `durability` |
 | Scope | `node` |
 | 优先级 | **P2** |
-| 文件 | `scripts/rules/durability/ibtmp1_no_max.json` |
+| 文件 | `scripts/rules/durability.json` |
 
 **触发**：
 ```
@@ -427,7 +427,7 @@ innodb_temp_data_file_path = ibtmp1:12M:autoextend:max:50G
 | 维度 | `durability` |
 | Scope | `node` |
 | 优先级 | **P2** |
-| 文件 | `scripts/rules/durability/ibtmp1_oversize.json` |
+| 文件 | `scripts/rules/durability.json` |
 
 **触发**：
 ```
@@ -460,7 +460,7 @@ innodb_temp_data_file_path = ibtmp1:12M:autoextend:max:50G
 | 维度 | `durability` |
 | Scope | `node` |
 | 优先级 | **P2** |
-| 文件 | `scripts/rules/durability/self_ref_slave_residue.json` |
+| 文件 | `scripts/rules/durability.json` |
 
 **触发**：
 ```
@@ -492,7 +492,7 @@ RESET SLAVE ALL;
 | 维度 | `durability` |
 | Scope | `node` |
 | 优先级 | **P0** |
-| 文件 | `scripts/rules/durability/slave_skip_errors_set.json` |
+| 文件 | `scripts/rules/durability.json` |
 
 **触发**：
 ```
@@ -531,7 +531,7 @@ pt-table-checksum --replicate=percona.checksums h=<primary>,u=<user>,p=<pwd>
 | 维度 | `durability` |
 | Scope | `node` |
 | 优先级 | **P1** |
-| 文件 | `scripts/rules/durability/sync_binlog_weak.json` |
+| 文件 | `scripts/rules/durability.json` |
 
 **触发**：
 ```
@@ -565,7 +565,7 @@ SET GLOBAL sync_binlog = 1;
 | 维度 | `performance` |
 | Scope | `node` |
 | Handler | `evalBpHit` |
-| 文件 | `scripts/rules/performance/bp_hit.json` |
+| 文件 | `scripts/rules/performance.json` |
 
 **触发**：调用 helper `evalBpHit`（详见 `scripts/rule-helpers/`）
 
@@ -582,7 +582,7 @@ SET GLOBAL sync_binlog = 1;
 | 维度 | `performance` |
 | Scope | `node` |
 | Handler | `evalBufferPoolSize` |
-| 文件 | `scripts/rules/performance/buffer_pool_size.json` |
+| 文件 | `scripts/rules/performance.json` |
 
 **触发**：调用 helper `evalBufferPoolSize`（详见 `scripts/rule-helpers/`）
 
@@ -599,7 +599,7 @@ SET GLOBAL sync_binlog = 1;
 | 维度 | `performance` |
 | Scope | `node` |
 | Handler | `evalDataToMemoryRatio` |
-| 文件 | `scripts/rules/performance/data_to_memory_ratio_high.json` |
+| 文件 | `scripts/rules/performance.json` |
 
 **触发**：调用 helper `evalDataToMemoryRatio`（详见 `scripts/rule-helpers/`）
 
@@ -616,7 +616,7 @@ SET GLOBAL sync_binlog = 1;
 | 维度 | `performance` |
 | Scope | `node` |
 | 优先级 | **P2** |
-| 文件 | `scripts/rules/performance/flush_method_not_o_direct.json` |
+| 文件 | `scripts/rules/performance.json` |
 
 **触发**：
 ```
@@ -653,7 +653,7 @@ innodb_flush_method = O_DIRECT
 | 维度 | `performance` |
 | Scope | `node` |
 | Handler | `evalHeavyFragTables` |
-| 文件 | `scripts/rules/performance/heavy_frag_tables.json` |
+| 文件 | `scripts/rules/performance.json` |
 
 **触发**：调用 helper `evalHeavyFragTables`（详见 `scripts/rule-helpers/`）
 
@@ -670,7 +670,7 @@ innodb_flush_method = O_DIRECT
 | 维度 | `performance` |
 | Scope | `node` |
 | 优先级 | **P3** |
-| 文件 | `scripts/rules/performance/long_query_time_loose.json` |
+| 文件 | `scripts/rules/performance.json` |
 
 **触发**：
 ```
@@ -696,7 +696,7 @@ node.variables.long_query_time >= cfg.thresholds.sql.long_query_time_loose
 | 维度 | `performance` |
 | Scope | `node` |
 | Handler | `evalRedoLog` |
-| 文件 | `scripts/rules/performance/redo_log_too_small.json` |
+| 文件 | `scripts/rules/performance.json` |
 
 **触发**：调用 helper `evalRedoLog`（详见 `scripts/rule-helpers/`）
 
@@ -713,7 +713,7 @@ node.variables.long_query_time >= cfg.thresholds.sql.long_query_time_loose
 | 维度 | `performance` |
 | Scope | `node` |
 | Handler | `evalSlowQueriesAbs` |
-| 文件 | `scripts/rules/performance/slow_queries_abs.json` |
+| 文件 | `scripts/rules/performance.json` |
 
 **触发**：调用 helper `evalSlowQueriesAbs`（详见 `scripts/rule-helpers/`）
 
@@ -732,7 +732,7 @@ node.variables.long_query_time >= cfg.thresholds.sql.long_query_time_loose
 | 维度 | `security` |
 | Scope | `node` |
 | 优先级 | **P2** |
-| 文件 | `scripts/rules/security/auth_plugin_native_on_80.json` |
+| 文件 | `scripts/rules/security.json` |
 
 **触发**：
 ```
@@ -770,7 +770,7 @@ ALTER USER 'app'@'10.%' IDENTIFIED WITH caching_sha2_password BY '<pwd>';
 | 维度 | `security` |
 | Scope | `node` |
 | 优先级 | **P2** |
-| 文件 | `scripts/rules/security/tls_weak_protocol.json` |
+| 文件 | `scripts/rules/security.json` |
 
 **触发**：
 ```
@@ -796,7 +796,7 @@ node.tlsWeakDetail != null
 | 维度 | `security` |
 | Scope | `node` |
 | Handler | `evalWildcardUsers` |
-| 文件 | `scripts/rules/security/wildcard_users.json` |
+| 文件 | `scripts/rules/security.json` |
 
 **触发**：调用 helper `evalWildcardUsers`（详见 `scripts/rule-helpers/`）
 
@@ -815,7 +815,7 @@ node.tlsWeakDetail != null
 | 维度 | `dataDesign` |
 | Scope | `node` |
 | Handler | `evalAutoIncrementExhausting` |
-| 文件 | `scripts/rules/dataDesign/auto_increment_exhausting.json` |
+| 文件 | `scripts/rules/dataDesign.json` |
 
 **触发**：调用 helper `evalAutoIncrementExhausting`（详见 `scripts/rule-helpers/`）
 
@@ -832,7 +832,7 @@ node.tlsWeakDetail != null
 | 维度 | `dataDesign` |
 | Scope | `node` |
 | 优先级 | **P2** |
-| 文件 | `scripts/rules/dataDesign/charset_not_utf8mb4.json` |
+| 文件 | `scripts/rules/dataDesign.json` |
 
 **触发**：
 ```
@@ -872,7 +872,7 @@ ALTER DATABASE <dbname> CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 | 维度 | `dataDesign` |
 | Scope | `node` |
 | Handler | `evalGhostTables` |
-| 文件 | `scripts/rules/dataDesign/ghost_tables.json` |
+| 文件 | `scripts/rules/dataDesign.json` |
 
 **触发**：调用 helper `evalGhostTables`（详见 `scripts/rule-helpers/`）
 
@@ -889,7 +889,7 @@ ALTER DATABASE <dbname> CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 | 维度 | `dataDesign` |
 | Scope | `node` |
 | Handler | `evalNoPkTables` |
-| 文件 | `scripts/rules/dataDesign/no_pk_tables.json` |
+| 文件 | `scripts/rules/dataDesign.json` |
 
 **触发**：调用 helper `evalNoPkTables`（详见 `scripts/rule-helpers/`）
 
@@ -906,7 +906,7 @@ ALTER DATABASE <dbname> CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 | 维度 | `dataDesign` |
 | Scope | `node` |
 | Handler | `evalNonUtf8Tables` |
-| 文件 | `scripts/rules/dataDesign/non_utf8_tables.json` |
+| 文件 | `scripts/rules/dataDesign.json` |
 
 **触发**：调用 helper `evalNonUtf8Tables`（详见 `scripts/rule-helpers/`）
 
@@ -923,7 +923,7 @@ ALTER DATABASE <dbname> CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 | 维度 | `dataDesign` |
 | Scope | `node` |
 | 优先级 | **P2** |
-| 文件 | `scripts/rules/dataDesign/sql_mode_missing_strict.json` |
+| 文件 | `scripts/rules/dataDesign.json` |
 
 **触发**：
 ```
@@ -962,7 +962,7 @@ sql_mode = STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION,NO_ZERO_DATE,NO_ZERO_IN_DA
 | 维度 | `operations` |
 | Scope | `node` |
 | 优先级 | **P3** |
-| 文件 | `scripts/rules/operations/lct_zero_linux.json` |
+| 文件 | `scripts/rules/operations.json` |
 
 **触发**：
 ```
@@ -988,7 +988,7 @@ node.lctZeroLinux == true
 | 维度 | `operations` |
 | Scope | `node` |
 | Handler | `evalMysqlVersionEol` |
-| 文件 | `scripts/rules/operations/mysql_version_eol.json` |
+| 文件 | `scripts/rules/operations.json` |
 
 **触发**：调用 helper `evalMysqlVersionEol`（详见 `scripts/rule-helpers/`）
 
@@ -1005,7 +1005,7 @@ node.lctZeroLinux == true
 | 维度 | `operations` |
 | Scope | `cluster` |
 | Handler | `evalParamInconsistent` |
-| 文件 | `scripts/rules/operations/param_inconsistent.json` |
+| 文件 | `scripts/rules/operations.json` |
 
 **触发**：调用 helper `evalParamInconsistent`（详见 `scripts/rule-helpers/`）
 
@@ -1022,7 +1022,7 @@ node.lctZeroLinux == true
 | 维度 | `operations` |
 | Scope | `node` |
 | 优先级 | **P2** |
-| 文件 | `scripts/rules/operations/performance_schema_off.json` |
+| 文件 | `scripts/rules/operations.json` |
 
 **触发**：
 ```
@@ -1059,7 +1059,7 @@ performance_schema = ON
 | 维度 | `operations` |
 | Scope | `node` |
 | 优先级 | **P2** |
-| 文件 | `scripts/rules/operations/slow_log_off.json` |
+| 文件 | `scripts/rules/operations.json` |
 
 **触发**：
 ```

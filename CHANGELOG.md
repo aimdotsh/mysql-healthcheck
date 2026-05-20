@@ -6,6 +6,87 @@
 
 ---
 
+## [5.0.1] - 2026-05-20
+
+**文件布局整合：42 个 JSON → 6 个按维度合并文件**。
+
+### 客户反馈
+
+> ./scripts/rules/availability/innodb_hll.json 下面有一堆的 json 是不是 json 文件太多了，是否可以提供一个 json 文件，把 rule 都写到一个文件里呀
+
+### 改动
+
+v5.0 GA 时把 51 个 issue type 拆为 42 个独立 JSON 文件，分散在 6 个 dimension 子目录。客户实际使用时发现：
+- 看一个维度全貌要点开 10 个文件
+- 平均一个文件 < 20 行，boilerplate 占比偏高
+- 不利于浏览 / review / 编辑
+
+v5.0.1 合并为：
+
+```
+scripts/rules/
+├── SCHEMA.md
+├── availability.json    (10 rules)
+├── durability.json      (10 rules)
+├── performance.json     (8 rules)
+├── operations.json      (5 rules)
+├── dataDesign.json      (6 rules)
+└── security.json        (3 rules)
+```
+
+每个文件结构：
+
+```json
+{
+  "_schema": "mysql-healthcheck v5.0.1",
+  "_doc": "...",
+  "rules": [
+    { "id": "rule_a", "scope": "node", ... },
+    { "id": "rule_b", "scope": "node", ... }
+  ]
+}
+```
+
+### 实施
+
+1. **`scripts/rule-engine.js`** `loadRulesFromDir()` 重写：扫 `<rulesDir>/*.json`（top-level files only），按文件名推断 dimension，遍历 `rules: []` 数组；同时兼容旧的单条规则对象格式（向后兼容自定义规则）
+2. **`scripts/rules/<dim>.json` × 6 新增**（一次性脚本 `consolidate-rules.js` 合并完即删）
+3. **`scripts/rules/<dim>/*.json` × 42 + 6 子目录全部删除**
+4. **`scripts/rules/SCHEMA.md` §2** 更新文件组织说明
+5. **`tests/rule_engine_test.js`**：`tempRulesDir()` + `writeRulesFile()` 新帮助函数；现有测试改为新布局；新增 2 个测试覆盖「多 rule 同文件 dimension 一致」+「单 rule 对象向后兼容」（34 测试全绿）
+6. **`references/rules-auto.md`** 自动重新生成（仅"文件"列指向变化，规则内容字字相同）
+
+### 验证
+
+```bash
+cd scripts && npm test                                                  # 34 passed
+node extract.js /Users/liups/ai/skill/test/v3 --out /tmp/v501-check.json # 68 issues
+diff <(jq -S '.issues | map({type,priority,node}) | sort_by(.type)' \
+        /tmp/v5ga-final.json) \
+     <(jq -S '.issues | map({type,priority,node}) | sort_by(.type)' \
+        /tmp/v501-check.json)
+# Zero diff — 行为完全等价
+```
+
+### 客户体验对比
+
+| 操作 | v5.0 GA（42 文件） | v5.0.1（6 文件） |
+|---|---|---|
+| 看 availability 维度全貌 | 打开 10 个 < 20 行的小文件 | 打开 1 个 ~150 行的文件 |
+| review PR 加规则 | 在多个文件间切换 | 在一个文件内浏览 |
+| 编辑器开规则 | `cmd-p` 找 `mem_high` | 跳到 `availability.json` ctrl-f `mem_high` |
+| Git diff | 一规则一文件清晰 | 同维度多规则一起 diff |
+
+### 不变项
+
+- engine 接口完全不变（`createRuleEngine({ rulesDir }).run({ nodes, cfg })`）
+- handler 接口（`scripts/rule-helpers/index.js`）零改动
+- 客户配置（`disabledRules` / `priorities` / `thresholds`）按 rule id 工作，与文件布局无关
+- 报告 docx 内容字字相同（regression test 是金本位）
+- rules-auto.md 实际内容（除"文件"列）零变化
+
+---
+
 ## [5.0.0] - 2026-05-20
 
 **v5.0 GA — 声明式规则引擎全量上线，extract.js 收缩 25%**。
