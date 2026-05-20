@@ -1,0 +1,12 @@
+{
+  "id": "flush_log_weak",
+  "scope": "node",
+  "priority": "P1",
+  "title": "innodb_flush_log_at_trx_commit 弱化",
+  "rationale": "断电最多丢 1 秒事务。生产环境建议 1。",
+  "trigger": "node.variables.innodb_flush_log_at_trx_commit == '0'",
+  "groupKeyTpl": "flush_log_weak",
+  "descriptionTpl": "innodb_flush_log_at_trx_commit = 0（每秒一次刷盘，断电最多丢 1 秒事务）",
+  "actionTpl": "生产环境建议改为 1；如对写性能敏感可设为 2（重启不丢，断电可能丢）",
+  "sqlTpl": "SET GLOBAL innodb_flush_log_at_trx_commit = 1;\n-- 同时改 my.cnf 持久化"
+}

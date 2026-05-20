@@ -1,0 +1,11 @@
+{
+  "id": "mem_high",
+  "scope": "node",
+  "priority": "P1",
+  "title": "内存使用率过高",
+  "rationale": "OS 进入 swap 概率上升，MySQL 响应延迟显著增加。",
+  "trigger": "node.memUsagePct > cfg.thresholds.memory.high_pct",
+  "groupKeyTpl": "mem_high:{{node.ip}}",
+  "descriptionTpl": "内存使用率 {{node.memUsagePct}}% 偏高",
+  "actionTpl": "关注业务负载与缓冲池配置，必要时扩容"
+}

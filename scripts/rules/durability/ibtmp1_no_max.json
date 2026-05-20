@@ -1,0 +1,12 @@
+{
+  "id": "ibtmp1_no_max",
+  "scope": "node",
+  "priority": "P2",
+  "title": "innodb_temp_data_file_path 未设 :max: 上限",
+  "rationale": "ibtmp1 无上限会无限增长直至打爆磁盘。",
+  "trigger": "node.ibtmp1NoMax == true",
+  "groupKeyTpl": "ibtmp1_no_max",
+  "descriptionTpl": "innodb_temp_data_file_path 未配置 :max: 上限（{{node.variables.innodb_temp_data_file_path}}）",
+  "actionTpl": "建议加 :max:50G 上限，避免临时表无限增长打爆磁盘",
+  "sqlTpl": "-- my.cnf:\ninnodb_temp_data_file_path = ibtmp1:12M:autoextend:max:50G"
+}

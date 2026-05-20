@@ -1,0 +1,14 @@
+{
+  "id": "innodb_hll_high",
+  "scope": "node",
+  "title": "InnoDB History List Length 偏高",
+  "rationale": "undo 历史清理滞后，长事务/长查询阻塞 purge 线程；过大会影响读性能并占用大量回滚段。",
+  "tiers": [
+    { "when": "node.innodb.historyListLength >= cfg.thresholds.innodb.hll_p1", "priority": "P1" },
+    { "when": "node.innodb.historyListLength > cfg.thresholds.innodb.hll_warn", "priority": "P2" }
+  ],
+  "groupKeyTpl": "innodb_hll_high:{{node.ip}}",
+  "descriptionTpl": "History List Length = {{node.innodb.historyListLength}}（超过 {{cfg.thresholds.innodb.hll_warn}} 预警线，undo 历史清理滞后）",
+  "actionTpl": "排查长事务/长查询和 purge 线程压力；优先确认 PROCESSLIST 与 INNODB TRX 中是否存在长期未提交事务",
+  "sqlTpl": "SHOW ENGINE INNODB STATUS\\G\nSELECT * FROM information_schema.INNODB_TRX\\G\nSHOW FULL PROCESSLIST;"
+}

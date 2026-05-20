@@ -1,0 +1,12 @@
+{
+  "id": "sync_binlog_weak",
+  "scope": "node",
+  "priority": "P1",
+  "title": "sync_binlog 弱化",
+  "rationale": "binlog 依赖 OS 刷盘，断电/崩溃可能丢失事件。",
+  "trigger": "node.variables.sync_binlog == '0'",
+  "groupKeyTpl": "sync_binlog_weak",
+  "descriptionTpl": "sync_binlog = 0（binlog 依赖 OS 刷盘，可能丢失事件）",
+  "actionTpl": "主库建议设为 1（每事务刷盘）；高并发可考虑 100（每 100 事务）",
+  "sqlTpl": "SET GLOBAL sync_binlog = 1;\n-- 同时改 my.cnf 持久化"
+}

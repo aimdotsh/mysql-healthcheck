@@ -1,0 +1,12 @@
+{
+  "id": "slow_log_off",
+  "scope": "node",
+  "priority": "P2",
+  "title": "慢日志未开启",
+  "rationale": "无法做 SQL 性能审计；推荐生产环境强制开启。",
+  "trigger": "node.variables.slow_query_log == '0'",
+  "groupKeyTpl": "slow_log_off:{{node.ip}}",
+  "descriptionTpl": "slow_query_log = 0（慢日志未开启）",
+  "actionTpl": "建议开启慢日志，便于性能审计",
+  "sqlTpl": "SET GLOBAL slow_query_log = 1;\nSET GLOBAL long_query_time = 1;"
+}

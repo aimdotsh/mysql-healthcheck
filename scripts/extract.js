@@ -14,6 +14,8 @@
 
 const fs = require('fs');
 const path = require('path');
+const { createEngine: createRuleEngine } = require('./rule-engine.js');
+const ruleHelpers = require('./rule-helpers');
 
 // ============== CLI 参数解析 ==============
 const args = process.argv.slice(2);
@@ -2158,12 +2160,49 @@ function analyzeIssues(nodes) {
   // 旧规则 push() 调用零改动，新行为自动生效。
   const push = (it) => {
     if (it && it.type && DISABLED_RULES.has(it.type)) return;
+    // v5.0: 双轨保护 — 若规则已迁移到 rule-engine，JS 残留 push() 跳过，
+    // 避免引擎和旧路径同时产出造成重复 issue。
+    if (it && it.type && migrated.has(it.type)) return;
     if (it && it.type && PRIORITY_OVERRIDES[it.type]) {
       it.priority = PRIORITY_OVERRIDES[it.type];
     }
     raw.push({ status: '待处理', ...it });
   };
   const nodeLabel = (n) => `${n.ip}（${roleLabel(n.role)}）`;
+
+  // ============== v5.0 声明式规则引擎 ==============
+  // 第一批迁移到 scripts/rules/*.json 的规则在引擎里跑；其余仍走下面的旧 JS 路径。
+  // 引擎产出的 issue 走与 push() 等价的 disabledRules / priorities / status 处理。
+  // 详见 scripts/rules/SCHEMA.md。
+  //
+  // 关键约定：
+  // - 引擎按 rule.id 注入 issue；migrated 列表与此处一致，对应原 JS push() 必须删除
+  // - 节点需先打 label（{ip}（{role}）），引擎默认从 node.label 读 issue.node
+  // - DSL 表达不了的派生字段在此预计算（如 ibtmp1_no_max 用的正则）
+  const migrated = new Set([
+    'mem_high',
+    'innodb_hll_high',
+    'slow_log_off',
+    'long_query_time_loose',
+    'ibtmp1_no_max',
+    'flush_log_weak',
+    'sync_binlog_weak',
+    'gtid_off',
+    'doublewrite_off',
+    'performance_schema_off',
+  ]);
+  for (const n of nodes) {
+    n.label = nodeLabel(n);
+    const ibtmpPath = n.variables?.innodb_temp_data_file_path;
+    n.ibtmp1NoMax = !!(ibtmpPath && !/:max:/i.test(ibtmpPath));
+  }
+  const engineIssues = createRuleEngine({
+    rulesDir: path.join(__dirname, 'rules'),
+    helpers: ruleHelpers,
+  }).run({ nodes, cfg: hcConfig });
+  for (const it of engineIssues) {
+    raw.push({ status: '待处理', ...it });
+  }
 
   for (const n of nodes) {
     const v = n.variables || {};
