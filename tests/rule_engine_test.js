@@ -140,23 +140,48 @@ test('whitespace inside braces tolerated', () => {
 console.log('— rule loader & validator');
 // ─────────────────────────────────────────────────────────────
 
+// v5.0.1：测试 fixture 改为「<dim>.json 文件 + rules:[] 数组」布局
 function tempRulesDir() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rules-test-'));
-  fs.mkdirSync(path.join(dir, 'availability'));
-  fs.mkdirSync(path.join(dir, 'performance'));
-  return dir;
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'rules-test-'));
+}
+function writeRulesFile(dir, dimension, rules) {
+  fs.writeFileSync(path.join(dir, `${dimension}.json`), JSON.stringify({ rules }));
 }
 
-test('loadRulesFromDir: parses files and infers dimension from dir', () => {
+test('loadRulesFromDir: parses <dim>.json files and infers dimension from filename', () => {
   const dir = tempRulesDir();
-  fs.writeFileSync(path.join(dir, 'availability', 'mem_high.json'), JSON.stringify({
+  writeRulesFile(dir, 'availability', [{
     id: 'mem_high', scope: 'node', priority: 'P1',
     trigger: 'node.memUsagePct > 90',
     descriptionTpl: 'mem high on {{node.ip}}',
+  }]);
+  const rules = engine._loadRulesFromDir(dir);
+  assert.strictEqual(rules.length, 1);
+  assert.strictEqual(rules[0].dimension, 'availability'); // inferred from filename
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('loadRulesFromDir: multiple rules in one file all get same dimension', () => {
+  const dir = tempRulesDir();
+  writeRulesFile(dir, 'availability', [
+    { id: 'a', scope: 'node', priority: 'P1', trigger: 'node.x > 0', descriptionTpl: 'a' },
+    { id: 'b', scope: 'node', priority: 'P2', trigger: 'node.y > 0', descriptionTpl: 'b' },
+  ]);
+  const rules = engine._loadRulesFromDir(dir);
+  assert.strictEqual(rules.length, 2);
+  assert.ok(rules.every(r => r.dimension === 'availability'));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('loadRulesFromDir: backward-compat — single rule object (no rules wrapper)', () => {
+  const dir = tempRulesDir();
+  fs.writeFileSync(path.join(dir, 'performance.json'), JSON.stringify({
+    id: 'mem_high', scope: 'node', priority: 'P1',
+    trigger: 'node.memUsagePct > 90', descriptionTpl: 'x',
   }));
   const rules = engine._loadRulesFromDir(dir);
   assert.strictEqual(rules.length, 1);
-  assert.strictEqual(rules[0].dimension, 'availability'); // inferred from dir
+  assert.strictEqual(rules[0].dimension, 'performance');
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -193,11 +218,11 @@ console.log('— engine.run: end-to-end');
 
 test('trigger rule fires for matching nodes', () => {
   const dir = tempRulesDir();
-  fs.writeFileSync(path.join(dir, 'availability', 'mem_high.json'), JSON.stringify({
+  writeRulesFile(dir, 'availability', [{
     id: 'mem_high', scope: 'node', priority: 'P1',
     trigger: 'node.memUsagePct > cfg.thresholds.memory.high_pct',
     descriptionTpl: 'mem {{node.memUsagePct}}% on {{node.ip}}',
-  }));
+  }]);
   const e = engine.createEngine({ rulesDir: dir });
   const issues = e.run({
     nodes: [
@@ -215,14 +240,14 @@ test('trigger rule fires for matching nodes', () => {
 
 test('tiers rule picks highest priority match', () => {
   const dir = tempRulesDir();
-  fs.writeFileSync(path.join(dir, 'availability', 'disk.json'), JSON.stringify({
+  writeRulesFile(dir, 'availability', [{
     id: 'disk_full', scope: 'node',
     tiers: [
       { when: 'node.disk >= 90', priority: 'P0' },
       { when: 'node.disk >= 80', priority: 'P1' },
     ],
     descriptionTpl: 'disk={{node.disk}}%',
-  }));
+  }]);
   const e = engine.createEngine({ rulesDir: dir });
   const issues = e.run({
     nodes: [
@@ -241,11 +266,11 @@ test('tiers rule picks highest priority match', () => {
 
 test('disabledRules skips rule entirely', () => {
   const dir = tempRulesDir();
-  fs.writeFileSync(path.join(dir, 'availability', 'mem.json'), JSON.stringify({
+  writeRulesFile(dir, 'availability', [{
     id: 'mem_high', scope: 'node', priority: 'P1',
     trigger: 'node.x > 0',
     descriptionTpl: 'x',
-  }));
+  }]);
   const e = engine.createEngine({ rulesDir: dir });
   const issues = e.run({
     nodes: [{ ip: 'a', x: 5 }],
@@ -257,11 +282,11 @@ test('disabledRules skips rule entirely', () => {
 
 test('priorities override applied', () => {
   const dir = tempRulesDir();
-  fs.writeFileSync(path.join(dir, 'availability', 'mem.json'), JSON.stringify({
+  writeRulesFile(dir, 'availability', [{
     id: 'mem_high', scope: 'node', priority: 'P1',
     trigger: 'node.x > 0',
     descriptionTpl: 'x',
-  }));
+  }]);
   const e = engine.createEngine({ rulesDir: dir });
   const issues = e.run({
     nodes: [{ ip: 'a', x: 5 }],
@@ -273,10 +298,10 @@ test('priorities override applied', () => {
 
 test('handler rule invokes registered helper', () => {
   const dir = tempRulesDir();
-  fs.writeFileSync(path.join(dir, 'availability', 'h.json'), JSON.stringify({
+  writeRulesFile(dir, 'availability', [{
     id: 'my_handler_rule', scope: 'cluster', handler: 'myHelper', priority: 'P2',
     descriptionTpl: 'param {{match.name}} differs',
-  }));
+  }]);
   const helpers = {
     myHelper: () => [{ match: { name: 'foo' }, priority: 'P1' }],
   };
@@ -290,16 +315,18 @@ test('handler rule invokes registered helper', () => {
 
 test('broken rule does not crash run; warning to stderr', () => {
   const dir = tempRulesDir();
-  fs.writeFileSync(path.join(dir, 'availability', 'bad.json'), JSON.stringify({
-    id: 'bad_rule', scope: 'node', priority: 'P1',
-    trigger: 'node.x.y.z > 0',  // valid syntax, but throws if x is null at runtime? Actually we handle null safely
-    descriptionTpl: 'x',
-  }));
-  fs.writeFileSync(path.join(dir, 'availability', 'good.json'), JSON.stringify({
-    id: 'good_rule', scope: 'node', priority: 'P1',
-    trigger: 'node.x > 0',
-    descriptionTpl: 'x',
-  }));
+  writeRulesFile(dir, 'availability', [
+    {
+      id: 'bad_rule', scope: 'node', priority: 'P1',
+      trigger: 'node.x.y.z > 0',  // valid syntax, null-safe at runtime
+      descriptionTpl: 'x',
+    },
+    {
+      id: 'good_rule', scope: 'node', priority: 'P1',
+      trigger: 'node.x > 0',
+      descriptionTpl: 'x',
+    },
+  ]);
   const e = engine.createEngine({ rulesDir: dir });
   // even if bad_rule were truly broken, good_rule should still fire
   const issues = e.run({ nodes: [{ ip: 'a', x: 5 }] });
@@ -309,11 +336,11 @@ test('broken rule does not crash run; warning to stderr', () => {
 
 test('issue.node defaults to node.ip when no nodeTpl', () => {
   const dir = tempRulesDir();
-  fs.writeFileSync(path.join(dir, 'availability', 'r.json'), JSON.stringify({
+  writeRulesFile(dir, 'availability', [{
     id: 'r', scope: 'node', priority: 'P1',
     trigger: 'node.x > 0',
     descriptionTpl: 'x',
-  }));
+  }]);
   const e = engine.createEngine({ rulesDir: dir });
   const issues = e.run({ nodes: [{ ip: '10.0.0.1', x: 1 }] });
   assert.strictEqual(issues[0].node, '10.0.0.1');
@@ -322,12 +349,12 @@ test('issue.node defaults to node.ip when no nodeTpl', () => {
 
 test('groupKeyTpl renders with node context', () => {
   const dir = tempRulesDir();
-  fs.writeFileSync(path.join(dir, 'availability', 'r.json'), JSON.stringify({
+  writeRulesFile(dir, 'availability', [{
     id: 'r', scope: 'node', priority: 'P1',
     trigger: 'node.x > 0',
     groupKeyTpl: 'r:{{node.ip}}',
     descriptionTpl: 'x',
-  }));
+  }]);
   const e = engine.createEngine({ rulesDir: dir });
   const issues = e.run({ nodes: [{ ip: '1.1.1.1', x: 1 }] });
   assert.strictEqual(issues[0].groupKey, 'r:1.1.1.1');

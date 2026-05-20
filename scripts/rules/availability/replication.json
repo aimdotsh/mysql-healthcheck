@@ -1,7 +1,0 @@
-{
-  "id": "replication",
-  "scope": "node",
-  "handler": "evalReplication",
-  "title": "复制线程与延迟",
-  "rationale": "thread_down 立即影响可用性；secondsBehindMaster 分级反映恢复 RPO 风险。"
-}

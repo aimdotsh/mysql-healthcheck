@@ -9,25 +9,26 @@
 - **零 `eval`**：表达式用自实现的迷你 AST 求值器（安全 + 可审计）
 - **与 v4.8 三层配置兼容**：`{{cfg.thresholds.X.Y}}` 引用 hcConfig；`disabledRules` / `priorities` 覆盖机制保持不变
 
-## 2. 文件组织
+## 2. 文件组织（v5.0.1+）
 
 ```
 scripts/rules/
 ├── SCHEMA.md           ← 本文档
-├── availability/
-│   ├── mem_high.json
-│   ├── swap_used.json
-│   └── ...
-├── performance/
-│   ├── bp_hit_low.json
-│   └── ...
-├── durability/
-├── security/
-├── dataDesign/
-└── operations/
+├── availability.json   ← 10 条规则
+├── durability.json     ← 10 条规则
+├── performance.json    ←  8 条规则
+├── operations.json     ←  5 条规则
+├── dataDesign.json     ←  6 条规则
+└── security.json       ←  3 条规则
 ```
 
-**约定**：文件名 = 规则 `id` + `.json`；目录名 = 维度（dimension）。
+**约定**：
+- 每个 `<dim>.json` 文件 = 一个维度的所有规则
+- 文件顶层结构：`{ "_schema": "...", "_doc": "...", "rules": [ ... ] }`
+- `dimension` 由 **文件名**（去 `.json` 后缀）推断，不需要写到每条 rule 里
+- 引擎也兼容旧布局（v5.0 之前的「`<dim>/<id>.json` 子目录」），但新规则一律按上面布局组织
+
+> **v5.0 历史**：v5.0 GA 时采用 `<dim>/<id>.json` 一规则一文件布局，42 个文件分布在 6 个子目录。v5.0.1 起合并为 6 个按维度的 .json 文件，降低 review / 编辑 / scrolling 成本。
 
 ## 3. JSON Schema
 

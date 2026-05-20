@@ -241,25 +241,35 @@ function renderTpl(tpl, ctx) {
 // ─────────────────────────────────────────────────────────────────────────
 
 function loadRulesFromDir(rulesDir) {
+  // v5.0.1：布局从「<dim>/<id>.json 子目录」改为「<dim>.json 文件」。
+  // 每个 <dim>.json 文件含 `rules: [...]` 数组；dimension 由文件名（去 .json）推断。
+  // 引擎接口和 rule 字段语义完全保持不变。
   const rules = [];
   if (!fs.existsSync(rulesDir)) return rules;
-  const dims = fs.readdirSync(rulesDir, { withFileTypes: true })
-    .filter(d => d.isDirectory());
-  for (const dim of dims) {
-    const dimPath = path.join(rulesDir, dim.name);
-    const files = fs.readdirSync(dimPath).filter(f => f.endsWith('.json'));
-    for (const f of files) {
-      const full = path.join(dimPath, f);
-      let rule;
-      try {
-        rule = JSON.parse(fs.readFileSync(full, 'utf8'));
-      } catch (e) {
-        throw new Error(`failed to parse rule ${full}: ${e.message}`);
-      }
+  const files = fs.readdirSync(rulesDir, { withFileTypes: true })
+    .filter(d => d.isFile() && d.name.endsWith('.json'))
+    .map(d => d.name)
+    .sort();
+  for (const file of files) {
+    const full = path.join(rulesDir, file);
+    let payload;
+    try {
+      payload = JSON.parse(fs.readFileSync(full, 'utf8'));
+    } catch (e) {
+      throw new Error(`failed to parse rule file ${full}: ${e.message}`);
+    }
+    const dimension = file.replace(/\.json$/, '');
+    // 兼容两种顶层结构：
+    //   (a) v5.0.1：{ rules: [...] }
+    //   (b) 旧 v5.0：单条规则对象（向后兼容自定义规则）
+    const ruleArray = Array.isArray(payload?.rules) ? payload.rules
+                    : Array.isArray(payload)        ? payload
+                    : [payload];
+    for (const rule of ruleArray) {
+      if (!rule || typeof rule !== 'object') continue;
       validateRule(rule, full);
       rule._sourceFile = full;
-      // dimension from dir always wins (single source of truth)
-      rule.dimension = dim.name;
+      rule.dimension = dimension;
       rules.push(rule);
     }
   }

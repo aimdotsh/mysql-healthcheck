@@ -1,7 +1,0 @@
-{
-  "id": "param_inconsistent",
-  "scope": "cluster",
-  "handler": "evalParamInconsistent",
-  "title": "集群级参数不一致",
-  "rationale": "节点间关键参数差异会导致故障切换后行为不可预测。"
-}

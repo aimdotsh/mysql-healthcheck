@@ -1,7 +1,0 @@
-{
-  "id": "ghost_tables",
-  "scope": "node",
-  "handler": "evalGhostTables",
-  "title": "gh-ost / pt-osc 残留 ghost 表",
-  "rationale": "在线 DDL 未清理的中间表，占空间，确认无业务引用可 DROP。"
-}

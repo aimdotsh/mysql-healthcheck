@@ -1,7 +1,0 @@
-{
-  "id": "os_version_eol",
-  "scope": "node",
-  "handler": "evalOsVersionEol",
-  "title": "操作系统版本已停止维护",
-  "rationale": "EOL 系统不再接收安全补丁，存在合规与安全风险。"
-}

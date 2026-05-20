@@ -1,7 +1,0 @@
-{
-  "id": "heavy_frag_tables",
-  "scope": "node",
-  "handler": "evalHeavyFragTables",
-  "title": "高碎片大表",
-  "rationale": "碎片≥70%+ 且 free≥100MB 的表，扫描成本浪费明显。"
-}

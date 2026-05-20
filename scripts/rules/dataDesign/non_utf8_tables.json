@@ -1,7 +1,0 @@
-{
-  "id": "non_utf8_tables",
-  "scope": "node",
-  "handler": "evalNonUtf8Tables",
-  "title": "非 utf8/utf8mb4 表",
-  "rationale": "无法存储 emoji / 4 字节字符；统一字符集减少业务踩坑。"
-}

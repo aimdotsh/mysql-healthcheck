@@ -1,7 +1,0 @@
-{
-  "id": "role_read_only",
-  "scope": "node",
-  "handler": "evalRoleReadOnly",
-  "title": "主从角色与 read_only 一致性",
-  "rationale": "主库错误置为只读 → 写入失败；从库可写 → 数据漂移；DR 灾备节点切换设计需识别区分。"
-}

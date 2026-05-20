@@ -1,7 +1,0 @@
-{
-  "id": "auto_increment_exhausting",
-  "scope": "node",
-  "handler": "evalAutoIncrementExhausting",
-  "title": "自增列接近耗尽",
-  "rationale": "INT UNSIGNED 上限 ~42 亿，耗尽后 INSERT 报错；建议提前扩 BIGINT。"
-}

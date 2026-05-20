@@ -1,7 +1,0 @@
-{
-  "id": "bp_hit",
-  "scope": "node",
-  "handler": "evalBpHit",
-  "title": "Buffer Pool 命中率分级",
-  "rationale": "命中率 < 95% 严重；< 99% 关注。"
-}
