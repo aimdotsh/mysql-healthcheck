@@ -1,6 +1,6 @@
 {
   "name": "mysql-healthcheck",
-  "version": "4.9.7",
+  "version": "5.0.0-alpha.1",
   "private": true,
   "description": "Detailed MySQL monthly inspection report generator (txt/html → docx)",
   "bin": {
@@ -11,6 +11,7 @@
     "extract": "node extract.js",
     "render": "node render.js",
     "build": "node build.js",
+    "gen-rules-md": "node gen-rules-md.js",
     "test": "bash ../tests/collector_autodiscovery_test.sh && node ../tests/rule_engine_test.js && node ../tests/report_regression_test.js"
   },
   "dependencies": {

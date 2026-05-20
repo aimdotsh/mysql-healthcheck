@@ -6,6 +6,83 @@
 
 ---
 
+## [5.0.0-alpha.1] - 2026-05-20
+
+**架构重构：JS 硬编码规则 → 声明式 JSON 规则引擎（v5.0 起步）**。
+
+### 缘由
+
+v4.9.7 时 `scripts/extract.js` 3000+ 行、52 条规则全部 if/else 硬编码，违背了 skill 「知识沉淀为可读资产」的设计初衷。本次启动 v5.0 大重构，将规则抽出为 `scripts/rules/<dim>/<id>.json`，让规则可被 LLM / 客户 / 团队成员审阅、贡献、定制。
+
+### 路径选择
+
+经讨论确认（详见 `plans/users-liups-workbuddy-skills-mysql-insp-rosy-beaver.md` v5.0 决策日志）：
+
+- **A + B 组合**：先做声明式规则引擎（A），后续 v5.1 加 LLM 写软章节（B）
+- **混合 DSL**：A/B/C/E 类纯 JSON；D/F 类用 `handler` 调注册 helper
+- **双轨并行**：旧 JS 规则不删，运行时 `migrated` 集合双向门控，回滚成本接近零
+- **首发 v5.0.0-alpha**：引擎 + 10 条 A/B 类规则迁移 + rules.md 自动生成
+
+### 本次改动
+
+#### 1. 声明式规则引擎 (`scripts/rule-engine.js`，~340 行)
+
+- 自实现迷你 AST：tokenizer → recursive-descent parser → evaluator，**零 `eval` / 零 `Function` 构造**
+- 支持表达式：6 个比较 (`>` `<` `>=` `<=` `==` `!=`) / 3 个逻辑 (`&&` `||` `!`) / 4 个算术 (`+` `-` `*` `/`) / 分组 `()`
+- 字面量：数字 / 字符串 / `true` / `false` / `null`
+- 路径访问：`node.foo.bar` / `cfg.thresholds.X.Y`
+- **MySQL-like NULL 语义**：缺失字段比较 → false（绝不误触发）
+- 三种触发：`trigger` (单条件) / `tiers` (分级) / `handler` (复杂 JS)
+- Mustache-lite 模板：`{{path}}` 插值
+- 异常隔离：单条规则崩溃不影响其他规则
+- 完全兼容 v4.8 的 `disabledRules` / `priorities` 三层覆盖
+
+#### 2. Schema 文档 (`scripts/rules/SCHEMA.md`)
+
+定义 JSON 规则的字段、类型、表达式语法、模板规则、handler 接口、迁移映射表。
+
+#### 3. 10 条规则迁移（A/B 类）
+
+| 维度 | 规则 |
+|---|---|
+| availability | `mem_high`, `innodb_hll_high`（tiered） |
+| durability | `flush_log_weak`, `sync_binlog_weak`, `gtid_off`, `doublewrite_off`, `ibtmp1_no_max` |
+| performance | `long_query_time_loose` |
+| operations | `slow_log_off`, `performance_schema_off` |
+
+对应 JS 块在 extract.js 仍存在但运行时被 `migrated` 集合拦截（双轨保护，便于回滚）。
+
+#### 4. Helper 注册骨架 (`scripts/rule-helpers/index.js`)
+
+D/F 类复杂规则（`param_inconsistent` / `max_connections_vs_memory` / `auto_increment_exhausting` 等 ~11 条）后续在 v5.0.0-beta 通过此注册表接入。
+
+#### 5. 单元测试 (`tests/rule_engine_test.js`)
+
+32 个测试覆盖 tokenizer / 表达式求值 / NULL 安全 / 模板渲染 / 规则加载与校验 / 端到端 `run()` / cfg 三层覆盖 / 异常隔离 / 默认 node 字段。
+
+#### 6. 规则手册自动生成 (`scripts/gen-rules-md.js`)
+
+读 `scripts/rules/*.json` → 生成 `references/rules-auto.md`（按维度分组、含触发条件、说明文本、SQL 模板）。v5.0 GA 时将完整替代手写 `references/rules.md`。
+
+```bash
+npm run gen-rules-md --prefix scripts  # 任意时刻重新生成
+```
+
+### 验证
+
+- `npm test --prefix scripts` 三套全绿（collector + engine 32 测试 + report regression）
+- 真实采集数据冒烟：6 节点 → 68 issue（P0:7 / P1:19 / P2:37 / P3:5），10 条迁移规则全部通过引擎正确产出
+- 行为零变化：报告 docx 内容完全相同，HLL issue 的 `node` 字段仍是 `"172.16.7.2（主库）"`
+
+### 后续
+
+- **v5.0.0-alpha.N**：每轮迁移 8-10 条规则，预计 3-4 轮覆盖完 C/E 类（41 条）
+- **v5.0.0-beta**：D/F 类（11 条复杂规则）通过 handler 接入
+- **v5.0.0**：rules-auto.md 完整覆盖，手写 rules.md 退役；旧 JS 路径删除
+- **v5.1**：LLM 写软章节（执行摘要 / 根因关联）
+
+---
+
 ## [4.9.7] - 2026-05-18
 
 **13.2 / 13.3 索引章节交付完整化 — 截断提示 + 完整数据出口 + 三步处置流程**。
