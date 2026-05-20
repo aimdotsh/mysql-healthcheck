@@ -21,9 +21,10 @@ services:
     restart: unless-stopped
 
     # 仅绑本地回环 — 由 host 上的 nginx 转发；
-    # 若不需要 nginx（内网 / 自带 LB），改成 "0.0.0.0:3000:3000"
+    # 想直接对外暴露，把 HOST_BIND 设为 0.0.0.0（不推荐 — 无 HTTPS / 无鉴权）
+    # 想换宿主机端口，改 HOST_PORT（容器内端口 PORT 一般保持 3000 即可）
     ports:
-      - "127.0.0.1:3000:3000"
+      - "${HOST_BIND:-127.0.0.1}:${HOST_PORT:-3000}:3000"
 
     environment:
       NODE_ENV: production
