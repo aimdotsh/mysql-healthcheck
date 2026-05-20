@@ -6,6 +6,102 @@
 
 ---
 
+## [5.0.5] - 2026-05-20
+
+**修复：API_KEY 启用后 Web UI 整体被 401 拦截 + 加 UI 输入条**。
+
+### 客户反馈
+
+> 现在访问报：`{"error":"API key required (X-API-Key header)"}`
+
+### 根因
+
+`saas/server.js` 的 `requireApiKey` 中间件注释写"仅对 /api/* 生效"但代码没真做路径过滤：
+
+```js
+function requireApiKey(req, res, next) {
+  if (!API_KEY) return next();
+  if (req.path === '/api/v1/health') return next();
+  // ❌ 漏了：对静态 UI（/、/app.js、/static/*）也强制要求 key
+  const provided = req.get('X-API-Key') || req.query.api_key;
+  if (provided !== API_KEY) return res.status(401).json(...);
+}
+```
+
+→ 浏览器打开 `/` 就 401，UI 都看不到，更别说填 key。
+
+### 修复
+
+#### 1. `saas/server.js` 路径过滤补全
+
+```js
+if (!req.path.startsWith('/api/')) return next();   // 静态 UI 一律放行
+if (req.path === '/api/v1/health') return next();   // 健康检查 / LB 探针放行
+```
+
+#### 2. 新增 `GET /api/v1/auth/check` 端点
+
+供 Web UI 验证用户输入的 API Key 是否正确。通过 requireApiKey 后能返回 200，否则 401。
+
+#### 3. Web UI 新增 API Key 输入条（`saas/public/`）
+
+- 启动后 fetch `/api/v1/health` 看 `apiKeyEnabled` — false 隐藏；true 显示橙色输入条
+- localStorage 持久化（key: `mysql-hc-saas-api-key`），刷新页面不丢
+- 输入条含「保存」+「清除」按钮 + 状态提示
+- 回车也能保存
+- 验证成功 → 绿色对勾；错误 → 红色叉
+
+#### 4. 所有前端调用走 `apiFetch` 统一塞 X-API-Key
+
+```js
+async function apiFetch(url, opts = {}) {
+  const headers = new Headers(opts.headers || {});
+  if (apiKey) headers.set('X-API-Key', apiKey);
+  const resp = await fetch(url, { ...opts, headers });
+  if (resp.status === 401) showApiKeyBar('error', 'API Key 不正确或缺失，请填写');
+  return resp;
+}
+```
+
+#### 5. 下载链接（`<a href>`）改用 query 参数
+
+浏览器对 anchor click 不能加自定义 header，必须用 query 参数 `?api_key=xxx`。已有的服务端 `req.query.api_key` 支持配合：
+
+```js
+function withApiKey(url) {
+  if (!apiKey) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}api_key=${encodeURIComponent(apiKey)}`;
+}
+```
+
+7 个下载 URL（docx / data.json / 批量 zip × 多处）全部包了一层 `withApiKey()`。
+
+### 验证（7 个用例本地 Docker 测试全过）
+
+| 请求 | 预期 | 结果 |
+|---|---|---|
+| `GET /` | 200 HTML（静态 UI） | ✓ |
+| `GET /api/v1/health` | 200 JSON（公开） | ✓ |
+| `GET /api/v1/history` 没 key | 401 | ✓ |
+| `GET /api/v1/history` 错 key | 401 | ✓ |
+| `GET /api/v1/history` 对 key (header) | 200 | ✓ |
+| `GET /api/v1/auth/check` 对 key | 200 `{ok:true}` | ✓ |
+| `GET /api/v1/history?api_key=...` | 200（query 也支持） | ✓ |
+
+### 用户升级方式
+
+```bash
+cd /opt/mysql-healthcheck
+git pull origin SaaS
+docker-compose up -d --build
+# 浏览器开 http://<your-host>:18080
+# 首次会看到橙色 API Key 输入条 → 粘贴 .env 里的 API_KEY → 保存
+# 之后 localStorage 持久化，刷新不丢
+```
+
+---
+
 ## [5.0.4] - 2026-05-20
 
 **生产级 Docker 部署套件：refined Dockerfile + docker-compose.yml + 完整运维文档**。

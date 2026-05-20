@@ -1,6 +1,28 @@
 (() => {
   'use strict';
 
+  // ============== API Key 管理（localStorage 持久化） ==============
+  const API_KEY_STORAGE = 'mysql-hc-saas-api-key';
+  let apiKey = localStorage.getItem(API_KEY_STORAGE) || '';
+
+  // 统一的 fetch 封装 — 自动塞 X-API-Key 头；401 时引导填 key
+  async function apiFetch(url, opts = {}) {
+    const headers = new Headers(opts.headers || {});
+    if (apiKey) headers.set('X-API-Key', apiKey);
+    const resp = await fetch(url, { ...opts, headers });
+    if (resp.status === 401) {
+      showApiKeyBar('error', 'API Key 不正确或缺失，请填写');
+    }
+    return resp;
+  }
+
+  // 下载链接（<a href>）无法设置自定义 header，只能用 query 参数
+  function withApiKey(url) {
+    if (!apiKey) return url;
+    const sep = url.includes('?') ? '&' : '?';
+    return `${url}${sep}api_key=${encodeURIComponent(apiKey)}`;
+  }
+
   // ============== DOM refs ==============
   const dropZone = document.getElementById('dropZone');
   const fileInput = document.getElementById('fileInput');
@@ -166,7 +188,7 @@
     if (finalConfig) fd.append('configJson', JSON.stringify(finalConfig));
 
     try {
-      const resp = await fetch('/api/v1/reports', { method: 'POST', body: fd });
+      const resp = await apiFetch('/api/v1/reports', { method: 'POST', body: fd });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
         throw new Error(err.error || `HTTP ${resp.status}`);
@@ -233,7 +255,7 @@
     while (true) {
       await sleep(2000);
       try {
-        const resp = await fetch(`/api/v1/reports/${jobId}`);
+        const resp = await apiFetch(`/api/v1/reports/${jobId}`);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const job = await resp.json();
         if (job.progress !== lastStatus) {
@@ -292,8 +314,8 @@
         ${metrics.map(m => `<div class="metric ${m.cls || ''}"><div class="label">${m.label}</div><div class="value">${m.value}</div></div>`).join('')}
       </div>
       <div class="cluster-actions">
-        <a class="btn" href="${job.downloadUrl || '/api/v1/reports/' + jobId + '/download'}" download>📥 下载 docx</a>
-        <a class="btn btn-secondary" href="${job.dataJsonUrl || '/api/v1/reports/' + jobId + '/data.json'}" download>📊 data.json</a>
+        <a class="btn" href="${withApiKey(job.downloadUrl || '/api/v1/reports/' + jobId + '/download')}" download>📥 下载 docx</a>
+        <a class="btn btn-secondary" href="${withApiKey(job.dataJsonUrl || '/api/v1/reports/' + jobId + '/data.json')}" download>📊 data.json</a>
       </div>
       ${s.overallAssessment ? '<div class="cluster-assessment">' + escapeHtml(s.overallAssessment) + '</div>' : ''}
     `;
@@ -310,7 +332,7 @@
       if (okCount >= 1 && currentBatchId) {
         const actions = document.getElementById('batchActions');
         if (actions && !actions.querySelector('.btn-zip')) {
-          actions.innerHTML = `<a class="btn btn-zip" href="/api/v1/reports/batch/${currentBatchId}/download" download>📦 下载全部 (${okCount} 份, zip)</a>`;
+          actions.innerHTML = `<a class="btn btn-zip" href="${withApiKey('/api/v1/reports/batch/' + currentBatchId + '/download')}" download>📦 下载全部 (${okCount} 份, zip)</a>`;
         }
       }
     } else {
@@ -326,7 +348,7 @@
     try {
       const q = historySearch.value.trim();
       const url = '/api/v1/history?limit=100' + (q ? '&q=' + encodeURIComponent(q) : '');
-      const resp = await fetch(url);
+      const resp = await apiFetch(url);
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = await resp.json();
       renderHistoryList(data);
@@ -361,7 +383,7 @@
           </div>
           <div class="actions">
             <a href="#" class="view-btn" data-batch="${it.batchId}">查看详情</a>
-            <a href="/api/v1/reports/batch/${it.batchId}/download" download>📦 下载全部</a>
+            <a href="${withApiKey('/api/v1/reports/batch/' + it.batchId + '/download')}" download>📦 下载全部</a>
             <a href="#" class="danger delete-btn" data-batch="${it.batchId}">删除</a>
           </div>
         </div>
@@ -385,7 +407,7 @@
         e.preventDefault();
         if (!confirm('确定删除该批次及其所有报告文件？此操作不可恢复。')) return;
         try {
-          const resp = await fetch(`/api/v1/history/${a.dataset.batch}`, { method: 'DELETE' });
+          const resp = await apiFetch(`/api/v1/history/${a.dataset.batch}`, { method: 'DELETE' });
           if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
           loadHistoryList();
         } catch (err) {
@@ -400,7 +422,7 @@
     historyDetailView.classList.add('active');
     historyDetailBody.innerHTML = '加载中…';
     try {
-      const resp = await fetch(`/api/v1/history/${batchId}`);
+      const resp = await apiFetch(`/api/v1/history/${batchId}`);
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const entry = await resp.json();
       renderHistoryDetail(entry);
@@ -416,7 +438,7 @@
         <h3>${escapeHtml(entry.project || '(未命名)')}</h3>
         <p>批次 <code>${entry.batchId}</code> · ${formatTime(entry.createdAt)} · ${entry.receivedFiles} 个 txt → ${entry.clusterCount} 份报告</p>
         <div class="batch-actions">
-          <a class="btn" href="/api/v1/reports/batch/${entry.batchId}/download" download>📦 下载全部 (zip)</a>
+          <a class="btn" href="${withApiKey('/api/v1/reports/batch/' + entry.batchId + '/download')}" download>📦 下载全部 (zip)</a>
         </div>
       </div>
     `);
@@ -439,8 +461,8 @@
             <div class="metric"><div class="label">根因关联</div><div class="value">${s.correlationCount || 0}</div></div>
           </div>
           <div class="cluster-actions">
-            <a class="btn" href="/api/v1/reports/${c.jobId}/download" download>📥 下载 docx</a>
-            <a class="btn btn-secondary" href="/api/v1/reports/${c.jobId}/data.json" download>📊 data.json</a>
+            <a class="btn" href="${withApiKey('/api/v1/reports/' + c.jobId + '/download')}" download>📥 下载 docx</a>
+            <a class="btn btn-secondary" href="${withApiKey('/api/v1/reports/' + c.jobId + '/data.json')}" download>📊 data.json</a>
           </div>
           ${s.overallAssessment ? '<div class="cluster-assessment">' + escapeHtml(s.overallAssessment) + '</div>' : ''}
         `;
@@ -503,4 +525,64 @@
     return String(s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+  // ============== API Key UI ==============
+  const apiKeyBar     = document.getElementById('apiKeyBar');
+  const apiKeyInput   = document.getElementById('apiKeyInput');
+  const apiKeySave    = document.getElementById('apiKeySaveBtn');
+  const apiKeyClear   = document.getElementById('apiKeyClearBtn');
+  const apiKeyStatus  = document.getElementById('apiKeyStatus');
+
+  function showApiKeyBar(state, msg) {
+    apiKeyBar.style.display = 'flex';
+    apiKeyStatus.className = 'api-key-status ' + (state === 'ok' ? 'ok' : state === 'error' ? 'err' : '');
+    apiKeyStatus.textContent = msg || '';
+  }
+  function hideApiKeyBar() { apiKeyBar.style.display = 'none'; }
+
+  // 检测服务端是否启用了鉴权；启用 → 显示输入条；用户已经存了 key 就先校验
+  (async () => {
+    try {
+      const r = await fetch('/api/v1/health');
+      const data = await r.json();
+      if (!data.apiKeyEnabled) { hideApiKeyBar(); return; }
+      // 启用了鉴权
+      apiKeyInput.value = apiKey;
+      showApiKeyBar('', apiKey ? '已加载本地保存的 Key，可点"保存"验证' : '请输入 API Key（来自服务器 .env 的 API_KEY）');
+      // 已有 key 自动验证一下
+      if (apiKey) verifyKey();
+    } catch (e) {
+      console.warn('health check failed:', e);
+    }
+  })();
+
+  async function verifyKey() {
+    try {
+      const r = await apiFetch('/api/v1/auth/check');
+      if (r.ok) {
+        showApiKeyBar('ok', '✓ API Key 已验证，可以上传 / 查看历史');
+      } else {
+        showApiKeyBar('error', '✗ API Key 不正确（HTTP ' + r.status + '）');
+      }
+    } catch (e) {
+      showApiKeyBar('error', '✗ 验证失败：' + e.message);
+    }
+  }
+
+  apiKeySave.addEventListener('click', async () => {
+    apiKey = apiKeyInput.value.trim();
+    if (!apiKey) return showApiKeyBar('error', '请输入 API Key');
+    localStorage.setItem(API_KEY_STORAGE, apiKey);
+    await verifyKey();
+  });
+  apiKeyClear.addEventListener('click', () => {
+    apiKey = '';
+    apiKeyInput.value = '';
+    localStorage.removeItem(API_KEY_STORAGE);
+    showApiKeyBar('', '已清除本地 Key');
+  });
+  // 回车提交
+  apiKeyInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); apiKeySave.click(); }
+  });
 })();

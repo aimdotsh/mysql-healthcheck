@@ -97,10 +97,13 @@ app.use((req, res, next) => {
   next();
 });
 
-// API Key 鉴权（仅对 /api/* 生效；GET /api/v1/health 放行；前端 / 走 cookie 或同源）
+// API Key 鉴权（仅对 /api/* 生效；GET /api/v1/health 放行；
+// 非 /api/* 路径（如 /, /app.js, /static/* 等 Web UI 资源）一律放行 — 前端 JS
+// 会从 localStorage 取 API Key 并在 fetch 时塞进 X-API-Key 头）
 function requireApiKey(req, res, next) {
   if (!API_KEY) return next();
-  if (req.path === '/api/v1/health') return next();
+  if (!req.path.startsWith('/api/')) return next();   // 静态 UI 放行
+  if (req.path === '/api/v1/health') return next();   // 健康检查 / LB 探针放行
   const provided = req.get('X-API-Key') || req.query.api_key;
   if (provided !== API_KEY) return res.status(401).json({ error: 'API key required (X-API-Key header)' });
   next();
@@ -125,6 +128,12 @@ app.get('/api/v1/health', (req, res) => {
     apiKeyEnabled: !!API_KEY,
     storage: { uploadsDir: UPLOADS_DIR, reportsDir: REPORTS_DIR },
   });
+});
+
+// GET /api/v1/auth/check — Web UI 检查 API Key 是否正确（200 OK 即正确；401 = 错）
+// 经过 requireApiKey 中间件后能到这里，说明 key 已通过校验
+app.get('/api/v1/auth/check', (req, res) => {
+  res.json({ ok: true, apiKeyEnabled: !!API_KEY });
 });
 
 // POST /api/v1/reports  multipart/form-data

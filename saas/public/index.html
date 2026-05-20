@@ -86,6 +86,27 @@
       animation: pulse 1.5s ease-in-out infinite;
     }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+    /* API Key 输入条 */
+    .api-key-bar {
+      display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+      padding: 10px 14px; margin: 0 0 16px 0;
+      background: #fff7ed; border: 1px solid #fed7aa; border-radius: 8px;
+    }
+    .api-key-bar label { font-size: 13px; color: #9a3412; margin: 0; font-weight: 500; min-width: 80px; }
+    .api-key-bar input[type="password"] {
+      flex: 1; min-width: 200px; padding: 6px 10px; border: 1px solid #fed7aa;
+      border-radius: 4px; font-size: 12px; font-family: 'SF Mono', Monaco, monospace;
+    }
+    .btn-mini {
+      padding: 6px 14px; font-size: 12px; border-radius: 4px; cursor: pointer;
+      background: #1f4e79; color: #fff; border: none;
+    }
+    .btn-mini-secondary { background: #6b7280; }
+    .btn-mini:hover { opacity: 0.9; }
+    .api-key-status { font-size: 12px; color: #9a3412; }
+    .api-key-status.ok { color: #166534; }
+    .api-key-status.err { color: #b91c1c; }
+
     /* 6 个指标卡的自适应布局：
        - 宽屏（≥ 901px）：6 列单行
        - 中屏（481-900px）：3 列 2 行（平均分布，不再 5+1）
@@ -172,6 +193,15 @@
       <h1>🩺 MySQL 巡检报告生成器</h1>
       <div class="subtitle">上传 MySQLHealthCheck 采集脚本输出（*.txt），自动按复制拓扑分组 → 每个集群一份巡检报告（.docx）</div>
     </header>
+
+    <!-- API Key 输入条 — 仅当服务端启用了鉴权时才需要填 -->
+    <div id="apiKeyBar" class="api-key-bar" style="display: none;">
+      <label for="apiKeyInput">🔑 API Key</label>
+      <input type="password" id="apiKeyInput" placeholder="服务端启用了鉴权，请输入 API Key（来自 .env 的 API_KEY）">
+      <button id="apiKeySaveBtn" class="btn-mini">保存</button>
+      <button id="apiKeyClearBtn" class="btn-mini btn-mini-secondary">清除</button>
+      <span id="apiKeyStatus" class="api-key-status"></span>
+    </div>
 
     <div class="tabs">
       <button class="tab active" data-tab="new">📤 新建报告</button>
