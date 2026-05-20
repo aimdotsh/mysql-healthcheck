@@ -47,6 +47,24 @@
       font-size: 14px; font-family: inherit;
     }
     textarea { font-family: 'SF Mono', Monaco, monospace; font-size: 12px; min-height: 80px; }
+    .hint-text { color: #6b7280; font-size: 11px; margin: 4px 0 0 0; }
+    .rule-options {
+      display: grid; gap: 8px; padding: 12px 14px;
+      background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px;
+    }
+    .rule-toggle {
+      display: flex; gap: 10px; align-items: flex-start;
+      cursor: pointer; padding: 6px; border-radius: 4px; margin: 0; font-weight: normal;
+      transition: background 0.15s;
+    }
+    .rule-toggle:hover { background: #fff; }
+    .rule-toggle input[type="checkbox"] {
+      width: 16px; height: 16px; margin-top: 2px; cursor: pointer; flex-shrink: 0;
+    }
+    .rule-toggle .rule-body { flex: 1; min-width: 0; }
+    .rule-toggle .rule-label { font-size: 13px; color: #111827; font-weight: 500; display: block; }
+    .rule-toggle .rule-hint { font-size: 11px; color: #6b7280; margin-top: 2px; line-height: 1.4; display: block; }
+    .rule-toggle.disabled .rule-label { color: #9ca3af; text-decoration: line-through; }
     .btn {
       background: #1f4e79; color: #fff; border: none; padding: 12px 32px;
       border-radius: 6px; font-size: 15px; font-weight: 500; cursor: pointer;
@@ -172,8 +190,52 @@
 
       <div class="form-row">
         <div>
-          <label for="configJson">阈值配置 JSON（可选）</label>
-          <textarea id="configJson" placeholder='{"thresholds": {"disk": {"critical_pct": 85}}, "disabledRules": ["sql_mode_missing_strict"]}'></textarea>
+          <label>巡检项开关（不勾选 → 跳过该规则）</label>
+          <div id="ruleOptions" class="rule-options">
+            <label class="rule-toggle">
+              <input type="checkbox" data-rule="backup_capability" checked>
+              <div class="rule-body">
+                <span class="rule-label">备份能力评估</span>
+                <span class="rule-hint">关闭则不检查 mysqldump / xtrabackup / mariabackup 等备份工具，也不报"无备份能力" P0（适用：客户已经用其他方式备份）</span>
+              </div>
+            </label>
+            <label class="rule-toggle">
+              <input type="checkbox" data-rule="sql_mode_missing_strict" checked>
+              <div class="rule-body">
+                <span class="rule-label">SQL_MODE 严格模式</span>
+                <span class="rule-hint">关闭则不要求 STRICT_TRANS_TABLES（部分老系统依赖宽松模式静默成功）</span>
+              </div>
+            </label>
+            <label class="rule-toggle">
+              <input type="checkbox" data-rule="slow_log_off" checked>
+              <div class="rule-body">
+                <span class="rule-label">慢日志开启检查</span>
+                <span class="rule-hint">关闭则不报 slow_query_log = 0</span>
+              </div>
+            </label>
+            <label class="rule-toggle">
+              <input type="checkbox" data-rule="lct_zero_linux" checked>
+              <div class="rule-body">
+                <span class="rule-label">Linux 大小写敏感（lower_case_table_names）</span>
+                <span class="rule-hint">关闭则不报 lct=0 跨平台迁移风险</span>
+              </div>
+            </label>
+            <label class="rule-toggle">
+              <input type="checkbox" data-rule="long_query_time_loose" checked>
+              <div class="rule-body">
+                <span class="rule-label">long_query_time 阈值检查</span>
+                <span class="rule-hint">关闭则不报"long_query_time 设置过宽"</span>
+              </div>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div>
+          <label for="configJson">高级阈值配置 JSON（可选）</label>
+          <textarea id="configJson" placeholder='可叠加在上面开关之上，例：{"thresholds": {"disk": {"critical_pct": 85}}, "disabledRules": ["mem_high"]}'></textarea>
+          <p class="hint-text">上面开关被记入 disabledRules；本框内写的会和它合并（disabledRules 取并集，thresholds / priorities 覆盖默认）</p>
         </div>
       </div>
 

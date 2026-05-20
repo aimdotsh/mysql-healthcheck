@@ -6,6 +6,81 @@
 
 ---
 
+## [5.0.3] - 2026-05-20
+
+**SaaS UI 巡检项开关 + Skill 流程加交互询问 — 灵活禁用客户场景不适用的规则**。
+
+### 客户反馈
+
+> 备份能力评估 P0 的问题，有的客户不关注，也可能使用了其他方式备份。想在 web UI 加个控制，是否进行这个备份的判断；同时 AI 智能体使用 skill 时，输出报告之前，也可以让用户选择是否关注这个备份检测。
+
+### 改动
+
+#### 1. SaaS Web UI 「巡检项开关」面板
+
+`saas/public/index.html` + `saas/public/app.js`：
+
+- 上传页面新增「巡检项开关（不勾选 → 跳过该规则）」面板
+- 5 个最常被禁用的规则，**备份能力评估**作为第一项（默认勾选 = 启用）：
+  - `backup_capability`（P0 → 客户已用其它方式备份时可关）
+  - `sql_mode_missing_strict`（P2 → 老应用依赖宽松模式时可关）
+  - `slow_log_off`（P2 → 客户用外部监控代替慢日志时可关）
+  - `lct_zero_linux`（P3 → 无跨平台迁移需求时可关）
+  - `long_query_time_loose`（P3 → 慢 SQL 委托外部审计时可关）
+- 取消勾选时整行变灰 + 划掉，视觉反馈明确
+- 旧的「阈值配置 JSON」textarea 保留为「高级阈值配置」补充入口；两者合并时：
+  - `disabledRules` 取**并集**
+  - `thresholds` / `priorities` 以高级输入为准
+- 「清空」按钮一并重置开关状态为全启用
+
+提交时前端构造最终 configJson 走原有 `multipart/form-data` 字段，服务端零改动（沿用 v4.8 起的 `--config` 自动加载机制）。
+
+#### 2. SKILL.md 加 Step 0「交互确认巡检范围」
+
+LLM 在 extract 启动前应主动询问用户：
+
+> 「生成报告前确认一下：是否需要把『备份能力评估』作为问题报出来？如果客户已经用其它方式备份（云快照 / DBaaS 后台 / 独立备份服务器），可以禁用，否则会在第一章报一个 P0。还有几个常被禁用的规则：sql_mode 严格模式、慢日志开启、Linux 大小写敏感、long_query_time 阈值 — 客户场景不在意的话也可以一起禁用。」
+
+并附上 7 条最常被禁用规则的对照表（id / 默认行为 / 适用场景），让 LLM 能照本宣科。
+
+落地方式：用户回答后，在数据目录写一份 `mysql-healthcheck.config.json`：
+
+```bash
+cat > <dataDir>/mysql-healthcheck.config.json <<'EOF'
+{ "disabledRules": ["backup_capability"] }
+EOF
+```
+
+三层优先级保持 v4.8 设计：**CLI `--config` > 数据目录同名文件 > 内置默认**。
+
+#### 3. 透明披露不变
+
+被禁用的规则会在报告 16.x 附录的「本次报告已禁用以下规则」段落显眼列出，防止"漏报"误会。
+
+### 验证
+
+```bash
+# CLI 验证：禁用 backup_capability 后 issue 数应为 0
+cat > /tmp/skip-backup.json <<'EOF'
+{ "disabledRules": ["backup_capability"] }
+EOF
+node scripts/extract.js /Users/liups/ai/skill/test/v3 --config /tmp/skip-backup.json --out /tmp/v502.json
+jq '[.issues[] | select(.type == "backup_capability")] | length' /tmp/v502.json   # → 0
+jq '.disabledRulesApplied' /tmp/v502.json                                          # → ["backup_capability"]
+
+# UI 验证：SaaS 启动后访问 / 应能看到 5 个开关
+cd saas && node server.js  # 浏览器开 http://localhost:3000
+```
+
+### 兼容性
+
+- 零规则引擎改动（v5.0.2 的 grouper 修复 + v5.0 的规则 JSON 都不变）
+- 零 `extract.js` 改动（沿用 disabledRules 机制）
+- 零 `render.js` 改动（16.x 透明披露段早就在了）
+- 仅 SaaS 前端 + SKILL.md 文档改动 — 升级零阻塞
+
+---
+
 ## [5.0.2] - 2026-05-20
 
 **SaaS 集群拓扑识别：脱敏数据 1 主 3 从被错判为 4 个孤立节点 — 修复 + 10 个单元测试**。

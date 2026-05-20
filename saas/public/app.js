@@ -59,6 +59,8 @@
     renderFileList();
     projectName.value = '';
     configJson.value = '';
+    document.querySelectorAll('#ruleOptions input[type="checkbox"]').forEach(cb => { cb.checked = true; });
+    if (typeof syncRuleToggleStyles === 'function') syncRuleToggleStyles();
     clearBatch();
     hideError();
   });
@@ -106,16 +108,62 @@
       : `已选 ${pendingFiles.length} 个文件，合计 ${formatSize(pendingFiles.reduce((s, f) => s + f.size, 0))}`;
   }
 
+  // 把 ruleOptions 面板里取消勾选的规则收集起来，合进最终 configJson
+  // 与用户在「高级阈值配置 JSON」里写的合并：disabledRules 取并集，
+  // 其它字段（thresholds / priorities）以高级输入为准。
+  function buildFinalConfig() {
+    let userJson = null;
+    const raw = configJson.value.trim();
+    if (raw) {
+      try {
+        userJson = JSON.parse(raw);
+      } catch (e) {
+        throw new Error(`高级配置 JSON 不是合法 JSON：${e.message}`);
+      }
+    }
+    const optedOut = [];
+    document.querySelectorAll('#ruleOptions input[type="checkbox"][data-rule]').forEach(cb => {
+      if (!cb.checked) optedOut.push(cb.dataset.rule);
+    });
+    if (optedOut.length === 0 && !userJson) return null;
+    const merged = userJson ? JSON.parse(JSON.stringify(userJson)) : {};
+    const existing = Array.isArray(merged.disabledRules) ? merged.disabledRules : [];
+    merged.disabledRules = Array.from(new Set([...existing, ...optedOut]));
+    return merged;
+  }
+
+  // 视觉反馈：未勾选时给整行加 .disabled 类（label 划掉灰色）
+  function syncRuleToggleStyles() {
+    document.querySelectorAll('#ruleOptions .rule-toggle').forEach(lbl => {
+      const cb = lbl.querySelector('input[type="checkbox"]');
+      lbl.classList.toggle('disabled', cb && !cb.checked);
+    });
+  }
+  document.querySelectorAll('#ruleOptions input[type="checkbox"]').forEach(cb => {
+    cb.addEventListener('change', syncRuleToggleStyles);
+  });
+  syncRuleToggleStyles();
+
   async function submit() {
     hideError();
     clearBatch();
     submitBtn.disabled = true;
     statusText.textContent = '上传中…';
 
+    let finalConfig;
+    try {
+      finalConfig = buildFinalConfig();
+    } catch (e) {
+      showError(e.message);
+      submitBtn.disabled = false;
+      statusText.textContent = '';
+      return;
+    }
+
     const fd = new FormData();
     for (const f of pendingFiles) fd.append('files', f);
     if (projectName.value.trim()) fd.append('project', projectName.value.trim());
-    if (configJson.value.trim()) fd.append('configJson', configJson.value.trim());
+    if (finalConfig) fd.append('configJson', JSON.stringify(finalConfig));
 
     try {
       const resp = await fetch('/api/v1/reports', { method: 'POST', body: fd });

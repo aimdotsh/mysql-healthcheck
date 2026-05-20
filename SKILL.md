@@ -40,6 +40,38 @@ description: 为 MySQL 数据库集群生成商业可交付级巡检报告（.do
 
 ## 执行流程（标准 2 步 + 可选润色）
 
+### Step 0（可选但**强烈建议**）：交互确认巡检范围
+
+extract 启动前主动问用户**有哪些检查项不适用**。常见可禁用的规则：
+
+| 规则 id | 默认行为 | 什么场景下建议禁用 |
+|---|---|---|
+| `backup_capability` | **P0**：节点未装 mysqldump/xtrabackup/mariabackup 即报警 | 客户已通过其它方式备份（云快照 / DBaaS 后台 / 物理 SAN snap / 独立备份服务器拉远程 dump 等）— **本规则误报率高，建议每次都问** |
+| `sql_mode_missing_strict` | P2：sql_mode 未含 STRICT_TRANS_TABLES 即报警 | 老应用依赖宽松模式静默成功（不能 truncation 报错） |
+| `slow_log_off` | P2：slow_query_log=0 即报警 | 客户用 PMM / Datadog / SkyWalking 等监控代替了慢日志 |
+| `lct_zero_linux` | P3：Linux + lct=0 即提示 | 客户业务确认无跨平台迁移需求 |
+| `long_query_time_loose` | P3：long_query_time ≥ 5 即提示 | 慢 SQL 治理已委托外部审计，巡检不关心 |
+| `flush_method_not_o_direct` | P2：Linux 下 innodb_flush_method ≠ O_DIRECT | 客户用 ZFS / 特殊存储栈，故意选了 fsync |
+| `auth_plugin_native_on_80` | P2：8.0+ 默认仍是 mysql_native_password | 客户驱动版本受限，暂时不迁 caching_sha2_password |
+
+**推荐的交互话术（用户**没**主动声明时主动询问）：
+
+> 「生成报告前确认一下：是否需要把『备份能力评估』作为问题报出来？如果客户已经用其它方式备份（云快照 / DBaaS 后台 / 独立备份服务器），可以禁用，否则会在第一章报一个 P0。还有几个常被禁用的规则：sql_mode 严格模式、慢日志开启、Linux 大小写敏感、long_query_time 阈值 — 客户场景不在意的话也可以一起禁用。」
+
+用户回答后，在数据目录写一份 `mysql-healthcheck.config.json`，extract 会自动拾起：
+
+```bash
+cat > <数据目录>/mysql-healthcheck.config.json <<'EOF'
+{
+  "disabledRules": ["backup_capability"]
+}
+EOF
+```
+
+或者用 `--config <path>` 指定外部位置。三层优先级：**CLI `--config` > 数据目录同名文件 > 内置默认**。
+
+**禁用的规则会在报告末尾透明披露**（16.x 附录列「本次报告已禁用以下规则」），防止"漏报"误会。
+
 ### Step 1：解析数据
 
 ```bash
