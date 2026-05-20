@@ -328,9 +328,11 @@ function buildIssue(rule, priority, ctx) {
   if (rule.currentValueTpl)     issue.currentValue     = renderTpl(rule.currentValueTpl, ctx);
   if (rule.recommendedValueTpl) issue.recommendedValue = renderTpl(rule.recommendedValueTpl, ctx);
   if (rule.needsConfirmation)   issue.needsConfirmation = true;
-  // node label: explicit nodeTpl > ctx.node.ip / hostname
+  // node label: explicit nodeTpl > ctx.node.label > ctx.node.ip > hostname
+  // extract.js should set node.label = nodeLabel(n) before invoking engine
+  // so the issue.node string matches existing format `IP（角色）`.
   if (rule.nodeTpl)             issue.node = renderTpl(rule.nodeTpl, ctx);
-  else if (ctx.node)            issue.node = ctx.node.ip || ctx.node.hostname || undefined;
+  else if (ctx.node)            issue.node = ctx.node.label || ctx.node.ip || ctx.node.hostname || undefined;
   return issue;
 }
 
@@ -352,6 +354,11 @@ function createEngine(opts = {}) {
       if (disabled.has(rule.id)) continue;
 
       if (rule.scope === 'node') {
+        // Per-node trigger / tiers / handler evaluation.
+        // Note: even rules that emit "cluster-scoped" issues (output.scope =
+        // 'cluster') typically still iterate per node and rely on downstream
+        // groupKey dedup. They should declare rule.scope='node' here unless
+        // they truly need full cluster context (in which case use a handler).
         for (const node of nodes) {
           const ctx = { node, cluster, nodes, cfg };
           try {
@@ -361,11 +368,13 @@ function createEngine(opts = {}) {
               issues.push(it);
             }
           } catch (e) {
-            // Defensive: a broken rule should not crash the whole report
             console.error(`[rule-engine] rule ${rule.id} failed on node ${node.ip || '?'}: ${e.message}`);
           }
         }
       } else if (rule.scope === 'cluster') {
+        // Single evaluation with full cluster context. Typically used with
+        // handler-based rules (D/F class), but trigger / tiers also supported
+        // for rules whose expression only references `cluster.*` or `nodes`.
         const ctx = { cluster, nodes, cfg };
         try {
           const produced = evalSingleNodeRule(rule, ctx, helpers);
