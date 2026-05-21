@@ -6,6 +6,85 @@
 
 ---
 
+## [5.0.6] - 2026-05-21
+
+**采集脚本介绍页 + 下载入口 — 让客户/同事自助拿到 collector**。
+
+### 客户反馈
+
+> 做一个采集脚本使用说明的页面，在首页「上传 MySQLHealthCheck 采集脚本输出（*.txt）」的这个文字中的 MySQLHealthCheck 加入这个采集脚本的介绍页面的链接，介绍页面上并且能够下载这个采集脚本。
+
+### 改动
+
+#### 1. 新增 `saas/public/collector.html` 采集脚本说明页
+
+完整指南页，含 6 个章节：
+- **下载卡**：醒目的绿色卡 + 大下载按钮 + 文件元数据
+- **三步走**：传脚本到主机 / 跑脚本（交互式 + 命令行参数表） / 上传 txt
+- **MySQL 账号权限**：完整 GRANT 语句 + 每个权限的用途说明 + "不要用 root" 警告
+- **采集内容（12 大类）**：表格列出 OS / Variables / 主从 / Schema / 用户 / 锁 / InnoDB / sys 库 / 日志 / 备份 / 安全 12 个分类
+- **常见问题（6 条）**：云数据库兼容 / 是否写库 / 耗时 / 登录预检 / 脱敏 / 版本兼容
+- **返回首页** 链接
+
+样式与首页一致（同样的蓝色主题），独立 CSS，单文件无依赖。
+
+#### 2. 服务端新增下载路由 `GET /collector/mysqlHealthCheckV3.0.sh`
+
+```js
+app.get('/collector/mysqlHealthCheckV3.0.sh', (req, res) => {
+  const file = path.resolve(__dirname, '..', 'collectors', 'mysqlHealthCheckV3.0.sh');
+  if (!fs.existsSync(file)) return res.status(404).json({ error: '采集脚本未找到' });
+  res.setHeader('Content-Type', 'application/x-sh; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="mysqlHealthCheckV3.0.sh"');
+  res.sendFile(file);
+});
+```
+
+**路径以 `/collector` 开头**（不属于 `/api/*`），自动被 `requireApiKey` 中间件放行 — 任何人都能下载，**无需 API Key**。这样客户/同事拿到 Web UI 地址就能自己下脚本，不用先找你拿 key。
+
+#### 3. 首页 `MySQLHealthCheck` 文字变可点链接
+
+```html
+<div class="subtitle">上传 
+  <a href="/collector.html" class="collector-link">MySQLHealthCheck</a> 
+  采集脚本输出（*.txt），...
+</div>
+```
+
+样式：深蓝色 + 虚线下划线 + 末尾 ↗ 表示外链感。
+
+#### 4. Dockerfile 加 `COPY collectors/`
+
+之前 Dockerfile 没拷采集脚本到容器，下载路由会 404。现在补上：
+
+```dockerfile
+# 采集脚本：Web UI「采集脚本使用说明」页支持直接下载
+COPY collectors/ ./collectors/
+```
+
+构建后镜像略微增大（脚本 ~60 KB，可忽略）。
+
+### 验证（5 用例本地 Docker 测试全过）
+
+| 请求 | 预期 | 结果 |
+|---|---|---|
+| `GET /` | 含 `class="collector-link"` 链接到 `/collector.html` | ✓ |
+| `GET /collector.html` | 200 HTML（无需 key） | ✓ |
+| `GET /collector/mysqlHealthCheckV3.0.sh` | 200 + Content-Type: application/x-sh + Content-Disposition: attachment | ✓ |
+| 下载内容前 3 行 | `#!/usr/bin/env bash` + 注释头 | ✓ |
+| 开启 API_KEY 后下载仍可用 | 200（脚本下载和 collector.html 都不需要 key） | ✓ |
+
+### 用户怎么用
+
+```bash
+cd /opt/mysql-healthcheck
+git pull origin SaaS
+docker-compose up -d --build       # 镜像需要重建（Dockerfile 加了 COPY）
+# 浏览器开首页 → 点 "MySQLHealthCheck" 链接 → 跳到说明页 → 下载脚本
+```
+
+---
+
 ## [5.0.5] - 2026-05-20
 
 **修复：API_KEY 启用后 Web UI 整体被 401 拦截 + 加 UI 输入条**。

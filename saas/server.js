@@ -136,6 +136,18 @@ app.get('/api/v1/auth/check', (req, res) => {
   res.json({ ok: true, apiKeyEnabled: !!API_KEY });
 });
 
+// GET /collector/mysqlHealthCheckV3.0.sh — 下载采集脚本（公开，不需要 API key）
+// 路径以 /collector 开头，不属于 /api/* — 已经被 requireApiKey 中间件放行
+app.get('/collector/mysqlHealthCheckV3.0.sh', (req, res) => {
+  const file = path.resolve(__dirname, '..', 'collectors', 'mysqlHealthCheckV3.0.sh');
+  if (!fs.existsSync(file)) {
+    return res.status(404).json({ error: '采集脚本未找到' });
+  }
+  res.setHeader('Content-Type', 'application/x-sh; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="mysqlHealthCheckV3.0.sh"');
+  res.sendFile(file);
+});
+
 // POST /api/v1/reports  multipart/form-data
 // fields: files[] (one or more *.txt) + project (optional) + configJson (optional)
 //

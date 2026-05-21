@@ -35,8 +35,10 @@ COPY --from=deps /app/scripts/node_modules ./scripts/node_modules
 COPY --from=deps /app/saas/node_modules    ./saas/node_modules
 
 # 复制源码（注意 .dockerignore 已过滤掉 tests/docs/.git 等）
-COPY scripts/ ./scripts/
-COPY saas/    ./saas/
+COPY scripts/    ./scripts/
+COPY saas/       ./saas/
+# 采集脚本：Web UI「采集脚本使用说明」页支持直接下载
+COPY collectors/ ./collectors/
 
 # 准备数据目录（容器外挂卷应该挂到 /data）
 RUN mkdir -p /data/uploads /data/reports /data/history

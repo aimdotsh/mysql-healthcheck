@@ -15,6 +15,12 @@
     header { margin-bottom: 32px; }
     h1 { color: #1f4e79; margin: 0 0 8px 0; font-size: 28px; }
     .subtitle { color: #6b7280; font-size: 14px; }
+    .subtitle .collector-link {
+      color: #1f4e79; font-weight: 600; text-decoration: none;
+      border-bottom: 1px dashed #1f4e79; padding-bottom: 1px;
+    }
+    .subtitle .collector-link:hover { color: #2563eb; border-bottom-color: #2563eb; }
+    .subtitle .collector-link::after { content: " ↗"; font-size: 11px; opacity: 0.7; }
     .card {
       background: #fff; border-radius: 12px; padding: 28px; margin-bottom: 20px;
       box-shadow: 0 4px 6px rgba(0, 0, 0, 0.04);
@@ -191,7 +197,7 @@
   <div class="container">
     <header>
       <h1>🩺 MySQL 巡检报告生成器</h1>
-      <div class="subtitle">上传 MySQLHealthCheck 采集脚本输出（*.txt），自动按复制拓扑分组 → 每个集群一份巡检报告（.docx）</div>
+      <div class="subtitle">上传 <a href="/collector.html" class="collector-link">MySQLHealthCheck</a> 采集脚本输出（*.txt），自动按复制拓扑分组 → 每个集群一份巡检报告（.docx）</div>
     </header>
 
     <!-- API Key 输入条 — 仅当服务端启用了鉴权时才需要填 -->

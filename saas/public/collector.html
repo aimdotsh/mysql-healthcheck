@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>采集脚本使用说明 - MySQL 巡检报告生成器</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      background: #f5f7fa; margin: 0; padding: 0; color: #1f2937; line-height: 1.65;
+    }
+    .container { max-width: 920px; margin: 0 auto; padding: 24px; }
+
+    header {
+      background: linear-gradient(135deg, #1f4e79 0%, #2563eb 100%);
+      color: #fff; padding: 32px 24px; margin: -24px -24px 24px -24px;
+      border-radius: 0 0 12px 12px;
+    }
+    header .crumb { font-size: 13px; opacity: 0.85; margin-bottom: 8px; }
+    header .crumb a { color: #fff; opacity: 0.9; text-decoration: none; border-bottom: 1px dotted rgba(255,255,255,0.5); }
+    header .crumb a:hover { opacity: 1; }
+    header h1 { margin: 0 0 8px 0; font-size: 26px; font-weight: 600; }
+    header .subtitle { font-size: 14px; opacity: 0.9; }
+
+    section.card {
+      background: #fff; border-radius: 12px; padding: 24px 28px; margin-bottom: 16px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    }
+    h2 { color: #1f4e79; font-size: 18px; margin: 0 0 12px 0; padding-bottom: 8px; border-bottom: 2px solid #e5e7eb; }
+    h3 { color: #374151; font-size: 15px; margin: 16px 0 8px 0; }
+    p { margin: 0 0 12px 0; }
+
+    .download-card {
+      background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
+      border: 1px solid #6ee7b7; padding: 20px 24px; border-radius: 10px;
+      display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
+    }
+    .download-card .info { flex: 1; min-width: 220px; }
+    .download-card .info .filename {
+      font-family: 'SF Mono', Monaco, Consolas, monospace;
+      font-weight: 600; color: #065f46; font-size: 15px;
+    }
+    .download-card .info .meta { font-size: 12px; color: #047857; margin-top: 4px; }
+    .download-btn {
+      background: #059669; color: #fff; padding: 12px 28px; border-radius: 8px;
+      text-decoration: none; font-weight: 600; font-size: 14px;
+      border: none; cursor: pointer; transition: background 0.2s;
+    }
+    .download-btn:hover { background: #047857; }
+    .download-btn .icon { margin-right: 6px; }
+
+    pre, code {
+      font-family: 'SF Mono', Monaco, Consolas, monospace; font-size: 13px;
+    }
+    pre {
+      background: #1f2937; color: #e5e7eb; padding: 14px 16px; border-radius: 8px;
+      overflow-x: auto; margin: 8px 0;
+    }
+    code:not(pre code) {
+      background: #f3f4f6; color: #b91c1c; padding: 2px 6px; border-radius: 4px;
+      font-size: 12px;
+    }
+
+    table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 10px 0; }
+    th { background: #f9fafb; padding: 8px 12px; text-align: left; border-bottom: 2px solid #e5e7eb; font-weight: 600; color: #374151; }
+    td { padding: 8px 12px; border-bottom: 1px solid #f3f4f6; vertical-align: top; }
+    tr:last-child td { border-bottom: none; }
+
+    .step-list { padding-left: 0; list-style: none; counter-reset: step; }
+    .step-list > li {
+      counter-increment: step; position: relative; padding-left: 36px; margin-bottom: 16px;
+    }
+    .step-list > li::before {
+      content: counter(step); position: absolute; left: 0; top: 0;
+      background: #1f4e79; color: #fff; width: 26px; height: 26px;
+      border-radius: 50%; display: flex; align-items: center; justify-content: center;
+      font-weight: 600; font-size: 13px;
+    }
+    .step-list > li > strong { color: #1f4e79; font-size: 14px; }
+
+    .note {
+      background: #fffbeb; border-left: 4px solid #f59e0b; padding: 12px 16px;
+      border-radius: 4px; margin: 12px 0; font-size: 13px; color: #92400e;
+    }
+    .note-tip {
+      background: #eff6ff; border-left: 4px solid #3b82f6; padding: 12px 16px;
+      border-radius: 4px; margin: 12px 0; font-size: 13px; color: #1e40af;
+    }
+
+    .tag {
+      display: inline-block; background: #e0e7ff; color: #3730a3;
+      padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500;
+      margin-right: 4px;
+    }
+
+    .back-link {
+      display: inline-block; margin-top: 20px; color: #1f4e79;
+      text-decoration: none; font-size: 14px;
+    }
+    .back-link:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <header>
+      <div class="crumb"><a href="/">🩺 MySQL 巡检报告生成器</a> &nbsp;›&nbsp; 采集脚本</div>
+      <h1>📥 MySQLHealthCheck 采集脚本</h1>
+      <div class="subtitle">在 MySQL 主机上跑一次，输出一份 txt，再上传到本服务自动生成 docx 巡检报告</div>
+    </header>
+
+    <!-- 下载卡 -->
+    <section class="card">
+      <h2>下载</h2>
+      <div class="download-card">
+        <div class="info">
+          <div class="filename">mysqlHealthCheckV3.0.sh</div>
+          <div class="meta">Bash 5.7 / 8.0 兼容 · 单文件 · ~60 KB · 不引入任何外部依赖</div>
+        </div>
+        <a class="download-btn" href="/collector/mysqlHealthCheckV3.0.sh" download>
+          <span class="icon">⬇</span>下载脚本
+        </a>
+      </div>
+      <div class="note-tip" style="margin-top: 14px;">
+        <strong>谁该跑这个脚本？</strong> 你的 <strong>客户 / 同事 / 自己</strong> 在 <strong>MySQL 主机本机</strong> 上跑（需要能本地连到 MySQL）。脚本只读取信息、不写任何业务表。跑完会输出一份 <code>MySQLHealthCheck_&lt;IP&gt;_&lt;时间戳&gt;.txt</code>，把它拷回来上传到本服务即可。
+      </div>
+    </section>
+
+    <!-- 快速使用 -->
+    <section class="card">
+      <h2>三步走</h2>
+      <ol class="step-list">
+        <li>
+          <strong>把脚本传到 MySQL 主机上</strong>
+          <p>下载后用 scp / rsync / 跳板机粘贴等方式放到目标主机任意目录：</p>
+<pre>scp mysqlHealthCheckV3.0.sh dba@&lt;db-host&gt;:~/
+ssh dba@&lt;db-host&gt;
+chmod +x ~/mysqlHealthCheckV3.0.sh</pre>
+        </li>
+
+        <li>
+          <strong>在主机上跑脚本</strong>
+          <p>两种用法：</p>
+          <p><span class="tag">推荐</span> 交互式（终端会提示输用户名 / 密码 / 端口等）：</p>
+<pre>./mysqlHealthCheckV3.0.sh</pre>
+          <p><span class="tag">自动化</span> 命令行参数（适合批量 / CI / Ansible）：</p>
+<pre>./mysqlHealthCheckV3.0.sh \
+  --user dbadmin --password 'xxx' \
+  --host 127.0.0.1 --port 3306 \
+  --output-dir ./reports
+# 跑完产出 ./reports/MySQLHealthCheck_&lt;IP&gt;_&lt;时间戳&gt;.txt</pre>
+          <p>更多参数（默认值适合大部分场景）：</p>
+          <table>
+            <thead><tr><th>参数</th><th>含义</th><th>默认</th></tr></thead>
+            <tbody>
+              <tr><td><code>--user</code></td><td>MySQL 用户名（需 SELECT/PROCESS/REPLICATION CLIENT 等只读权限）</td><td>dbadmin</td></tr>
+              <tr><td><code>--password</code></td><td>密码；不传则交互输入</td><td>(交互)</td></tr>
+              <tr><td><code>--host / --port</code></td><td>MySQL 连接地址</td><td>127.0.0.1 / 3306</td></tr>
+              <tr><td><code>--socket</code></td><td>socket 文件路径；可替代 host/port</td><td>(自动发现)</td></tr>
+              <tr><td><code>--defaults-file</code></td><td>my.cnf 路径</td><td>(自动发现)</td></tr>
+              <tr><td><code>--mysql-cmd</code></td><td>mysql 客户端路径</td><td>(自动发现)</td></tr>
+              <tr><td><code>--output-dir</code></td><td>输出目录</td><td>当前目录</td></tr>
+              <tr><td><code>--slow-log-lines</code></td><td>采集慢日志末尾几行</td><td>5000</td></tr>
+              <tr><td><code>--error-log-lines</code></td><td>采集 error log 末尾几行</td><td>500</td></tr>
+              <tr><td><code>--backup-paths</code></td><td>探测备份产物的路径（逗号分隔）</td><td>/backup,/data/backup,...</td></tr>
+              <tr><td><code>--test-login</code></td><td>只做登录预检，不采集</td><td>-</td></tr>
+              <tr><td><code>--non-interactive</code></td><td>强制非交互（缺参数即报错退出，不阻塞）</td><td>-</td></tr>
+            </tbody>
+          </table>
+          <p>查看完整参数：<code>./mysqlHealthCheckV3.0.sh --help</code></p>
+        </li>
+
+        <li>
+          <strong>把 txt 上传到本服务</strong>
+          <p>回到 <a href="/">首页</a>，拖拽 txt 到上传区，自动按复制拓扑分组 → 每个集群一份 docx 巡检报告。</p>
+          <p>集群多节点：把所有节点的 txt 一起上传，服务端会按 <code>Master_Host</code> / <code>slave IP is</code> / <code>server_id</code> 三种信号自动识别拓扑。</p>
+        </li>
+      </ol>
+    </section>
+
+    <!-- 权限要求 -->
+    <section class="card">
+      <h2>MySQL 账号权限</h2>
+      <p>采集脚本只读，需要这些权限：</p>
+<pre>CREATE USER 'dbadmin'@'127.0.0.1' IDENTIFIED BY '&lt;复杂密码&gt;';
+GRANT SELECT, PROCESS, REPLICATION CLIENT, SHOW DATABASES,
+      SHOW VIEW, REPLICATION SLAVE
+   ON *.* TO 'dbadmin'@'127.0.0.1';
+FLUSH PRIVILEGES;</pre>
+      <p>说明：</p>
+      <ul>
+        <li><code>SELECT</code> — 读 <code>mysql.*</code> / <code>information_schema</code> / <code>performance_schema</code> / <code>sys</code></li>
+        <li><code>PROCESS</code> — <code>SHOW FULL PROCESSLIST</code>、<code>INNODB STATUS</code></li>
+        <li><code>REPLICATION CLIENT</code> — <code>SHOW SLAVE/MASTER STATUS</code></li>
+        <li><code>SHOW DATABASES</code> + <code>SHOW VIEW</code> — 库 / 视图清单</li>
+        <li><code>REPLICATION SLAVE</code> — 部分版本读 binlog 列表用</li>
+      </ul>
+      <div class="note">
+        <strong>不要用 root！</strong> 给 root 加 host 限制是 P0 红线。专门建只读账号 + 限制 host 到 127.0.0.1 / 跳板机 IP。
+      </div>
+    </section>
+
+    <!-- 采集内容 -->
+    <section class="card">
+      <h2>采集的内容（12 大类）</h2>
+      <table>
+        <thead><tr><th>分类</th><th>包含</th></tr></thead>
+        <tbody>
+          <tr><td>① 操作系统与硬件</td><td>hostname、CPU、内存、磁盘、网卡、kernel 版本、网络连接数</td></tr>
+          <tr><td>② MySQL 基础信息</td><td>版本、编译平台、启动时间、当前时间、插件、字符集</td></tr>
+          <tr><td>③ MySQL Variables</td><td>全量 SHOW VARIABLES（buffer pool / log / replication / sql_mode 等）</td></tr>
+          <tr><td>④ 主从复制</td><td>SLAVE STATUS、MASTER STATUS、BINARY LOGS、GTID、并行复制配置、semi-sync</td></tr>
+          <tr><td>⑤ 数据库容量</td><td>TOP 10 大表 / 大索引、库容量、碎片率、非 utf8 表、BLOB 分布、自增主键使用率</td></tr>
+          <tr><td>⑥ 用户与权限</td><td>mysql.user 全表、密码过期、host=% 用户、登录失败计数（host_cache）</td></tr>
+          <tr><td>⑦ 会话与锁</td><td>PROCESSLIST、INNODB LOCKS / LOCK WAITS / TRX、metadata_locks</td></tr>
+          <tr><td>⑧ InnoDB 引擎</td><td>SHOW ENGINE INNODB STATUS、Buffer Pool 状态、关键指标（含 HLL）</td></tr>
+          <tr><td>⑨ 性能指标（基于 sys 库）</td><td>TOP 20 SQL（按 latency / count）、全表扫描、临时表溢出、磁盘排序、未使用 / 冗余索引</td></tr>
+          <tr><td>⑩ 日志</td><td>slow_query_log 状态 + 末尾 5000 行；error_log 状态 + 末尾 500 行</td></tr>
+          <tr><td>⑪ 备份与 binlog</td><td>探测 xtrabackup / mariabackup / mysqldump，crontab、备份目录、binlog 目录</td></tr>
+          <tr><td>⑫ 安全合规</td><td>Audit Plugin、TLS/SSL 状态、空密码用户、旧认证插件、SQL_MODE</td></tr>
+        </tbody>
+      </table>
+      <p>都是只读查询；不修改任何业务数据。</p>
+    </section>
+
+    <!-- FAQ -->
+    <section class="card">
+      <h2>常见问题</h2>
+
+      <h3>Q1：在云数据库（RDS / PolarDB / 阿里云 DMS）上能跑吗？</h3>
+      <p>部分能。脚本会自动跳过没权限的部分（如 <code>SHOW ENGINE INNODB STATUS</code> 有些云需要超管权限）。但 OS 层信息（CPU / 内存 / 文件系统）拿不到 — 云数据库就别看 OS 部分。</p>
+
+      <h3>Q2：脚本会写任何东西到数据库吗？</h3>
+      <p>不会。全部是只读 SELECT / SHOW。最多在 OS 上创建一个 <code>./MySQLHealthCheck_*.txt</code> 输出文件。</p>
+
+      <h3>Q3：跑一次要多久？</h3>
+      <p>典型 5-30 秒。大库（>100GB 或 >10000 表）可能慢到 1-2 分钟（卡在 <code>information_schema</code> 大查询）。</p>
+
+      <h3>Q4：登录预检</h3>
+      <p>不确定参数对不对，先试一下不真采集：</p>
+<pre>./mysqlHealthCheckV3.0.sh --test-login --non-interactive \
+  --user dbadmin --password 'xxx' --host 127.0.0.1 --port 3306</pre>
+      <p>输出 <code>MySQL 登录测试成功</code> 就 OK。</p>
+
+      <h3>Q5：脱敏</h3>
+      <p>采集出来的 txt 含 hostname / IP / 库名 / 表名等。要交付给第三方，建议过一遍 <code>sed</code>：</p>
+<pre># 示例：把 hostname 替换成 masked-hostname
+sed -i 's/your-real-host\.example\.com/masked-hostname/g' MySQLHealthCheck_*.txt</pre>
+
+      <h3>Q6：版本兼容性</h3>
+      <p>MySQL 5.6 / 5.7 / 8.0 / 8.4 全支持。MariaDB 10.3+ 也能跑（部分 8.0 专属字段会显示空）。</p>
+    </section>
+
+    <a href="/" class="back-link">← 返回首页</a>
+
+  </div>
+</body>
+</html>
