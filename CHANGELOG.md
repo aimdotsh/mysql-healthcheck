@@ -8,95 +8,59 @@
 
 ## [5.0.8] - 2026-05-21
 
-**敏感信息全仓库脱敏审计 — 移除残留的真实客户 IP / 项目名 / 库表名**。
+**敏感信息全仓库脱敏审计 — 替换残留的真实客户标识为通用示例**。
 
-### 客户反馈
+### 改动
 
-> 审计下当前的项目是否有之前的真实 IP 比如 172.16.7.2，以及项目名称（一卡通、华夏基金等客户信息），把 IP 地址和客户信息进行脱敏处理。IP 地址修改为前三位都 10.10.10.，主机名主库改为 master01db、从库改为 slave01db/slave02db 类似的。
+整理仓库内容，把历史阶段进入文档 / 测试 / 注释里的真实客户标识，统一替换为通用占位：
 
-### 审计范围与处置
-
-**1. IP 地址脱敏**（前三位 → `10.10.10`，第四位保留）
-
-| 原 | 新 |
-|---|---|
-| `172.16.7.2` | `10.10.10.2` |
-| `172.16.7.3` | `10.10.10.3` |
-| `172.16.7.4` | `10.10.10.4` |
-| `172.16.7.31` / `.32` | `10.10.10.31` / `.32` |
-| `172.16.128.101` | `10.10.10.101` |
-| `172.16.4.95 / .99 / .119 / .123` | `10.10.10.95 / .99 / .119 / .123` |
-| `172.16.x.x`（占位）| `10.10.10.x` |
-
-涉及文件：`CHANGELOG.md` / `USAGE.md` / `SKILL.md` / `scripts/extract.js` / `scripts/rule-helpers/index.js` / `tests/report_regression_test.js` / `references/interview-guide.md` / `saas/README.md`
-
-**2. 客户项目名脱敏**
-
-| 原 | 新 |
-|---|---|
-| `一卡通` / `一卡通通` / `一卡通 Apple 集群` | `DemoCluster` |
-| `一卡通_Apple_集群`（用作文件名） | `DemoCluster` |
-
-**3. 数据库 / 表名脱敏**
-
-| 原 | 新 | 说明 |
+| 类别 | 规则 | 示例（脱敏后）|
 |---|---|---|
-| `pioneer_db` | `demo_db` | 客户实际库名 |
-| `tbl_order_detail` | `tbl_a` | 客户业务表 |
-| `tbl_order`（不含 _detail/_refund） | `tbl_b` | 客户业务表 |
-| `tbl_topup` | `tbl_c` | 客户业务表 |
-| `tbl_order_refund` | `tbl_demo` | 客户业务表 |
+| 私网 IP | 前三段折叠到示例段 | `10.10.10.X` |
+| 项目名 | 客户对外名称 → 通用 demo 名 | `DemoCluster` |
+| 库 / 表名 | 客户业务库表 → 通用占位 | `demo_db` / `tbl_a` / `tbl_b` / `tbl_c` / `tbl_demo` |
+| 主机名 | 角色化命名（测试 fixtures） | `master01db` / `slave01db` / `slave02db` / `drdb01` |
 
-**4. 运行时数据清理**
+涉及文件（9 个）：
+- `CHANGELOG.md` / `USAGE.md` / `SKILL.md` / `references/interview-guide.md` / `saas/README.md`
+- `scripts/extract.js` / `scripts/rule-helpers/index.js`
+- `tests/report_regression_test.js`
+- `scripts/package.json`（版本号）
 
-`saas/storage/history/*.json` × 8 个文件（其中含 `一卡通` 项目名、`172.16.*` IP）— 全部删除。这些是本地开发机的运行时数据，未纳入 git（只有 `.gitkeep` 占位）— 但本地磁盘上是真客户记录，必须清掉。
+### 运行时数据清理（本机磁盘，未纳入 git）
 
-**5. 外部测试 fixtures（`/Users/liups/ai/skill/test/v3/desensitized/`）**
+- `saas/storage/history/*.json` × 8 — 历史批次元数据全清，重启 SaaS 后「历史记录」tab 干净
+- `saas/storage/uploads/*` / `reports/*` — 历史批次 txt / docx 全清
+- 外部测试 fixtures（本机 `~/ai/skill/test/v3/desensitized/`）— 4 个 txt 文件名 + 内容 + hostname 全量重写
 
-- 4 个 txt 文件全量脱敏：文件名 IP 重命名（`MySQLHealthCheck_172.16.7.2_*.txt` → `MySQLHealthCheck_10.10.10.2_*.txt` 等）
-- 内容里所有 `172.16.X.X` → `10.10.10.X`（uniform sed，包括占位形态 `172.16.x.x`）
-- 每个节点 hostname 改为对应角色名：
-  - `10.10.10.2` (主库) → `master01db`
-  - `10.10.10.3` (从库) → `slave01db`
-  - `10.10.10.4` (从库) → `slave02db`
-  - `10.10.10.101` (灾备) → `drdb01`
-- slave 节点的 `Master_Host` 统一指向 `master01db`
+### 配套代码改动
 
-**6. 配套代码改动**
-
+- `scripts/extract.js` `isDrNode()` 正则扩展，新支持 `drdb01` / `dr01db` 这类**无分隔符**的灾备节点命名（旧版只匹配 `dr-` / `dr_` 前缀）
 - `tests/report_regression_test.js`：
-  - `sourceDataDir` 默认值 `/Users/liups/ai/skill/test/v3` → `/.../desensitized`
-  - `expectedFixtures` 正则改为匹配新文件名
-  - 26 处断言里的 IP 字符串全量替换
-- `scripts/extract.js` `isDrNode()` 正则扩展：
-  - 旧：`/\bdr[-_]|disaster|standby/i`（要求分隔符）
-  - 新：`/\bdr[-_]|\bdr\d*db|\bdrdb|disaster|standby/i`（支持 `drdb01` 类无分隔符命名）
+  - `sourceDataDir` 默认值改为 `~/ai/skill/test/v3/desensitized`
+  - `expectedFixtures` 正则匹配新文件名
+  - 断言里的 IP 字符串全量更新
 
 ### 保留项（**故意不动**）
 
-- `云和恩墨(北京)信息技术有限公司` 与 `enmotech.com` — 这是**厂商品牌**（生成报告的服务方自己），不是客户信息，保留作为模板版权 / 落款使用
-- 其它 `10.0.0.0/8` / `192.168.x.x` 等明显占位 IP — 是教学/示例用，保留
+- 厂商品牌字段（公司名 + 域名）— 这是生成报告的服务方自己，不是客户信息
+- `10.0.0.0/8` / `192.168.x.x` 等明显占位 IP — 是教学/示例用
 
 ### 验证
 
 ```bash
-# 全仓库无残留
-grep -rE '172\.16\.|一卡通|pioneer_db|tbl_order|tbl_topup' \
-  --include="*.md" --include="*.js" --include="*.json" --include="*.html" .
-# (无输出)
-
-# 完整测试套件
 npm test --prefix scripts
 # collector + 34 engine + 10 grouper + report regression  全绿
 ```
 
 ### 影响
 
-- 零功能变化（行为完全不变）
-- 测试 fixtures 路径默认值变了，本机现有的旧路径需要重指向，或用 `node ../tests/report_regression_test.js /path/to/old/fixtures` 覆盖
+- 零功能变化
+- 测试 fixtures 路径默认值变了，本机旧路径需要重指向，或用 `node tests/report_regression_test.js /path/to/old/fixtures` 覆盖
 - 开源 / 客户分享前的安全交付动作完成
 
 ---
+
 
 ## [5.0.7] - 2026-05-21
 
