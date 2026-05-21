@@ -292,7 +292,7 @@ function evalHeavyFragTables(ctx) {
     type: 'heavy_frag_tables', priority: 'P2', groupKey: 'heavy_frag_tables',
     description: `存在高碎片大表 ${big.length} 张（碎片率≥${(rate * 100).toFixed(0)}% 且碎片≥${minMB}MB；TOP：${top}）`,
     action: '维护窗口期 OPTIMIZE TABLE 或 pt-online-schema-change 重建',
-    sql: '-- 示例：OPTIMIZE TABLE pioneer_db.tbl_order_refund;\n-- 大表推荐：pt-online-schema-change --alter "ENGINE=InnoDB" D=pioneer_db,t=tbl_order_refund --execute',
+    sql: '-- 示例：OPTIMIZE TABLE demo_db.tbl_demo;\n-- 大表推荐：pt-online-schema-change --alter "ENGINE=InnoDB" D=demo_db,t=tbl_demo --execute',
     scope: 'cluster',
   }];
 }

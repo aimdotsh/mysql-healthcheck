@@ -64,20 +64,20 @@ npm install
 
 ```
 ~/projects/clientA/2026-04-inspect/
-├── MySQLHealthCheck_172.16.7.2_202604301023.txt    ← 必需（主库）
-├── MySQLHealthCheck_172.16.7.3_202604301027.txt    ← 每个节点一份
-├── MySQLHealthCheck_172.16.7.4_202604301025.txt
-├── 172.16.7.2_apple_pri-2026-04-30.html            ← 可选（兼容历史 ibtmp1 补充数据）
-└── 172.16.7.3_apple_slave1-2026-04-30.html
+├── MySQLHealthCheck_10.10.10.2_202604301023.txt    ← 必需（主库）
+├── MySQLHealthCheck_10.10.10.3_202604301027.txt    ← 每个节点一份
+├── MySQLHealthCheck_10.10.10.4_202604301025.txt
+├── 10.10.10.2_apple_pri-2026-04-30.html            ← 可选（兼容历史 ibtmp1 补充数据）
+└── 10.10.10.3_apple_slave1-2026-04-30.html
 ```
 
 **文件命名约定**（脚本据此识别节点 / 时间 / 角色）：
 
 | 文件名段 | 用途 | 示例 |
 |---|---|---|
-| `MySQLHealthCheck_<IP>_<时间戳>.txt` | 必需，原始数据 | `MySQLHealthCheck_172.16.7.2_202604301023.txt` |
+| `MySQLHealthCheck_<IP>_<时间戳>.txt` | 必需，原始数据 | `MySQLHealthCheck_10.10.10.2_202604301023.txt` |
 | 时间戳 `YYYYMMDDhhmm` | 推断巡检日期 | `202604301023` → `2026-04-30` |
-| html 中 `pri`/`master`/`primary` 关键字 | 识别主库 | `172.16.7.2_apple_pri-...html` → 主库 |
+| html 中 `pri`/`master`/`primary` 关键字 | 识别主库 | `10.10.10.2_apple_pri-...html` → 主库 |
 | html 中 `slave`/`replica` 关键字 | 识别从库 | `..._slave1-...html` |
 
 V3 TXT 已包含 `innodb_tablespaces (含 ibtmp1)`，通常可直接解析 ibtmp1 当前占用；只有该段未返回 ibtmp1 行时才会显示为 `-` 并在报告中标注采集状态。HTML 仅作为历史兼容输入。
@@ -95,13 +95,13 @@ node extract.js <数据目录> --project "<项目名称>"
 
 例：
 ```bash
-node extract.js ~/projects/clientA/2026-04-inspect --project "一卡通 Apple 集群"
+node extract.js ~/projects/clientA/2026-04-inspect --project "DemoCluster"
 ```
 
 输出：在数据目录下生成 `data.json`，并打印自动检出的问题数：
 ```
-解析节点 172.16.7.2 ...
-解析节点 172.16.7.3 ...
+解析节点 10.10.10.2 ...
+解析节点 10.10.10.3 ...
 数据已写入 ~/projects/clientA/2026-04-inspect/data.json
   - 节点：4 个
   - 自动检出问题：35 项 (P0:0, P1:15, P2:20, P3:0)
@@ -129,7 +129,7 @@ node render.js ~/projects/clientA/2026-04-inspect/data.json
 输出：
 ```
 ✓ 占位符校验通过：未发现残留 {…} 模板字符串
-生成成功：~/projects/clientA/2026-04-inspect/一卡通_Apple_集群_MySQL数据库巡检报告_详细版_v3.0.docx
+生成成功：~/projects/clientA/2026-04-inspect/DemoCluster_MySQL数据库巡检报告_详细版_v3.0.docx
   文件大小：39.1 KB
 ```
 

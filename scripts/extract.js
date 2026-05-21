@@ -1082,9 +1082,9 @@ function analyzeErrorLog(text, opts = {}) {
 // ============== 备份目录解析 ==============
 // 评审 #9 (v4.4) 修复：原逻辑遇到 "[--] /path 不存在" 时会**覆盖** current 指针，
 // 导致前一个正在累积的目录（含真实备份文件）被丢弃。
-// 实测影响：172.16.7.4 节点 /data/backup 下有 93GB 真实备份产物
-// （tbl_order_detail_20240729.sql 48GB / tbl_order_20240724.sql 13GB /
-// tbl_topup_20240718.sql 36GB），但报告显示"未发现备份产物"。
+// 实测影响：10.10.10.4 节点 /data/backup 下有 93GB 真实备份产物
+// （tbl_a_20240729.sql 48GB / tbl_b_20240724.sql 13GB /
+// tbl_c_20240718.sql 36GB），但报告显示"未发现备份产物"。
 // 修复策略：碰到不存在行时先 flush 已累积的 current，再 push exists:false 条目。
 function parseBackupDirs(text) {
   const dirs = [];
@@ -1396,7 +1396,8 @@ function canonicalRole(value) {
 function isDrNode(node) {
   if (node.role === 'dr') return true;
   const hint = (node.hostname || '') + ' ' + (node._file || '');
-  return /\bdr[-_]|disaster|standby/i.test(hint);
+  // 支持的命名模式：dr-mysql / dr_db / drdb01 / dr01db / disaster / standby
+  return /\bdr[-_]|\bdr\d*db|\bdrdb|disaster|standby/i.test(hint);
 }
 
 // 评审反馈 #5/#17 (v4.4)：元数据查询识别（用于过滤 SQL 治理章节噪声）
@@ -1425,7 +1426,7 @@ function isTempOrHistoryTable(tableName) {
   const t = String(tableName);
   // 1. 极短可疑表名（≤3 字符，含 1-2 位数字后缀的，常见于测试残留：dd, pp, pp1, t, t1, t12, abc1）
   if (/^[a-z]{1,3}\d{0,2}$/i.test(t)) return true;
-  // 1b. 单独的 test 表（pioneer_db.test 之类的）
+  // 1b. 单独的 test 表（demo_db.test 之类的）
   if (/^test\d*$/i.test(t)) return true;
   // 2. 日期 / 时间字典表（t_year/t_month/calendar 等业务工具表）
   if (/^t_(year|month|day|date|hour|minute|second|calendar|bit|byte)([_0-9]|$)/i.test(t)) return true;
@@ -1589,8 +1590,8 @@ function inferIpFromContent(content) {
 }
 
 function inferInspectionDate(filename) {
-  // MySQLHealthCheck_172.16.7.2_202604301023.txt → 2026-04-30
-  // 172.16.7.2_apple_pri-2026-04-30.html → 2026-04-30
+  // MySQLHealthCheck_10.10.10.2_202604301023.txt → 2026-04-30
+  // 10.10.10.2_apple_pri-2026-04-30.html → 2026-04-30
   const m1 = filename.match(/_(\d{4})(\d{2})(\d{2})\d{4}\.txt$/);
   if (m1) return `${m1[1]}-${m1[2]}-${m1[3]}`;
   const m2 = filename.match(/(\d{4})-(\d{2})-(\d{2})\.html$/);
@@ -1599,7 +1600,7 @@ function inferInspectionDate(filename) {
 }
 
 function inferProjectFromFilename(filename) {
-  // 172.16.7.2_apple_pri-2026-04-30.html → apple
+  // 10.10.10.2_apple_pri-2026-04-30.html → apple
   const m = filename.match(/\d+\.\d+\.\d+\.\d+_([^_-]+)[_-]/);
   return m ? m[1] : null;
 }

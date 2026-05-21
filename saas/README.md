@@ -119,12 +119,12 @@ Web UI 顶部有两个 Tab：
   "clusters": [
     {
       "jobId": "074206f9ebdc4a03",
-      "label": "172.16.7.2 集群（一主3从（异步复制））",
+      "label": "10.10.10.2 集群（一主3从（异步复制））",
       "topology": "一主3从（异步复制）",
-      "nodes": ["172.16.7.2", "172.16.7.3", "172.16.7.4", "172.16.128.101"],
-      "primaryIp": "172.16.7.2",
+      "nodes": ["10.10.10.2", "10.10.10.3", "10.10.10.4", "10.10.10.101"],
+      "primaryIp": "10.10.10.2",
       "fileCount": 4,
-      "files": ["MySQLHealthCheck_172.16.7.2_*.txt", ...],
+      "files": ["MySQLHealthCheck_10.10.10.2_*.txt", ...],
       "statusUrl": "/api/v1/reports/074206f9ebdc4a03"
     },
     {

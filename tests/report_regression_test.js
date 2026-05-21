@@ -10,7 +10,7 @@ const { spawnSync } = require('child_process');
 const repoRoot = path.resolve(__dirname, '..');
 const extractPath = path.join(repoRoot, 'scripts', 'extract.js');
 const renderPath = path.join(repoRoot, 'scripts', 'render.js');
-const sourceDataDir = process.argv[2] || '/Users/liups/ai/skill/test/v3';
+const sourceDataDir = process.argv[2] || '/Users/liups/ai/skill/test/v3/desensitized';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mysql-healthcheck-regression-'));
 const outPath = path.join(tmpDir, 'data.json');
@@ -19,10 +19,10 @@ const docxPath = path.join(tmpDir, 'report.docx');
 // 把测试固定使用的 4 个 fixture txt 复制到独立目录，避免被 source 目录里其它
 // MySQLHealthCheck_*.txt（不在断言范围内）干扰拓扑识别。
 const expectedFixtures = [
-  /MySQLHealthCheck_172\.16\.7\.2_/,
-  /MySQLHealthCheck_172\.16\.7\.3_/,
-  /MySQLHealthCheck_172\.16\.7\.4_/,
-  /MySQLHealthCheck_172\.16\.128\.101_/,
+  /MySQLHealthCheck_10\.10\.10\.2_/,
+  /MySQLHealthCheck_10\.10\.10\.3_/,
+  /MySQLHealthCheck_10\.10\.10\.4_/,
+  /MySQLHealthCheck_10\.10\.10\.101_/,
 ];
 const fixtureDir = path.join(tmpDir, 'fixtures');
 fs.mkdirSync(fixtureDir, { recursive: true });
@@ -46,17 +46,17 @@ if (run.status !== 0) {
 const data = JSON.parse(fs.readFileSync(outPath, 'utf8'));
 const byIp = Object.fromEntries(data.nodes.map((node) => [node.ip, node]));
 
-assert.strictEqual(data.nodes[0].ip, '172.16.7.2', 'primary node should be listed first for all report tables and charts');
+assert.strictEqual(data.nodes[0].ip, '10.10.10.2', 'primary node should be listed first for all report tables and charts');
 assert.strictEqual(data.cluster.topology, '一主3从（异步复制）', 'cluster topology should identify one primary and three replicas');
-assert.strictEqual(byIp['172.16.7.2'].role, 'primary', '172.16.7.2 should be inferred as the primary node');
+assert.strictEqual(byIp['10.10.10.2'].role, 'primary', '10.10.10.2 should be inferred as the primary node');
 // v4.4 评审 #2：dr-mysql 灾备节点应识别为 'dr' 而非 'slave'，避免在第二章 / 12.2 显示错误
-assert.strictEqual(byIp['172.16.128.101'].role, 'dr', '172.16.128.101 (dr-mysql) should be inferred as a DR (灾备) node, not a regular slave');
-assert.strictEqual(byIp['172.16.7.3'].role, 'slave', '172.16.7.3 should be inferred as a replica node');
-assert.strictEqual(byIp['172.16.7.4'].role, 'slave', '172.16.7.4 should be inferred as a replica node');
+assert.strictEqual(byIp['10.10.10.101'].role, 'dr', '10.10.10.101 (dr-mysql) should be inferred as a DR (灾备) node, not a regular slave');
+assert.strictEqual(byIp['10.10.10.3'].role, 'slave', '10.10.10.3 should be inferred as a replica node');
+assert.strictEqual(byIp['10.10.10.4'].role, 'slave', '10.10.10.4 should be inferred as a replica node');
 
-assert.strictEqual(byIp['172.16.7.2'].osRelease, 'CentOS release 6.9 (Final)', 'OS release should be parsed from collector output');
-assert.strictEqual(byIp['172.16.7.2'].osEolStatus.status, 'eol', 'CentOS 6 should be identified as EOL');
-assert(!byIp['172.16.7.2'].binlogDirInfo.includes('[12] 安全与合规'), 'binlog section should strip collector module banners');
+assert.strictEqual(byIp['10.10.10.2'].osRelease, 'CentOS release 6.9 (Final)', 'OS release should be parsed from collector output');
+assert.strictEqual(byIp['10.10.10.2'].osEolStatus.status, 'eol', 'CentOS 6 should be identified as EOL');
+assert(!byIp['10.10.10.2'].binlogDirInfo.includes('[12] 安全与合规'), 'binlog section should strip collector module banners');
 
 const osIssue = data.issues.find((issue) => issue.type === 'os_version_eol');
 assert(osIssue, 'OS EOL issue should be promoted into issues');
@@ -64,16 +64,16 @@ assert(osIssue.description.includes('CentOS 6'), 'OS EOL issue should name the u
 
 const hllIssue = data.issues.find((issue) => issue.type === 'innodb_hll_high');
 assert(hllIssue, 'high History List Length should be promoted into issues');
-assert.strictEqual(hllIssue.node, '172.16.7.2（主库）', 'HLL issue should point to the primary node');
+assert.strictEqual(hllIssue.node, '10.10.10.2（主库）', 'HLL issue should point to the primary node');
 
 const readOnlyJudgment = data.paramJudgments.find((item) => item.key === 'read_only');
 assert(readOnlyJudgment, 'read_only parameter difference should be reported');
 // v4.4 评审 #2：dr-mysql 灾备节点角色应反映为 灾备 而非 从库
-assert(readOnlyJudgment.valueMap.includes('172.16.128.101（灾备）=0'), 'parameter difference should map values back to nodes (灾备 role)');
-assert(readOnlyJudgment.reason.includes('从库未只读：172.16.128.101'), 'read_only judgment should identify writable replica as the actual risk');
+assert(readOnlyJudgment.valueMap.includes('10.10.10.101（灾备）=0'), 'parameter difference should map values back to nodes (灾备 role)');
+assert(readOnlyJudgment.reason.includes('从库未只读：10.10.10.101'), 'read_only judgment should identify writable replica as the actual risk');
 
 const longQueryJudgment = data.paramJudgments.find((item) => item.key === 'long_query_time');
-assert(longQueryJudgment.valueMap.includes('172.16.128.101（灾备）=10'), 'long_query_time difference should identify the outlier node (灾备 role)');
+assert(longQueryJudgment.valueMap.includes('10.10.10.101（灾备）=10'), 'long_query_time difference should identify the outlier node (灾备 role)');
 
 // v4.7.2：第十六章「安全合规审计」已移除，compliance_fail_* issues 不再升级到 issues[]。
 // 真正的安全风险（root@%、弱口令、复制账号 wildcard 等）依然由 wildcard_critical /
@@ -85,8 +85,8 @@ assert(
 
 const backupIssue = data.issues.find((issue) => issue.type === 'backup_capability');
 assert(backupIssue, 'backup assessment issue should be promoted into issues');
-// v4.4 评审 #9：parseBackupDirs flushCurrent 修复后，172.16.7.4 /data/backup 的真实 93GB 备份
-// （tbl_order_detail_20240729.sql 等）能被正确识别，因此 v3 测试集现在能正确判定为「备份过旧」P0
+// v4.4 评审 #9：parseBackupDirs flushCurrent 修复后，10.10.10.4 /data/backup 的真实 93GB 备份
+// （tbl_a_20240729.sql 等）能被正确识别，因此 v3 测试集现在能正确判定为「备份过旧」P0
 // 而非旧版本错误的「未发现备份产物」。"655 天" 是相对当前日期计算的，用 startsWith 兼容。
 assert(
   data.backupAssessment.assessment.startsWith('最近备份已 ') &&
@@ -94,9 +94,9 @@ assert(
   'backup assessment should detect the 2024-07 stale backup recovered by parseBackupDirs flushCurrent fix (v4.4 #9; v4.9.3 reworded to consultative tone)'
 );
 assert.strictEqual(data.backupAssessment.severity, 'P0', 'stale backup (>180 days) should be P0 severity');
-assert.strictEqual(data.backupAssessment.hasBackupArtifact, true, 'parseBackupDirs flushCurrent fix should now recover real backup artifacts on 172.16.7.4 (v4.4 #9)');
-assert.strictEqual(data.backupAssessment.latestBackup?.ip, '172.16.7.4', 'latest backup should be located on 172.16.7.4');
-assert(data.backupAssessment.latestBackup?.path?.includes('tbl_order_detail_20240729.sql'), 'latest backup should be the 48GB tbl_order_detail file');
+assert.strictEqual(data.backupAssessment.hasBackupArtifact, true, 'parseBackupDirs flushCurrent fix should now recover real backup artifacts on 10.10.10.4 (v4.4 #9)');
+assert.strictEqual(data.backupAssessment.latestBackup?.ip, '10.10.10.4', 'latest backup should be located on 10.10.10.4');
+assert(data.backupAssessment.latestBackup?.path?.includes('tbl_a_20240729.sql'), 'latest backup should be the 48GB tbl_a file');
 assert(
   backupIssue.description.startsWith('备份能力评估：最近备份已 '),
   'promoted backup issue should reflect the stale-backup wording after parseBackupDirs fix'
@@ -109,15 +109,15 @@ const hintSet = new Set(data.backupAssessment.hintPaths);
 
 const writableReplicaIssue = data.issues.find((issue) => issue.type === 'slave_writable' || issue.type === 'dr_writable');
 assert(writableReplicaIssue, 'writable replica or DR exception issue should still be reported');
-assert.strictEqual(writableReplicaIssue.node, '172.16.128.101（灾备）', 'node labels should use inferred 灾备 role for DR exceptions (v4.4 #2)');
+assert.strictEqual(writableReplicaIssue.node, '10.10.10.101（灾备）', 'node labels should use inferred 灾备 role for DR exceptions (v4.4 #2)');
 
-assert.strictEqual(byIp['172.16.7.2'].ibtmp1CollectionStatus, 'collected', 'ibtmp1 current usage should be parsed from innodb_tablespaces when collector returns the row');
-assert.strictEqual(byIp['172.16.7.2'].ibtmp1.source, 'txt:innodb_tablespaces', 'ibtmp1 data should record the TXT collection source');
-assert(Array.isArray(byIp['172.16.7.2'].innodbLockWaits), 'lock wait section should be parsed even when empty');
-assert.strictEqual(byIp['172.16.7.2'].lockCollectionStatus, 'collected', 'collector lock sections should be recognized');
-assert(byIp['172.16.7.2'].lockStatusCounters.Innodb_row_lock_current_waits === '0', 'lock status counters should be parsed');
-assert(byIp['172.16.7.2'].redundantIndexes[0].table, 'redundant index rows should expose table names');
-assert(byIp['172.16.7.2'].redundantIndexes[0].redundantIndex, 'redundant index rows should expose redundant index names');
+assert.strictEqual(byIp['10.10.10.2'].ibtmp1CollectionStatus, 'collected', 'ibtmp1 current usage should be parsed from innodb_tablespaces when collector returns the row');
+assert.strictEqual(byIp['10.10.10.2'].ibtmp1.source, 'txt:innodb_tablespaces', 'ibtmp1 data should record the TXT collection source');
+assert(Array.isArray(byIp['10.10.10.2'].innodbLockWaits), 'lock wait section should be parsed even when empty');
+assert.strictEqual(byIp['10.10.10.2'].lockCollectionStatus, 'collected', 'collector lock sections should be recognized');
+assert(byIp['10.10.10.2'].lockStatusCounters.Innodb_row_lock_current_waits === '0', 'lock status counters should be parsed');
+assert(byIp['10.10.10.2'].redundantIndexes[0].table, 'redundant index rows should expose table names');
+assert(byIp['10.10.10.2'].redundantIndexes[0].redundantIndex, 'redundant index rows should expose redundant index names');
 
 const securityItems = Object.fromEntries(data.securityAssessment.items.map((item) => [item.id, item]));
 assert.strictEqual(securityItems.strong_password_policy.status, 'FAIL', 'empty password policy section should be treated as collected evidence of missing validate_password enforcement');
@@ -159,7 +159,7 @@ const headerText = parseText(path.join(unzipDir, 'word', 'header1.xml'));
 assert(headerText.includes('云和恩墨(北京)信息技术有限公司 成就所托'), 'header should use the fixed template company line');
 assert(headerText.includes('http://www.enmotech.com'), 'header should include the fixed template website');
 assert(!headerText.includes('v32V4doc'), 'header should not include the project name');
-assert(!headerText.includes('172.16.7.2'), 'header should not include node IPs');
+assert(!headerText.includes('10.10.10.2'), 'header should not include node IPs');
 
 const bodyText = parseText(path.join(unzipDir, 'word', 'document.xml'));
 assert(bodyText.includes('文档控制'), 'document should include the control page from the requested cover style');
@@ -170,7 +170,7 @@ assert(bodyText.includes('CentOS release 6.9 (Final)'), 'server chapter should s
 assert(bodyText.includes('操作系统版本已停止维护'), 'server chapter should explain OS EOL risk');
 assert(bodyText.includes('Swap 使用率'), 'memory section should include swap usage ratio');
 assert(bodyText.includes('连接使用率'), 'connection chapter should include connection usage visualization or metric');
-assert(bodyText.includes('172.16.128.101（灾备）=10'), 'parameter difference table should map values to nodes with 灾备 role (v4.4 #2)');
+assert(bodyText.includes('10.10.10.101（灾备）=10'), 'parameter difference table should map values to nodes with 灾备 role (v4.4 #2)');
 assert(bodyText.includes('无主键表分类汇总'), 'no primary key section should summarize business/history/temp table counts');
 assert(bodyText.includes('V3 采集脚本已采集 innodb_tablespaces'), 'ibtmp1 section should explain data source and collection coverage');
 assert(bodyText.includes('采集脚本已采集 INNODB LOCKS / INNODB LOCK WAITS / INNODB TRX / Metadata locks'), 'lock section should reflect actual collector coverage');
