@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+**/.DS_Store
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 临时
+*.tmp
+*.bak
+*~
+
+# 运行产物（用户在数据目录里跑出的 markdown 报告）
+# 不在此分支里，但万一有人在仓库目录里跑：
+MySQL巡检报告_*.md
+*_MySQL巡检报告_*.md
