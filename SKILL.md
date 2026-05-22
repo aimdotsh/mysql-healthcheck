@@ -46,66 +46,116 @@ collectors/mysqlHealthCheckV3.0.sh \
 
 ---
 
+## 三种输出模式（用户可选）
+
+| 模式 | 章节 | 预估耗时 | 用例 |
+|---|---|---|---|
+| **fast** | 3 章（执行摘要 + 行动计划 + 结论） | 5-7 min | 快速看风险 / 紧急排查 |
+| **standard**（默认）| 重点 8-10 章（删除无数据章节） | 10-15 min | 日常巡检 |
+| **full** | 完整 17 章 | 20-30 min | 月度交付 / 客户存档 |
+
+用户没指定时默认 **standard**。用户说「快速」「fast」「紧急」时切 fast；说「完整」「详细」「正式交付」时切 full。
+
+---
+
 ## 执行流程（LLM 单次会话内完成）
 
-### Step 1: 找数据
+### Step 1: 找数据 + 检查 config
 
-用 Glob 工具在用户给定目录搜 `MySQLHealthCheck_*.txt`：
+用 Glob 在用户给定目录搜 `MySQLHealthCheck_*.txt`：
 - 找到 1+ 个 → 进入 Step 2
-- 没找到 → 进入"模式 2"提示用户
+- 没找到 → 进入"模式 2"提示用户跑采集
 
-### Step 2: 读规则与模板（三份必读）
+同时检查 `<dataDir>/mysql-healthcheck.config.json`（可选），读取 disabledRules / thresholds / priorities。
 
-按顺序读：
+### Step 2: 读规则速查矩阵（**先这个，节省 token**）
 
-1. `references/parsing.md` — 知道 txt 里每段（hostname / variables / SLAVE STATUS / 等）数据格式
-2. `references/rules.md` — 42 条规则定义（触发条件 + priority + 建议 + SQL）
-3. `references/report-template.md` — 17 章报告框架
+只读 `references/rules.md` **顶部的「规则速查矩阵」段**（约 50 行表格），**不要全文读**。这张表列了 42 条规则的 id + 触发信号速查。
 
-### Step 3: 读 .txt 数据
+记下"可能触发的规则候选名单"（凭表格里的"触发信号速查"列对 txt 头部信息做粗判，5-15 条最多）。
 
-Read 全部 `MySQLHealthCheck_*.txt`。多节点集群把所有节点一起读。
+### Step 3: 读 .txt 数据（**选择性读**）
 
-### Step 4: 应用规则
+Read 全部 `MySQLHealthCheck_*.txt`，但**默认跳过这些大段**（除非候选规则需要）：
 
-对 42 条规则逐条判断是否触发：
-- **节点级规则**（scope=node）逐节点判断
-- **集群级规则**（scope=cluster，如 `param_inconsistent` / `slave_parallel_workers_zero`）跨节点判断
-- 按 `priority` 分类：P0 关键 / P1 重要 / P2 建议 / P3 观察
-- 计算 6 维度健康度评分（每命中扣分；最低分 50）
+- `Slow query log tail`（可能 5000 行 / 100+ KB）— 只看 `slow_queries_abs` / `slow_log_off` / `long_query_time_loose` 需要；其它情况只扫头部 50 行 + 关键字搜 `ERROR`
+- `Error log tail`（500 行）— 同上，只扫关键 ERROR 关键字
+- `All processlist`（全量进程列表）— 只看 `long_running_session` 需要；统计性指标看 `Processlist info` 摘要段即可
+- `All databases and size details`（大库可能上千行）— 看 `Top 10 Tables` 摘要段足够
+
+LLM 应当用 Read 的 `offset` + `limit` 参数**分段读**大文件而非一次全读。
+
+### Step 4: 读触发规则的详情
+
+对 Step 2 标记的「候选规则」（5-15 条），到 `rules.md` 下半部对应 `### \`rule_id\`` 段读详情（description / action / sql / 阈值）。
+
+**未触发的规则跳过详细段读取**。
 
 ### Step 5: 集群拓扑识别
 
-从 `SLAVE STATUS` + `slave IP is` + `Master_Server_Id` 推断：
-- 单点 / 主从 / 一主多从 / DR 灾备
-- 主库 IP / 从库列表 / 角色
+从 `SLAVE STATUS` + `slave IP is` + `Master_Server_Id` 推断主从拓扑。脱敏场景（hostname 都是 masked-xxx）→ 退回 server_id 匹配。
 
-### Step 6: 按模板生成 markdown 报告
+### Step 6: 应用规则 + 计算评分
 
-严格按 `references/report-template.md` 的 17 章顺序填充：
+- 节点级规则逐节点判断
+- 集群级规则跨节点判断
+- 按 priority 分 P0/P1/P2/P3
+- 计算 6 维度健康度评分（每命中扣分；最低分 50）
 
-- **第 1 章「执行摘要」** — LLM 综合数据后用自然语言写（不要照抄模板占位）
-- **第 2-15 章** — 数据填表
-- **第 16 章「行动计划」** — 按 P0→P3 排序，每条带规则 description / action / SQL
-- **第 17 章「结论」** — 短结论 + 健康度评分总结
+### Step 7: 读报告模板（**只读对应模式的章节**）
 
-### Step 7: 写文件
+读 `references/report-template.md`，**根据模式跳读**：
 
-用 Write 工具输出到：
+- **fast 模式**：只读 第一章 / 第十六章 / 第十七章 + 「图表使用约定」
+- **standard 模式**：读「图表使用约定」+ 必填章节（1/2/4/5/12/13/14/15/16/17）+ 跳过无数据章节
+- **full 模式**：全读
+
+### Step 8: 生成 markdown 报告
+
+按模式生成：
+
+- **fast**：3 章 — 执行摘要（含 mermaid pie + 评分柱状图）+ 行动计划（P0-P3 按优先级排）+ 结论
+- **standard**：~10 章 — 完整核心信息但跳过"未发现"占位章节
+- **full**：17 章完整
+
+**所有模式都必须包含**：
+- 集群拓扑 mermaid 图（第 4 章 — 如有 standard / full 模式，或塞进 fast 的执行摘要）
+- P0-P3 优先级 mermaid pie
+- 6 维度健康度 ASCII 柱状图
+- emoji 状态色 (🟢🟡🔴) 在节点对比表里
+
+### Step 9: 写文件
 
 ```
-<dataDir>/MySQL巡检报告_<YYYY-MM-DD>.md
+<dataDir>/MySQL巡检报告_<YYYY-MM-DD>.md       # 标准命名
+<dataDir>/<项目名>_MySQL巡检报告_<YYYY-MM-DD>.md  # 用户指定项目名时
 ```
 
-如果用户指定了项目名：
+### Step 10: 简短反馈
 
 ```
-<dataDir>/<项目名>_MySQL巡检报告_<YYYY-MM-DD>.md
+✓ 报告已生成：/path/to/MySQL巡检报告_2026-05-22.md
+- 模式：standard
+- 节点：4 个（一主3从）
+- 问题：P0:1 / P1:4 / P2:6 / P3:1
+- 健康度：78/100
 ```
 
-### Step 8: 告知用户
+**不要把整份报告复述到对话框**。
 
-简短反馈：报告位置 / 节点数 / P0-P3 计数 / 健康度评分。**不要把整份报告复述到对话框**（用户自己打开 .md 看）。
+---
+
+## 性能优化原则（**重要**）
+
+LLM 应当主动遵守，每条都是优化点：
+
+1. **先读速查矩阵，不要全读 rules.md** — Step 2 / Step 4 分两段读，未触发的规则跳过详情段
+2. **大段日志（slow_query_log_tail / error_log_tail / all processlist）默认跳过** — 用关键字搜索或读前 50 行 + 后 50 行而非全读
+3. **并行读多节点 txt** — 用一次 Read 工具调用读所有节点 txt，不要串行
+4. **跳过"无数据"章节** — standard 模式下，章节实在没数据就别写「未发现」占位，整段省略（fast 模式总是省略）
+5. **行动计划简洁化** — P2/P3 用表格而非段落；P0/P1 才详细列 description + action + sql
+6. **避免长篇大论的"建议"段落** — 直接引用 rules.md 里的 action 字段，不要 LLM 自由发挥扩写
+7. **生成过程中不要 stream 状态消息** — 安静干完最后报告位置即可
 
 ---
 

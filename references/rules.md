@@ -42,6 +42,65 @@
 
 ---
 
+## 🚀 规则速查矩阵（LLM 性能优化 — 第一遍扫这里）
+
+> **重要**：LLM 应当**先扫这张表**，根据 txt 数据快速判断**哪些规则可能触发**（只看 ~20 字的触发条件即可），然后**只阅读触发规则的详细段落**。这样可以从 42 条全读 → 5-15 条详读，input token 减 50-70%。
+
+| 规则 id | 维度 | 默认 P | 触发信号速查（看 txt 哪段判断）|
+|---|---|---|---|
+| `mem_high` | availability | P1 | `mem usage` 段，使用率 > 90% |
+| `swap_used` | availability | P1 | `mem info` 段，Swap 已用 > 0 |
+| `innodb_hll` | availability | P1-P2 | INNODB STATUS 中 `History list length` > 10000 |
+| `long_running_session` | availability | P2-P3 | PROCESSLIST 中 time ≥ 60s 非业务用户会话 |
+| `disks` | availability | P0-P3 | `disk mount` 中 Use% ≥ 80（区分光驱/伪 FS） |
+| `replication` | availability | P0-P2 | SLAVE STATUS：IO/SQL ≠ Yes，或 SBM > 60s |
+| `role_read_only` | availability | P1-P3 | 主库 read_only=1 / 从库 read_only=0 |
+| `max_connections_vs_memory` | availability | P1-P2 | max_connections × buffer 估算 > RAM 30% |
+| `mysql_version_eol` | operations | P1-P2 | MySQL 版本 5.6 / 5.7 EOL |
+| `os_version_eol` | availability | P2 | OS 版本表，CentOS 6/7 / Ubuntu 18.04 等 EOL |
+| `slave_parallel_workers_zero` | availability | P1-P2 | slave_parallel_workers=0 且数据量 ≥ 100GB |
+| `flush_log_weak` | durability | P1 | innodb_flush_log_at_trx_commit = 0 |
+| `sync_binlog_weak` | durability | P1 | sync_binlog = 0 |
+| `doublewrite_off` | durability | P1 | innodb_doublewrite = OFF |
+| `gtid_off` | durability | P2 | gtid_mode = OFF |
+| `expire_logs_zero` | durability | P1 | expire_logs_days = 0 |
+| `expire_logs_long` | durability | P3 | expire_logs_days > 30（默认）|
+| `ibtmp1_no_max` | durability | P2 | innodb_temp_data_file_path 未含 :max: |
+| `ibtmp1_oversize` | durability | P2 | ibtmp1 实际大小 > 5GB |
+| `slave_skip_errors_set` | durability | P0 | slave_skip_errors 非空 非 OFF |
+| `self_ref_slave_residue` | durability | P2 | SLAVE STATUS 的 Master_Host = 自身 IP |
+| `bp_hit` | performance | P1-P3 | BP 命中率 < 99%（< 95% 升 P1）|
+| `buffer_pool_size` | performance | P1-P2 | BP 占 RAM < 40% 或 > 80% |
+| `redo_log_too_small` | performance | P1-P2 | innodb_log_file_size < 512MB 且数据量大 |
+| `flush_method_not_o_direct` | performance | P2 | Linux 下 innodb_flush_method ≠ O_DIRECT |
+| `data_to_memory_ratio_high` | performance | P1-P2 | 数据集 / RAM > 10 倍 |
+| `heavy_frag_tables` | performance | P2 | 表碎片率 ≥ 70% 且 free ≥ 100MB |
+| `slow_queries_abs` | performance | P1-P2 | Slow_queries 累计 > 100k |
+| `slow_log_off` | operations | P2 | slow_query_log = 0 |
+| `long_query_time_loose` | performance | P3 | long_query_time ≥ 5 |
+| `performance_schema_off` | operations | P2 | performance_schema = OFF |
+| `wildcard_users` | security | P0-P2 | mysql.user 含 host=% 的账号（root/复制/业务三档）|
+| `auth_plugin_native_on_80` | security | P2 | 8.0+ 默认 mysql_native_password |
+| `tls_weak_protocol` | security | P2 | TLS 配置含 TLSv1 / TLSv1.1 |
+| `charset_not_utf8mb4` | dataDesign | P2 | character_set_server ≠ utf8mb4 |
+| `sql_mode_missing_strict` | dataDesign | P2 | sql_mode 不含 STRICT_TRANS_TABLES |
+| `auto_increment_exhausting` | dataDesign | P0-P2 | auto_increment 使用率 ≥ 70% |
+| `no_pk_tables` | dataDesign | P2-P3 | 业务表无主键（过滤临时/历史表后）|
+| `non_utf8_tables` | dataDesign | P2 | 表 collation 非 utf8（如 latin1）|
+| `ghost_tables` | dataDesign | P2 | 表名匹配 `_xxx_(new\|del\|gho\|old\|ghc)$` 且 > 1GB |
+| `param_inconsistent` | operations | P2 | 集群节点间关键参数不同 |
+| `lct_zero_linux` | operations | P3 | Linux 下 lower_case_table_names = 0 |
+| `backup_capability` | operations | P0-P2 | 主机无 mysqldump / xtrabackup / mariabackup |
+
+**用法**：
+1. LLM 第一遍读 txt **只扫这张矩阵的"触发信号"列**，标记哪些规则可能命中
+2. 命中的规则 → 翻到下面的详细段读 description / action / sql / 阈值
+3. 未命中的规则 → **跳过详细段，节省 token**
+
+参考：本表 42 条规则与下面详细段一一对应。
+
+---
+
 ## 总览
 
 | 维度 | 规则数 |
