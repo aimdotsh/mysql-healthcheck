@@ -5,6 +5,60 @@
 
 ---
 
+## [1.0.6] - 2026-05-24
+
+**版本标识 — 多处可查 skill 版本，不再靠文件名猜**
+
+### 客户反馈
+
+> 现在查看 skill 文件能知道是哪个版本么？不只是通过文件名称来判断
+
+### 改动
+
+新增 **3 处版本标识**：
+
+1. **`VERSION` 文件**（新增，仓库根目录单行 `1.0.6`）— 最直接，`cat VERSION`
+2. **`SKILL.md` frontmatter 加 `version` 字段** + 两行 HTML 注释（人/机都能看到）
+
+```yaml
+---
+name: mysql-healthcheck
+version: 1.0.6
+description: ...
+---
+```
+
+3. **报告头**：LLM 生成报告时 Read VERSION 文件 → 写到「巡检版本：v1.0.6」字段
+
+### 客户使用场景
+
+| 场景 | 怎么查 |
+|---|---|
+| 看本地装的哪个版本 | `cat VERSION` 或 `head -3 SKILL.md` |
+| 看一份历史报告是哪个版本生成 | 报告头「巡检版本」字段 |
+| 对比两份报告差异 | 报告头 version + 生成模式 — 立刻知道是版本差异还是模式差异 |
+| 看 GitHub Release 哪个最新 | `gh release view --repo aimdotsh/mysql-healthcheck` |
+
+### 配套：报告头新增「生成模式」字段
+
+之前报告头只有「巡检版本：v1.0」（硬编码占位），现在改成：
+
+```markdown
+**巡检版本**：v1.0.6（mysql-healthcheck skill）
+**生成模式**：standard
+```
+
+客户能立刻看出用 fast / standard / full 哪个模式。
+
+### 影响
+
+- 任何下载到的 skill 包都能 1 秒判断版本
+- 报告文件不再"长得一样不知道哪个新" — 看版本号 + 生成模式秒判
+- 跨客户 / 跨时间的报告对比有了客观依据
+- LLM 必须 Read VERSION 文件（额外 1 个 Read 调用，零性能影响）
+
+---
+
 ## [1.0.5] - 2026-05-24
 
 **UX 修复：standard/fast 模式不再产生章节编号 gap，改为「精简章节」**

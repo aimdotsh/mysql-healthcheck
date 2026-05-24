@@ -4,6 +4,26 @@
 >
 > 零外部依赖、纯文本、~500 KB。适合内网客户、私有化 LLM 场景。
 
+## 怎么查当前装的是哪个版本
+
+任何 3 处都能查：
+
+```bash
+# 方式 1：VERSION 文件（最直接）
+cat VERSION
+# → 1.0.6
+
+# 方式 2：SKILL.md frontmatter
+head -3 SKILL.md
+# → version: 1.0.6
+
+# 方式 3：CHANGELOG 顶部条目
+head -10 CHANGELOG.md | grep -E "^## \[" | head -1
+# → ## [1.0.6] - 2026-05-24
+```
+
+或者更简单：跑完一份巡检报告，看 markdown 报告头的「巡检版本：v1.0.6」字段。
+
 ## 仓库内容
 
 ```

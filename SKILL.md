@@ -1,7 +1,12 @@
 ---
 name: mysql-healthcheck
+version: 1.0.6
 description: 为 MySQL 数据库集群生成 markdown 格式的巡检报告。当用户提供 MySQLHealthCheck_*.txt 采集数据或要求「分析 MySQL 巡检 / 月度巡检 / 健康评估 / 上线评估 / 故障复盘 / 合规自查」时使用。LLM 读 txt → 应用 42 条 DBA 规则 → 输出 17 章 markdown 报告。零依赖、纯文本、适合内网环境。
 ---
+
+<!-- skill version: 1.0.6 — 查 VERSION 文件 / CHANGELOG.md / 本行任一处确认 -->
+<!-- LLM 生成报告时必须在「报告头」记录：「巡检版本：v{VERSION 文件内容}」 -->
+
 
 # MySQL 巡检 Skill（LLM-driven）
 
@@ -179,7 +184,18 @@ LLM 应当用 Read 的 `offset` + `limit` 参数**分段读**大文件而非一�
 - 6 维度健康度 ASCII 柱状图
 - emoji 状态色 (🟢🟡🔴) 在节点对比表里
 
-### Step 9: 写文件
+### Step 9: 写文件 + 报告头记录版本
+
+**写之前先 Read `VERSION` 文件**（skill 仓库根目录），把内容填到报告头：
+
+```markdown
+**巡检版本**：v{VERSION 文件内容}（mysql-healthcheck skill）
+**生成模式**：{fast / standard / full}
+```
+
+这样客户日后对比两份报告能立刻看出"用了哪个版本的 skill"，便于排查不一致。
+
+文件命名：
 
 ```
 <dataDir>/MySQL巡检报告_<YYYY-MM-DD>.md       # 标准命名
