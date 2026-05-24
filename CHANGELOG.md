@@ -5,6 +5,61 @@
 
 ---
 
+## [1.0.7] - 2026-05-24
+
+**CI 化 — push tag 自动打包发布到 Releases 页**
+
+### 改动
+
+新增 `.github/workflows/release.yml`，tag 触发自动构建 + 发布。
+
+### 流程
+
+```bash
+echo "1.0.7" > VERSION
+sed -i '' 's/^version: .*/version: 1.0.7/' SKILL.md
+# 在 CHANGELOG.md 顶部加 "## [1.0.7] - YYYY-MM-DD" 条目
+git add -A && git commit -m "release: v1.0.7"
+git push origin skill
+git tag skill-1.0.7
+git push origin skill-1.0.7    # ← Action 触发
+```
+
+约 1 分钟后 [Releases](https://github.com/aimdotsh/mysql-healthcheck/releases) 页出现新版本。
+
+### Action 做了什么
+
+1. **校验 3 处版本一致**：VERSION 文件 / SKILL.md frontmatter / CHANGELOG.md 顶部条目
+2. **校验 tag 与 VERSION 匹配**（tag 必须是 `skill-` + VERSION 内容）
+3. **打包 zip**（排除 `.git` / `.github` / `.DS_Store` / `*.bak`）
+4. **从 CHANGELOG 抽取该版本的变更说明**作为 release notes 主体
+5. **prepend 安装命令**给 release notes 顶部
+6. **发布到 Releases 页**，标记 `latest`
+
+### 校验失败的常见原因
+
+- VERSION 文件与 tag 不匹配（如 tag `skill-1.0.7` 但 VERSION 文件还是 `1.0.6`）→ 报错退出
+- CHANGELOG.md 没有该版本的 `## [X.Y.Z]` 条目 → 报错退出
+- SKILL.md frontmatter 没有 `version: X.Y.Z` → 仅 warning，不阻断
+
+### 手动触发（保险用）
+
+GitHub UI → Actions → "Release skill" → "Run workflow" → 输入 version 参数。
+
+### 验证
+
+- ✅ skill-1.0.6 之前已通过手动 `gh release create` 发布
+- 本版 1.0.7 起改为 Action 自动发布（push tag 触发）
+- 测试方式：`git tag skill-1.0.7 && git push origin skill-1.0.7` 后看 Actions 页面
+
+### 不变项
+
+- VERSION / SKILL.md / CHANGELOG 三处版本标识保留
+- 报告头依然 Read VERSION 文件填「巡检版本」字段
+- 客户拿到 zip 后行为完全不变
+
+---
+
 ## [1.0.6] - 2026-05-24
 
 **版本标识 — 多处可查 skill 版本，不再靠文件名猜**

@@ -4,6 +4,38 @@
 >
 > 零外部依赖、纯文本、~500 KB。适合内网客户、私有化 LLM 场景。
 
+## 维护者：怎么发新版本
+
+`push tag` 自动触发 GitHub Action 发布到 [Releases](https://github.com/aimdotsh/mysql-healthcheck/releases) 页：
+
+```bash
+# 1. 改版本相关文件
+echo "1.0.7" > VERSION                       # 改 VERSION
+sed -i '' 's/^version: .*/version: 1.0.7/' SKILL.md  # 改 SKILL.md frontmatter
+# 在 CHANGELOG.md 顶部加上 "## [1.0.7] - YYYY-MM-DD" 条目
+
+git add -A && git commit -m "release: v1.0.7"
+git push origin skill
+
+# 2. 打 tag 触发 release
+git tag skill-1.0.7
+git push origin skill-1.0.7
+
+# 3. 等 ~1 分钟，GitHub Action 自动：
+#    - 校验 VERSION / SKILL.md / CHANGELOG 一致
+#    - 打包 zip（排除 .git / .github / .DS_Store）
+#    - 从 CHANGELOG 抽取该版本变更说明
+#    - 发布到 Releases 页，标记 latest
+```
+
+Action 校验失败的常见原因：
+- VERSION 文件与 tag 不匹配（tag 必须是 `skill-` + VERSION 内容）
+- CHANGELOG.md 顶部没有该版本的 `## [X.Y.Z]` 条目
+
+详见 `.github/workflows/release.yml`。
+
+也可以在 GitHub UI 手动触发：仓库 → Actions → "Release skill" → "Run workflow"。
+
 ## 怎么查当前装的是哪个版本
 
 任何 3 处都能查：

@@ -1,0 +1,166 @@
+name: Release skill
+
+# 触发方式：
+# 1. Push 一个 skill-X.Y.Z 格式的 tag → 自动打包 + 发布 release
+# 2. GitHub UI 手动点 "Run workflow"（保险用，需要传 version 参数）
+#
+# 标准发布流程：
+#   echo "1.0.7" > VERSION
+#   # 改 CHANGELOG / SKILL.md frontmatter / ...
+#   git add -A && git commit -m "feat: ..."
+#   git push origin skill
+#   git tag skill-1.0.7
+#   git push origin skill-1.0.7    # ← 触发本 workflow
+
+on:
+  push:
+    tags:
+      - 'skill-*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (must match VERSION file content, e.g. 1.0.7)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version + validate
+        id: ver
+        run: |
+          VERSION=$(cat VERSION | tr -d '[:space:]')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=skill-$VERSION" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG_NAME="${GITHUB_REF#refs/tags/}"
+            EXPECTED="skill-$VERSION"
+            if [ "$TAG_NAME" != "$EXPECTED" ]; then
+              echo "::error::Tag '$TAG_NAME' 与 VERSION 文件不一致（应为 '$EXPECTED'）"
+              echo "::error::请确保推 tag 前先更新 VERSION 文件并提交。"
+              exit 1
+            fi
+            echo "✓ tag '$TAG_NAME' matches VERSION '$VERSION'"
+          else
+            INPUT="${{ github.event.inputs.version }}"
+            if [ "$INPUT" != "$VERSION" ]; then
+              echo "::error::输入的 version '$INPUT' 与 VERSION 文件 '$VERSION' 不一致"
+              exit 1
+            fi
+          fi
+
+      - name: Sanity check SKILL.md frontmatter
+        run: |
+          VERSION=${{ steps.ver.outputs.version }}
+          if ! grep -q "^version: $VERSION$" SKILL.md; then
+            echo "::warning::SKILL.md frontmatter 中没找到 'version: $VERSION'。建议同步更新。"
+            echo "  当前 SKILL.md 头部："
+            head -5 SKILL.md
+          else
+            echo "✓ SKILL.md frontmatter version 与 VERSION 文件一致"
+          fi
+
+      - name: Sanity check CHANGELOG.md 有该版本条目
+        run: |
+          VERSION=${{ steps.ver.outputs.version }}
+          if ! grep -q "^## \[$VERSION\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md 中没找到 '## [$VERSION]' 条目"
+            echo "::error::请在 CHANGELOG.md 顶部加上 v$VERSION 的变更说明"
+            exit 1
+          fi
+          echo "✓ CHANGELOG.md 含 v$VERSION 条目"
+
+      - name: Build release zip
+        id: build
+        run: |
+          VERSION=${{ steps.ver.outputs.version }}
+          BUILD_NAME="mysql-healthcheck-skill-$VERSION"
+          BUILD_DIR="/tmp/$BUILD_NAME"
+
+          mkdir -p "$BUILD_DIR"
+          rsync -a \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='.DS_Store' \
+            --exclude='**/.DS_Store' \
+            --exclude='*.bak' \
+            --exclude='node_modules' \
+            ./ "$BUILD_DIR/"
+
+          cd /tmp
+          zip -rq "$BUILD_NAME.zip" "$BUILD_NAME/"
+
+          SIZE=$(stat -c %s "$BUILD_NAME.zip" 2>/dev/null || stat -f %z "$BUILD_NAME.zip")
+          echo "✓ Built $BUILD_NAME.zip ($SIZE bytes)"
+
+          mv "$BUILD_NAME.zip" "$GITHUB_WORKSPACE/"
+          echo "zip_path=$BUILD_NAME.zip" >> "$GITHUB_OUTPUT"
+          echo "zip_size=$SIZE" >> "$GITHUB_OUTPUT"
+
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        run: |
+          VERSION=${{ steps.ver.outputs.version }}
+          awk -v ver="$VERSION" '
+            BEGIN { capture = 0 }
+            $0 ~ "^## \\[" ver "\\]" { capture = 1; print; next }
+            capture && /^## \[/ { capture = 0 }
+            capture { print }
+          ' CHANGELOG.md > /tmp/release-notes.md
+
+          # 加下载说明 prepend
+          cat > /tmp/release-notes-final.md <<EOF
+          ## 📦 安装
+
+          \`\`\`bash
+          # 一行装到 Claude Code skill 目录
+          curl -L -O https://github.com/${{ github.repository }}/releases/download/skill-$VERSION/mysql-healthcheck-skill-$VERSION.zip
+          unzip -o mysql-healthcheck-skill-$VERSION.zip -d ~/.claude/skills/
+          mv ~/.claude/skills/mysql-healthcheck-skill-$VERSION ~/.claude/skills/mysql-healthcheck
+          rm mysql-healthcheck-skill-$VERSION.zip
+          \`\`\`
+
+          安装后重启 Claude Code 或 \`/clear\` 重载 skill。
+
+          ## 🔍 查版本
+
+          \`\`\`bash
+          cat ~/.claude/skills/mysql-healthcheck/VERSION  # → $VERSION
+          \`\`\`
+
+          ---
+
+          EOF
+          cat /tmp/release-notes.md >> /tmp/release-notes-final.md
+
+          echo "=== Release notes preview ==="
+          head -40 /tmp/release-notes-final.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: skill v${{ steps.ver.outputs.version }}
+          body_path: /tmp/release-notes-final.md
+          files: ${{ steps.build.outputs.zip_path }}
+          make_latest: true
+          target_commitish: ${{ github.sha }}
+          fail_on_unmatched_files: true
+
+      - name: Summary
+        run: |
+          echo "## ✓ Release published" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Tag: \`${{ steps.ver.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Version: \`${{ steps.ver.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Asset size: ${{ steps.build.outputs.zip_size }} bytes" >> "$GITHUB_STEP_SUMMARY"
+          echo "- URL: https://github.com/${{ github.repository }}/releases/tag/${{ steps.ver.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
