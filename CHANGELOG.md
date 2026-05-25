@@ -5,6 +5,98 @@
 
 ---
 
+## [1.0.8] - 2026-05-25
+
+**混合架构：可选 Node 预处理器（快路径）+ 每章「本章小结」**
+
+### 客户反馈
+
+> 智能体处理的内容还是很多，耗时较长。能否先用脚本进行数据处理，然后每章 LLM 总结/润色？
+
+### 改动
+
+#### 1. 新增 `tools/preprocess.js`（单文件 Node 预处理器）
+
+从 SaaS 分支借用 `extract.js + rule-engine.js + rule-helpers/index.js + rules/*.json`，无外部依赖（`require` 只用 fs/path，**不依赖 npm install**）。
+
+客户机有 `node` 即可跑：
+
+```bash
+node tools/preprocess.js /path/to/data --out /path/to/data/facts.json
+```
+
+约 5-15 秒输出结构化 `facts.json`（~650 KB），含：
+- `nodes[]` — 各节点解析数据
+- `issues[]` — 42 条规则确定性评估结果（P0-P3 + description + action）
+- `healthScore` — 6 维度评分
+- `cluster.topology` — 拓扑识别结果
+
+#### 2. SKILL.md 新增 Step 0 决策树（混合工作流）
+
+```
+检查 facts.json
+├── 存在 ─→ 快路径（5-10 min）
+└── 不存在 ─→ 检测 node 可用性
+    ├── 有 node ─→ 跑 preprocess.js → 快路径
+    └── 无 node ─→ 纯 LLM 路径（10-15 min，原工作流）
+```
+
+**两条路径对比**：
+
+| 路径 | LLM input | 总时间 | 一致性 |
+|---|---|---|---|
+| 快路径（facts.json）| ~10 KB | **5-10 min** | ✅ 高（规则确定性）|
+| 纯 LLM 路径 | ~50 KB | 10-15 min | ⚠️ 中 |
+
+#### 3. report-template.md 新增「本章小结」要求
+
+第二至第十五章末尾必须加统一格式 callout：
+
+```markdown
+> **📊 本章小结**
+>
+> - **展示内容**：（这章给了什么信息）
+> - **整体状态**：🟢 正常 / 🟡 关注 / 🔴 异常
+> - **关键发现**：（最重要的 1-3 条）
+> - **建议**：（引用 rules.md action 字段或"维持现状"）
+```
+
+状态 emoji 约定：🟢 该章节规则全未触发 / 🟡 P2-P3 触发 / 🔴 P0-P1 触发。
+
+第一章 / 第十六章 / 第十七章不加（本身就是综合性章节）。
+
+### 收益
+
+1. **速度提升 40-50%**（快路径下 input 减 80%，跳过 LLM 规则评估）
+2. **一致性大幅改善**（同样数据 → 同样的 issues / 健康度评分 — 规则评估是确定性的）
+3. **LLM 专注做叙事**（不再既当"规则评估侦探"又当"报告作家"）
+4. **每章独立小结**让客户快速浏览结论（不需要全看完）
+5. **零额外依赖**（preprocess.js 只用 Node stdlib，无 npm install）
+
+### 影响
+
+- 客户机有 node ✓ 自动走快路径
+- 客户机无 node → 自动 fallback 到纯 LLM 路径，功能完整
+- 全部 17 章编号 / 名称约束保留（v1.0.5）
+- mermaid `<br/>` 约束保留（v1.0.4）
+- 各模式（fast / standard / full）保留（v1.0.2）
+
+### 验证
+
+实测在 `desensitized` 4 节点测试集上：
+
+```bash
+node tools/preprocess.js /Users/liups/ai/skill/test/v3/desensitized --out /tmp/facts.json
+# → 4 节点 / 45 issues (P0:5/P1:11/P2:25/P3:4) / 健康度 88/100 / 5 秒完成
+```
+
+### 不在本次范围
+
+- 章节级并行 LLM 调用（需 SaaS 路径才能 orchestrate，不在 skill 范围）
+- 客户机无 node 的情况下用 bash 写预处理器（复杂度过高）
+
+---
+
 ## [1.0.7] - 2026-05-24
 
 **CI 化 — push tag 自动打包发布到 Releases 页**

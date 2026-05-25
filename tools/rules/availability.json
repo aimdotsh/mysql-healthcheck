@@ -1,0 +1,85 @@
+{
+  "_schema": "mysql-healthcheck v5.0.1",
+  "_doc": "availability 维度规则。dimension 由文件名推断，与 v5.0 GA 行为等价。",
+  "rules": [
+    {
+      "id": "disks",
+      "scope": "node",
+      "title": "磁盘使用率告警（含光驱/ISO/可移动介质识别）",
+      "rationale": "高使用率磁盘是 P0 故障源；但需识别光驱/安装 ISO 等设计性 100% 占用，避免误报。",
+      "handler": "evalDisks"
+    },
+    {
+      "id": "innodb_hll",
+      "scope": "node",
+      "title": "InnoDB History List Length 偏高",
+      "rationale": "undo 历史清理滞后，长事务阻塞 purge；过大会拉低读性能并占用回滚段。",
+      "handler": "evalInnodbHll"
+    },
+    {
+      "id": "long_running_session",
+      "scope": "node",
+      "title": "长时间运行会话",
+      "rationale": "可能阻塞 purge、消耗资源；需人工确认业务影响后再决定是否 KILL。",
+      "handler": "evalLongRunningSession"
+    },
+    {
+      "id": "max_connections_vs_memory",
+      "scope": "node",
+      "title": "max_connections × 单连接 buffer 超 RAM",
+      "rationale": "并发上来时所有连接都按峰值分配，可能触发 OOM。",
+      "handler": "evalMaxConnectionsVsMemory"
+    },
+    {
+      "id": "mem_high",
+      "scope": "node",
+      "priority": "P1",
+      "title": "内存使用率过高",
+      "rationale": "OS 进入 swap 概率上升，MySQL 响应延迟显著增加。",
+      "trigger": "node.memUsagePct > cfg.thresholds.memory.high_pct",
+      "groupKeyTpl": "mem_high:{{node.ip}}",
+      "descriptionTpl": "内存使用率 {{node.memUsagePct}}% 偏高",
+      "actionTpl": "关注业务负载与缓冲池配置，必要时扩容"
+    },
+    {
+      "id": "os_version_eol",
+      "scope": "node",
+      "title": "操作系统版本已停止维护",
+      "rationale": "EOL 系统不再接收安全补丁，存在合规与安全风险。",
+      "handler": "evalOsVersionEol"
+    },
+    {
+      "id": "replication",
+      "scope": "node",
+      "title": "复制线程与延迟",
+      "rationale": "thread_down 立即影响可用性；secondsBehindMaster 分级反映恢复 RPO 风险。",
+      "handler": "evalReplication"
+    },
+    {
+      "id": "role_read_only",
+      "scope": "node",
+      "title": "主从角色与 read_only 一致性",
+      "rationale": "主库错误置为只读 → 写入失败；从库可写 → 数据漂移；DR 灾备节点切换设计需识别区分。",
+      "handler": "evalRoleReadOnly"
+    },
+    {
+      "id": "slave_parallel_workers_zero",
+      "scope": "node",
+      "title": "从库未启用并行复制 + 集群数据量大",
+      "rationale": "单线程应用 binlog 在大事务下会延迟积压。",
+      "handler": "evalSlaveParallelWorkersZero"
+    },
+    {
+      "id": "swap_used",
+      "scope": "node",
+      "priority": "P1",
+      "title": "Swap 已被使用",
+      "rationale": "OS 进入 swap，MySQL 响应延迟会显著拉长。",
+      "trigger": "node.swapUsed == true",
+      "groupKeyTpl": "swap:{{node.ip}}",
+      "descriptionTpl": "Swap 已使用（Total {{node.swapTotal}} / Free {{node.swapFree}}）",
+      "actionTpl": "将 vm.swappiness 调至 1 或禁用 Swap；同时核查 innodb_buffer_pool_size 是否过大挤占内存",
+      "sqlTpl": "sysctl -w vm.swappiness=1\necho \"vm.swappiness=1\" >> /etc/sysctl.conf\n# 或直接：swapoff -a（确认无 OOM 风险后）"
+    }
+  ]
+}

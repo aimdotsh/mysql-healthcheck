@@ -1,10 +1,10 @@
 ---
 name: mysql-healthcheck
-version: 1.0.7
+version: 1.0.8
 description: 为 MySQL 数据库集群生成 markdown 格式的巡检报告。当用户提供 MySQLHealthCheck_*.txt 采集数据或要求「分析 MySQL 巡检 / 月度巡检 / 健康评估 / 上线评估 / 故障复盘 / 合规自查」时使用。LLM 读 txt → 应用 42 条 DBA 规则 → 输出 17 章 markdown 报告。零依赖、纯文本、适合内网环境。
 ---
 
-<!-- skill version: 1.0.7 — 查 VERSION 文件 / CHANGELOG.md / 本行任一处确认 -->
+<!-- skill version: 1.0.8 — 查 VERSION 文件 / CHANGELOG.md / 本行任一处确认 -->
 <!-- LLM 生成报告时必须在「报告头」记录：「巡检版本：v{VERSION 文件内容}」 -->
 
 
@@ -64,6 +64,60 @@ collectors/mysqlHealthCheckV3.0.sh \
 ---
 
 ## 执行流程（LLM 单次会话内完成）
+
+### Step 0: 检查预处理文件（**优先走快路径**）
+
+skill 仓库下有 `tools/preprocess.js` — 一个**单文件 Node 预处理器**，能把 `MySQLHealthCheck_*.txt` 解析成结构化 `facts.json`（含 nodes 数据 + issues 规则评估结果 + healthScore），LLM 只需读 facts.json 就有所有规则结论。
+
+**决策树**：
+
+```
+检查 <dataDir>/facts.json
+├── 存在 ─→ 进入「快路径」：跳过 Step 2-6，直接 Read facts.json
+│
+└── 不存在 ─→ 检测客户机 node 可用性（Bash 跑 `node --version`）
+    │
+    ├── 有 node ─→ 主动跑：
+    │   bash
+    │   node <skillDir>/tools/preprocess.js <dataDir> --out <dataDir>/facts.json
+    │   （约 5-15 秒）
+    │   完成后回到「快路径」
+    │
+    └── 无 node ─→ 走「纯 LLM 路径」：进入 Step 1（原工作流）
+```
+
+**两条路径对比**：
+
+| 路径 | LLM input | LLM output | 总时间 | 一致性 |
+|---|---|---|---|---|
+| 快路径（有 facts.json）| ~10 KB | 30-50K token | **5-10 min** | ✅ 高（规则确定性评估）|
+| 纯 LLM 路径 | ~50 KB | 30-50K token | 10-15 min | ⚠️ 中（LLM 自由发挥规则）|
+
+**关键差异**：快路径下，**规则评估结果（issues / P0-P3 分类 / 健康度评分）由 preprocess.js 确定性计算**，跨次运行结果完全一致；LLM 只负责"按规则结果写叙事"。
+
+### 快路径详细流程（facts.json 存在时）
+
+1. **Read** `<dataDir>/facts.json`
+2. **Read** `references/report-template.md`（按模式跳读）
+3. **Read** `references/rules.md` 速查矩阵段（仅在用户问"为什么报这条规则"时翻详细段）
+4. 按模板生成 17 章 markdown，**直接用 facts.json 的字段**：
+   - `facts.nodes[]` → 第二/三/四/五章 表格数据
+   - `facts.issues[]` → 第十六章行动计划（按 priority 排序）
+   - `facts.healthScore` → 第一章 / 第十七章评分
+   - `facts.cluster.topology` → 第四章拓扑识别结果（直接画 mermaid）
+5. LLM 仅负责：
+   - 第一章「执行摘要」自然语言叙事
+   - 每章末尾「**本章小结**」callout
+   - 第十六章 P0/P1 行动计划的措辞润色
+   - 第十七章结论
+
+**预期时间**：5-10 min（input 减 80% + 跳过 LLM 规则评估）。
+
+### 纯 LLM 路径（facts.json 不存在 + 无 node 时）
+
+走原 Step 1-9 流程（见下文）。功能完整但慢，**建议优先让客户装 node 用快路径**。
+
+---
 
 ### Step 1: 找数据 + 检查 config
 
