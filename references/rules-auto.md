@@ -1,7 +1,7 @@
 # 巡检规则手册（自动生成）
 
 > **本文档由 `scripts/gen-rules-md.js` 从 `scripts/rules/*.json` 自动生成。请勿手动编辑。**
-> 生成时间：2026-05-20　|　规则总数：42
+> 生成时间：2026-06-02　|　规则总数：42
 
 v5.0 GA：所有 ~51 条巡检规则（节点级 + 集群级）全部以声明式 JSON 描述，由 `scripts/rule-engine.js` 加载并求值；复杂规则通过 `scripts/rule-helpers/index.js` 注册的 handler 计算。详细 schema 见 [`scripts/rules/SCHEMA.md`](../scripts/rules/SCHEMA.md)。
 
@@ -188,32 +188,17 @@ node.memUsagePct > cfg.thresholds.memory.high_pct
 
 **Swap 已被使用**
 
-> OS 进入 swap，MySQL 响应延迟会显著拉长。
+> OS 进入 swap，MySQL 响应延迟会显著拉长。关联 buffer_pool + 每连接 buffer × max_connections 计算内存预算，定位是否内存超配导致换出。
 
 | 字段 | 值 |
 |---|---|
 | 维度 | `availability` |
 | Scope | `node` |
 | 优先级 | **P1** |
+| Handler | `evalSwapUsed` |
 | 文件 | `scripts/rules/availability.json` |
 
-**触发**：
-```
-node.swapUsed == true
-```
-
-**说明文本**：
-> Swap 已使用（Total {{node.swapTotal}} / Free {{node.swapFree}}）
-
-**建议行动**：
-> 将 vm.swappiness 调至 1 或禁用 Swap；同时核查 innodb_buffer_pool_size 是否过大挤占内存
-
-**示例 SQL / 配置**：
-```sql
-sysctl -w vm.swappiness=1
-echo "vm.swappiness=1" >> /etc/sysctl.conf
-# 或直接：swapoff -a（确认无 OOM 风险后）
-```
+**触发**：调用 helper `evalSwapUsed`（详见 `scripts/rule-helpers/`）
 
 ---
 
@@ -420,32 +405,17 @@ innodb_temp_data_file_path = ibtmp1:12M:autoextend:max:50G
 
 **ibtmp1 超大**
 
-> 临时表空间无上限，已增长到危险体积。
+> 临时表空间无上限，已增长到危险体积。追因落盘临时表 TOP SQL，并提示开启 performance_schema 精确定位元凶。
 
 | 字段 | 值 |
 |---|---|
 | 维度 | `durability` |
 | Scope | `node` |
 | 优先级 | **P2** |
+| Handler | `evalIbtmp1Oversize` |
 | 文件 | `scripts/rules/durability.json` |
 
-**触发**：
-```
-node.ibtmp1.sizeBytes > cfg.thresholds.innodb.ibtmp1_max_gb * 1073741824
-```
-
-**说明文本**：
-> ibtmp1 已增长至 {{node.ibtmp1.sizeFormatted}}
-
-**建议行动**：
-> 配置 innodb_temp_data_file_path 上限，维护窗口重启回收
-
-**示例 SQL / 配置**：
-```sql
--- my.cnf:
-innodb_temp_data_file_path = ibtmp1:12M:autoextend:max:50G
--- 重启 MySQL 后生效
-```
+**触发**：调用 helper `evalIbtmp1Oversize`（详见 `scripts/rule-helpers/`）
 
 ---
 
