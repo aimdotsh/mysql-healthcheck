@@ -5,6 +5,41 @@
 
 ---
 
+## [1.0.9] - 2026-06-02
+
+**同步 4 条报告质量增强规则（与 ykt v2.0 / SaaS v5.0.8 一致）+ 修复缺失的默认阈值配置**
+
+### 改动
+
+#### 1. 4 条规则升级为"带追因 + 推荐值 + 可执行 SQL"（混合模式 / 快路径）
+
+把 ykt/SaaS 分支已落地的 4 条规则增强同步到 `tools/rule-helpers/index.js`，让 node 快路径
+产出的 `facts.json` 直接带 `currentValue → recommendedValue + sql`，LLM 总结时无需再推算：
+
+- **`ibtmp1_oversize`** — 不止建议封顶，还从「SQL with temp tables」追因落盘临时表 TOP SQL，
+  提示开 performance_schema 用 `sys.statements_with_temp_tables` 精确定位元凶；≥100GB / ≥10× 阈值升 P1。
+- **`swap_used`** — 关联内存预算：`buffer_pool + 单连接 buffer × max_connections` 理论峰值 vs 物理内存，
+  判定是否内存超配导致换出，并给出推荐 buffer_pool / max_connections 上限。
+- **`data_to_memory_ratio_high`** — 增加热数据覆盖率测算（热集 ~25% × 数据量 vs buffer_pool），
+  RAM 不现实时改建议分库分表/归档，而非盲目加内存。
+- **`innodb_hll_high`** — 给出 INNODB_TRX 按 trx_started 定位长事务、kill、innodb_purge_threads 等具体处置 + SQL。
+
+新增 `perConnBufferMB(node)` 辅助函数，`evalMaxConnectionsVsMemory` 复用之（去重）。
+两条规则（ibtmp1_oversize / swap_used）的 JSON 由模板式 trigger 改为 `handler` 派发。
+
+#### 2. 补齐缺失的 `tools/config/default-thresholds.json`（**bug 修复**）
+
+此前该文件未随 skill 分支发布，导致 `loadHcConfig` 每次告警退化为空配置，**所有模板式
+trigger 规则（读 `cfg.thresholds.X.Y`）都在与 `undefined` 比较而静默失效**。补齐后
+`long_query_time_loose` 等阈值规则恢复正常判定（测试集 issues 48 → 49，纯增）。
+
+#### 3. SKILL.md Step 0 决策流程明确为"node + LLM 总结 / md 兜底"
+
+按客户诉求重写决策树框架：**有 node → 混合模式（node 出确定性数据 + LLM 写总结，推荐）；
+无 node → 纯 LLM 兜底（md 路径）**，强调 preprocess.js 零依赖、不需 npm install、不产 docx。
+
+---
+
 ## [1.0.8] - 2026-05-25
 
 **混合架构：可选 Node 预处理器（快路径）+ 每章「本章小结」**

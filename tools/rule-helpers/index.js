@@ -27,6 +27,17 @@ function recommendBufferPoolMB(memGB) {
   return Math.round(Math.max(1, Math.min(memGB * 0.6, memGB - reserveGB)) * 1024);
 }
 
+// 每个连接峰值可独占的会话级 buffer 合计（MB）
+function perConnBufferMB(node) {
+  return (
+    (_kb(node, 'sort_buffer_size_in_kb') || 0) / 1024 +
+    (_kb(node, 'join_buffer_size_in_kb') || 0) / 1024 +
+    (_kb(node, 'read_buffer_size_in_kb') || 0) / 1024 +
+    (_kb(node, 'read_rnd_buffer_size_in_kb') || 0) / 1024 +
+    (_mb(node, 'tmp_table_size_in_mb') || 0)
+  );
+}
+
 function _kb(node, key) {
   const v = node.variables?.[key]; if (v == null) return null;
   const m = String(v).trim().match(/^([\d.]+)\s*([KMGT])?B?$/i);
@@ -395,12 +406,7 @@ function evalMaxConnectionsVsMemory(ctx) {
   const warnRatio = T.peak_memory_ratio_warn ?? 0.3;
   const p1Ratio = T.peak_memory_ratio_p1 ?? 0.5;
   if (!memGB || maxConn <= 0) return [];
-  const perConnMB =
-    (_kb(node, 'sort_buffer_size_in_kb') || 0) / 1024 +
-    (_kb(node, 'join_buffer_size_in_kb') || 0) / 1024 +
-    (_kb(node, 'read_buffer_size_in_kb') || 0) / 1024 +
-    (_kb(node, 'read_rnd_buffer_size_in_kb') || 0) / 1024 +
-    (_mb(node, 'tmp_table_size_in_mb') || 0);
+  const perConnMB = perConnBufferMB(node);
   const peakMB = perConnMB * maxConn;
   const peakRatio = peakMB / (memGB * 1024);
   if (peakRatio <= warnRatio) return [];
@@ -426,19 +432,45 @@ function evalDataToMemoryRatio(ctx) {
   const T = cfg.thresholds?.data_memory || {};
   const warn = T.ratio_warn ?? 10;
   const p1 = T.ratio_p1 ?? 50;
+  const hotPct = T.hot_set_pct ?? 0.25;        // 经验值：活跃工作集约占全量 25%
   if (!memGB || dbGB <= 0) return [];
   const ratio = dbGB / memGB;
   if (ratio <= warn) return [];
+
+  // 当前 buffer pool 对全量数据的覆盖率
+  const bpGB = node.bpMB ? node.bpMB / 1024 : null;
+  const coveragePct = bpGB ? (bpGB / dbGB) * 100 : null;
+  // 覆盖「热点集」（≈hotPct）所需的 bp 与 RAM（bp 约取 60% RAM 反推）
+  const bpNeededGB = Math.ceil(hotPct * dbGB);
+  const ramForHotGB = Math.ceil(bpNeededGB / 0.6);
+  const hotPctLabel = (hotPct * 100).toFixed(0);
+
+  const covClause = coveragePct != null
+    ? `当前 buffer pool ${bpGB.toFixed(0)} GB 仅能覆盖全量的约 ${coveragePct.toFixed(1)}%`
+    : '当前 buffer pool 远小于数据量';
+  // RAM 需求过大（> 物理内存 8 倍）时如实说明「靠加内存堆不动」，转向架构治理
+  const ramUnrealistic = ramForHotGB > memGB * 8;
+
   return [{
     type: 'data_to_memory_ratio_high',
     priority: ratio > p1 ? 'P1' : 'P2',
     groupKey: `data_memory_ratio:${node.ip}`,
     dimension: 'performance',
-    description: `数据集 ${dbGB.toFixed(0)} GB 是 RAM ${memGB.toFixed(0)} GB 的 ${ratio.toFixed(1)} 倍 — 工作集大概率无法常驻 buffer pool，会持续磁盘 IO`,
-    currentValue: `${dbGB.toFixed(0)} GB 数据 / ${memGB.toFixed(0)} GB RAM = ${ratio.toFixed(1)}x`,
-    recommendedValue: `扩容 RAM 到 ${Math.ceil(dbGB / 5)} GB（数据 / 5），或冷热分离 / 归档 / 分库`,
-    action: '架构层调整（不是 SET GLOBAL 能改的）；评估扩容 / 冷数据归档 / 业务分表',
-    sql: null,
+    description: `数据集 ${dbGB.toFixed(0)} GB 是 RAM ${memGB.toFixed(0)} GB 的 ${ratio.toFixed(1)} 倍 — ${covClause}，工作集无法常驻 buffer pool，会持续磁盘 IO`,
+    currentValue: `${dbGB.toFixed(0)} GB 数据 / ${memGB.toFixed(0)} GB RAM = ${ratio.toFixed(1)}x（buffer pool 覆盖率 ${coveragePct != null ? coveragePct.toFixed(1) + '%' : '极低'}）`,
+    recommendedValue: ramUnrealistic
+      ? `覆盖 ${hotPctLabel}% 热点需 buffer pool ≥ ${bpNeededGB} GB（RAM ≥ ${ramForHotGB} GB），靠扩内存已不现实 → 优先冷热分离 / 归档 / 分库分表把单实例数据降到 RAM 的 10 倍以内`
+      : `覆盖 ${hotPctLabel}% 热点需 buffer pool ≥ ${bpNeededGB} GB（即 RAM 扩到 ≥ ${ramForHotGB} GB）；或冷热分离 / 归档 / 分库`,
+    action: ramUnrealistic
+      ? `架构层治理（非 SET GLOBAL 能解决）：① 归档 / 冷热分离把热数据降到 ${Math.ceil(memGB * 0.6)} GB 以内即可基本常驻；② 否则扩 RAM 至 ${ramForHotGB} GB 覆盖 ${hotPctLabel}% 热点；③ 分库分表分摊单机数据量`
+      : `① 扩 RAM 至 ${ramForHotGB} GB 并把 innodb_buffer_pool_size 调到 ${bpNeededGB} GB 覆盖 ${hotPctLabel}% 热点；② 或冷热分离 / 归档 / 分库降低单实例数据量`,
+    sql: ramUnrealistic ? null : [
+      `-- 扩内存到 ${ramForHotGB} GB 后：`,
+      `SET GLOBAL innodb_buffer_pool_size = ${bpNeededGB * 1024 * 1024 * 1024};`,
+      `-- my.cnf:`,
+      `innodb_buffer_pool_size = ${bpNeededGB}G`,
+      `innodb_buffer_pool_instances = 8`,
+    ].join('\n'),
     scope: 'node',
   }];
 }
@@ -749,9 +781,157 @@ function evalInnodbHll(ctx) {
     type: 'innodb_hll_high',
     priority: hll >= p1 ? 'P1' : 'P2',
     groupKey: `innodb_hll_high:${node.ip}`,
-    description: `History List Length = ${hll.toLocaleString()}（超过 ${warn.toLocaleString()} 预警线，undo 历史清理滞后）`,
-    action: '排查长事务/长查询和 purge 线程压力；优先确认 PROCESSLIST 与 INNODB TRX 中是否存在长期未提交事务',
-    sql: 'SHOW ENGINE INNODB STATUS\\G\nSELECT * FROM information_schema.INNODB_TRX\\G\nSHOW FULL PROCESSLIST;',
+    dimension: 'performance',
+    description: `History List Length = ${hll.toLocaleString()}（超过 ${warn.toLocaleString()} 预警线）— undo 历史清理滞后，多由长事务/未提交事务阻塞 purge 引起，会持续撑大 undo 表空间并拉低读性能`,
+    currentValue: `History List Length = ${hll.toLocaleString()}`,
+    recommendedValue: `回落到 < ${warn.toLocaleString()}（消除长事务后 purge 线程会自动追平）`,
+    action: '① 用 INNODB_TRX 按 trx_started 找最久未提交事务并提交/kill；② 排查"开了事务后空闲"(idle in transaction) 的连接；③ 确认 innodb_purge_threads（默认 4，写多可调高）；④ 长期开启 innodb_max_purge_lag 给写入反压，避免 HLL 失控',
+    sql: [
+      '-- 1) 找最久未提交事务（按开始时间排序）：',
+      'SELECT trx_id, trx_state, trx_started,',
+      '       TIMESTAMPDIFF(SECOND, trx_started, NOW()) AS run_secs,',
+      '       trx_mysql_thread_id, trx_rows_modified, LEFT(trx_query,80) AS q',
+      '  FROM information_schema.INNODB_TRX ORDER BY trx_started LIMIT 10;',
+      '-- 2) 处理：提交或 KILL 对应线程',
+      '-- KILL <trx_mysql_thread_id>;',
+      '-- 3) purge 压力大时可调（动态）：',
+      'SET GLOBAL innodb_purge_threads = 8;   -- 需重启；写多场景',
+    ].join('\n'),
+    scope: 'node',
+  }];
+}
+
+// ibtmp1 超大 —— 不止建议封顶，还追因（哪些 SQL 在落盘临时表）
+function evalIbtmp1Oversize(ctx) {
+  const { node, cfg } = ctx;
+  const sizeBytes = Number(node.ibtmp1?.sizeBytes || 0);
+  const T = cfg.thresholds?.innodb || {};
+  const maxGB = T.ibtmp1_max_gb ?? 5;
+  if (!(sizeBytes > maxGB * 1073741824)) return [];
+  const sizeGB = sizeBytes / 1073741824;
+  const sizeFmt = node.ibtmp1?.sizeFormatted || `${sizeGB.toFixed(0)} GB`;
+  // 体积非常大（≥10× 阈值或 ≥100GB）升级为 P1
+  const priority = sizeGB >= 100 || sizeGB >= maxGB * 10 ? 'P1' : 'P2';
+
+  // 追因：从「SQL with temp tables」里挑落盘临时表最多的 SQL
+  const offenders = (node.sqlWithTmp || [])
+    .map(s => ({ ...s, disk: Number(String(s.diskTmp || 0).replace(/[^\d.]/g, '')) || 0 }))
+    .filter(s => s.disk > 0)
+    .sort((a, b) => b.disk - a.disk)
+    .slice(0, 3);
+  let causeClause;
+  if (offenders.length) {
+    const list = offenders
+      .map((s, i) => `${i + 1}. [${s.db || '-'}] ${String(s.query || '').replace(/\s+/g, ' ').slice(0, 70)}…（磁盘临时表 ${s.diskTmp}）`)
+      .join('\n      ');
+    causeClause = `本次已采集到落盘临时表最多的 SQL（疑似元凶）：\n      ${list}`;
+  } else {
+    causeClause = '本次未直接采集到落盘临时表 TOP SQL（可能 performance_schema 未开或采集时段无样本）';
+  }
+
+  const tmpTableMB = _mb(node, 'tmp_table_size_in_mb');
+  const heapMB = _mb(node, 'max_heap_table_size_in_mb');
+  const tmpClause = (tmpTableMB != null && heapMB != null)
+    ? `当前 tmp_table_size=${fmtMB(tmpTableMB)}、max_heap_table_size=${fmtMB(heapMB)}（内存临时表超此值即落盘到 ibtmp1）`
+    : '';
+
+  return [{
+    type: 'ibtmp1_oversize',
+    priority,
+    groupKey: `ibtmp1:${node.ip}`,
+    dimension: 'durability',
+    description: `ibtmp1 已增长至 ${sizeFmt} — 共享临时表空间无上限，且只能重启回收。如此体积说明存在大量大表 JOIN / 排序 / GROUP BY / DISTINCT / UNION 落盘到磁盘临时表`,
+    currentValue: `ibtmp1 = ${sizeFmt}${tmpClause ? '；' + tmpClause : ''}`,
+    recommendedValue: `定位并优化元凶 SQL + 配置 :max: 上限（如 50G），让其不再无限增长`,
+    action: [
+      `1) 追因：${causeClause}`,
+      `2) 用 performance_schema/sys 精确定位（确认 performance_schema=ON）：`,
+      `   SELECT * FROM sys.statements_with_temp_tables ORDER BY disk_tmp_tables DESC LIMIT 10;`,
+      `3) 治理元凶：给 JOIN/ORDER BY/GROUP BY 列建合适索引、改写 SQL 避免大结果集排序；`,
+      `   ${tmpClause ? '适当增大 tmp_table_size / max_heap_table_size 让中小临时表留在内存（注意 × 并发的内存占用）' : '适当增大 tmp_table_size / max_heap_table_size'}`,
+      `4) 封顶 + 维护窗口重启回收已膨胀的 ibtmp1`,
+    ].join('\n   '),
+    sql: [
+      '-- 定位元凶 SQL（按落盘临时表次数排序）：',
+      'SELECT * FROM sys.statements_with_temp_tables ORDER BY disk_tmp_tables DESC LIMIT 10;',
+      'SELECT digest_text, sum_created_tmp_disk_tables, sum_created_tmp_tables',
+      '  FROM performance_schema.events_statements_summary_by_digest',
+      '  ORDER BY sum_created_tmp_disk_tables DESC LIMIT 10;',
+      '-- 封顶（重启生效），避免再次无限增长：',
+      'innodb_temp_data_file_path = ibtmp1:12M:autoextend:max:50G',
+      '-- 维护窗口重启 MySQL 回收已膨胀的 ibtmp1',
+    ].join('\n'),
+    scope: 'node',
+  }];
+}
+
+// Swap 被使用 —— 关联到内存预算（buffer_pool + 每连接 buffer × max_connections）
+function evalSwapUsed(ctx) {
+  const { node } = ctx;
+  if (!node.swapUsed) return [];
+  const memGB = node.memGB;
+  const bpMB = node.bpMB;
+  const maxConn = Number(node.variables?.max_connections || 0);
+  const perConnMB = perConnBufferMB(node);
+  const swapPctClause = (node.swapUsagePct != null)
+    ? `Swap 已使用 ${node.swapUsagePct}%（Total ${node.swapTotal} / Free ${node.swapFree}）`
+    : `Swap 已被使用（Total ${node.swapTotal} / Free ${node.swapFree}）`;
+
+  // 内存预算：全局 buffer pool + 每连接私有 buffer 在 max_connections 下的理论峰值
+  let budget = null;
+  if (memGB && bpMB != null && maxConn > 0 && perConnMB > 0) {
+    const peakConnMB = perConnMB * maxConn;
+    const totalPeakMB = bpMB + peakConnMB;
+    const totalPeakGB = totalPeakMB / 1024;
+    const overcommit = totalPeakGB > memGB;
+    // 让 buffer_pool + 连接内存控制在 ~85% RAM 内
+    const recBpMB = recommendBufferPoolMB(memGB);
+    const availForConnMB = memGB * 1024 * 0.85 - recBpMB;
+    const recMaxConn = availForConnMB > 0 ? Math.floor(availForConnMB / perConnMB) : 0;
+    budget = { peakConnMB, totalPeakGB, overcommit, recBpMB, recMaxConn };
+  }
+
+  const baseDesc = `${swapPctClause} — OS 进入 swap 后 MySQL 响应延迟会显著拉长`;
+  if (!budget) {
+    return [{
+      type: 'swap_used',
+      priority: 'P1',
+      groupKey: `swap:${node.ip}`,
+      dimension: 'availability',
+      description: baseDesc,
+      action: '将 vm.swappiness 调至 1；核查 innodb_buffer_pool_size + 每连接 buffer × max_connections 是否超出物理内存',
+      sql: 'sysctl -w vm.swappiness=1\necho "vm.swappiness=1" >> /etc/sysctl.conf',
+      scope: 'node',
+    }];
+  }
+
+  const budgetLine =
+    `buffer_pool ${fmtMB(bpMB)} + 单连接峰值 ~${fmtMB(perConnMB)} × max_connections ${maxConn} ` +
+    `(=理论峰值 ${fmtMB(budget.peakConnMB)}) ≈ 合计 ${budget.totalPeakGB.toFixed(1)} GB，物理内存 ${memGB.toFixed(0)} GB`;
+
+  return [{
+    type: 'swap_used',
+    priority: 'P1',
+    groupKey: `swap:${node.ip}`,
+    dimension: 'availability',
+    description: budget.overcommit
+      ? `${baseDesc}。内存预算已超配：${budgetLine} —— 内存承诺超过物理内存，这正是触发 swap 的根因`
+      : `${baseDesc}。内存预算：${budgetLine}（理论峰值未超 RAM，swap 可能来自 OS page cache 抢占 / 其它进程，建议同时降低 vm.swappiness）`,
+    currentValue: budgetLine,
+    recommendedValue: `把 buffer_pool + 连接内存控制在 ~85% RAM 内：buffer_pool ≈ ${fmtMB(budget.recBpMB)}${budget.recMaxConn > 0 ? `，max_connections ≤ ${budget.recMaxConn}` : ''}`,
+    action: [
+      `1) vm.swappiness 调至 1（保留 swap 兜底，但尽量不主动换出）`,
+      budget.overcommit
+        ? `2) 削减内存承诺：buffer_pool 降到 ~${fmtMB(budget.recBpMB)}，或缩减单连接 buffer（sort/join/read_buffer 通常 256KB–2MB 足够），或 max_connections ≤ ${budget.recMaxConn}（建议上连接池 ProxySQL/HAProxy）`
+        : `2) 复核单连接 buffer（sort/join/read_buffer）是否设置过大；并发高时仍可能瞬时吃满`,
+      `3) 确认无其它进程（备份/导出/监控 agent）与 MySQL 抢内存`,
+    ].join('\n   '),
+    sql: [
+      'sysctl -w vm.swappiness=1',
+      'echo "vm.swappiness=1" >> /etc/sysctl.conf',
+      `-- 如需收缩 buffer pool（动态）：`,
+      `SET GLOBAL innodb_buffer_pool_size = ${budget.recBpMB * 1024 * 1024};`,
+    ].join('\n'),
     scope: 'node',
   }];
 }
@@ -778,4 +958,6 @@ module.exports = {
   evalBpHit,
   evalSlowQueriesAbs,
   evalInnodbHll,
+  evalIbtmp1Oversize,
+  evalSwapUsed,
 };

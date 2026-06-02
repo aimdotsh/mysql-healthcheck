@@ -130,14 +130,36 @@
 
 ### `innodb_hll`
 
-**InnoDB History List Length 偏高**
+**InnoDB History List Length 偏高**（实际触发 type：`innodb_hll_high`，维度 `performance`）
 
-> undo 历史清理滞后，长事务阻塞 purge；过大会拉低读性能并占用回滚段。
+> undo 历史清理滞后，长事务阻塞 purge；过大会拉低读性能并持续撑大 undo 表空间。
+> 触发：`History list length > hll_warn`（默认 10000）；`>= hll_p1`（默认 50000）升 P1。
+
+**处置要点（写报告时给出）**：
+> ① 用 `INNODB_TRX` 按 `trx_started` 找最久未提交事务并提交 / KILL；
+> ② 排查"开了事务后空闲"(idle in transaction) 的连接；
+> ③ 确认 `innodb_purge_threads`（默认 4，写多可调高）；
+> ④ 长期可用 `innodb_max_purge_lag` 给写入反压，避免 HLL 失控。
+>
+> 推荐值：消除长事务后 HLL 会被 purge 线程自动追平回落到 `< hll_warn`。
+
+**示例 SQL / 配置**：
+```sql
+-- 1) 找最久未提交事务：
+SELECT trx_id, trx_state, trx_started,
+       TIMESTAMPDIFF(SECOND, trx_started, NOW()) AS run_secs,
+       trx_mysql_thread_id, trx_rows_modified, LEFT(trx_query,80) AS q
+  FROM information_schema.INNODB_TRX ORDER BY trx_started LIMIT 10;
+-- 2) 处理：提交或 KILL <trx_mysql_thread_id>;
+-- 3) 写多场景可调（需重启）：
+SET GLOBAL innodb_purge_threads = 8;
+```
 
 | 字段 | 值 |
 |---|---|
-| 维度 | `availability` |
+| 维度 | `performance` |
 | Scope | `node` |
+| 优先级 | **P1（HLL≥50000）/ P2** |
 
 
 ---
@@ -255,31 +277,32 @@ node.memUsagePct > cfg.thresholds.memory.high_pct
 
 **Swap 已被使用**
 
-> OS 进入 swap，MySQL 响应延迟会显著拉长。
+> OS 进入 swap，MySQL 响应延迟会显著拉长。触发：`node.swapUsed == true`（SwapTotal != SwapFree）。
+
+**处置要点（写报告时给出 = 关联内存预算判定）**：
+> 算一笔内存账：`buffer_pool + 单连接 buffer（sort/join/read/read_rnd + tmp_table）× max_connections`
+> 的理论峰值 vs 物理内存。
+> - **若理论峰值 > 物理内存** → 内存超配是换出根因。削减 buffer_pool（≈60% RAM）、
+>   或缩减单连接 buffer（sort/join/read_buffer 通常 256KB–2MB 足够）、或下调 max_connections
+>   （上限 ≈ `(RAM×0.85 − 推荐bp) / 单连接buffer`，并上 ProxySQL/HAProxy 连接池）。
+> - **若理论峰值未超 RAM** → swap 可能来自 OS page cache 抢占或其它进程；同时降低 vm.swappiness。
+>
+> 三步必做：① vm.swappiness=1；② 削减内存承诺（buffer_pool / 单连接 buffer / max_connections）；
+> ③ 确认无备份/导出/监控 agent 与 MySQL 抢内存。
+
+**示例 SQL / 配置**：
+```sql
+sysctl -w vm.swappiness=1
+echo "vm.swappiness=1" >> /etc/sysctl.conf
+-- 如需收缩 buffer pool（动态，按 ≈60% RAM 推荐值）：
+SET GLOBAL innodb_buffer_pool_size = <推荐字节数>;
+```
 
 | 字段 | 值 |
 |---|---|
 | 维度 | `availability` |
 | Scope | `node` |
 | 优先级 | **P1** |
-
-**触发**：
-```
-node.swapUsed == true
-```
-
-**说明文本**：
-> Swap 已使用（Total {{node.swapTotal}} / Free {{node.swapFree}}）
-
-**建议行动**：
-> 将 vm.swappiness 调至 1 或禁用 Swap；同时核查 innodb_buffer_pool_size 是否过大挤占内存
-
-**示例 SQL / 配置**：
-```sql
-sysctl -w vm.swappiness=1
-echo "vm.swappiness=1" >> /etc/sysctl.conf
-# 或直接：swapoff -a（确认无 OOM 风险后）
-```
 
 ---
 
@@ -480,31 +503,33 @@ innodb_temp_data_file_path = ibtmp1:12M:autoextend:max:50G
 
 **ibtmp1 超大**
 
-> 临时表空间无上限，已增长到危险体积。
+> 共享临时表空间无上限、只能重启回收；如此体积说明大量大表 JOIN / 排序 / GROUP BY /
+> DISTINCT / UNION 落盘到磁盘临时表。触发：`ibtmp1.sizeBytes > ibtmp1_max_gb`（默认 5GB）；
+> `≥100GB` 或 `≥10× 阈值` 升 P1。
+
+**处置要点（写报告时给出 = 不止封顶，还要追因）**：
+> ① **追因**：从「SQL with temp tables」段挑落盘临时表最多的 TOP SQL（疑似元凶），
+>    确认 `performance_schema=ON` 后用 `sys.statements_with_temp_tables` 精确定位；
+> ② **治理元凶**：给 JOIN / ORDER BY / GROUP BY 列建合适索引、改写 SQL 避免大结果集排序；
+>    适当增大 `tmp_table_size` / `max_heap_table_size` 让中小临时表留在内存（注意 × 并发的内存占用）；
+> ③ **封顶**：`innodb_temp_data_file_path = ibtmp1:12M:autoextend:max:50G`，维护窗口重启回收已膨胀的 ibtmp1。
+
+**示例 SQL / 配置**：
+```sql
+-- 定位元凶 SQL（按落盘临时表次数排序）：
+SELECT * FROM sys.statements_with_temp_tables ORDER BY disk_tmp_tables DESC LIMIT 10;
+SELECT digest_text, sum_created_tmp_disk_tables, sum_created_tmp_tables
+  FROM performance_schema.events_statements_summary_by_digest
+  ORDER BY sum_created_tmp_disk_tables DESC LIMIT 10;
+-- 封顶（重启生效），避免再次无限增长：
+innodb_temp_data_file_path = ibtmp1:12M:autoextend:max:50G
+```
 
 | 字段 | 值 |
 |---|---|
 | 维度 | `durability` |
 | Scope | `node` |
-| 优先级 | **P2** |
-
-**触发**：
-```
-node.ibtmp1.sizeBytes > cfg.thresholds.innodb.ibtmp1_max_gb * 1073741824
-```
-
-**说明文本**：
-> ibtmp1 已增长至 {{node.ibtmp1.sizeFormatted}}
-
-**建议行动**：
-> 配置 innodb_temp_data_file_path 上限，维护窗口重启回收
-
-**示例 SQL / 配置**：
-```sql
--- my.cnf:
-innodb_temp_data_file_path = ibtmp1:12M:autoextend:max:50G
--- 重启 MySQL 后生效
-```
+| 优先级 | **P1（≥100GB / ≥10×阈值）/ P2** |
 
 ---
 
@@ -642,12 +667,23 @@ SET GLOBAL sync_binlog = 1;
 
 **数据集 vs RAM 比例过高**
 
-> 工作集装不下 buffer pool，会持续磁盘 IO；架构层调整。
+> 工作集装不下 buffer pool，会持续磁盘 IO。触发：`数据量GB / 内存GB > ratio_warn`（默认 10）；
+> `> ratio_p1`（默认 50）升 P1。
+
+**处置要点（写报告时给出 = 算热数据覆盖率，避免盲目加内存）**：
+> 关键不是"数据 > 内存几倍"，而是**热数据能否被 buffer_pool 覆盖**。按热集 ≈ 25% 数据量估算：
+> - `热数据 ≈ 25% × 数据量`，需要的 buffer_pool ≈ 热数据；推回需要的 RAM ≈ `热数据 / 60%`。
+> - **若所需 RAM 现实**（≤ 当前 RAM 的 ~8 倍）→ 建议加内存 + 调大 buffer_pool 到 ≈60% RAM 覆盖热集。
+> - **若所需 RAM 不现实**（远超物理上限）→ 不要盲目加内存，转**架构层**：冷热分离 / 归档历史数据 /
+>   分库分表 / 上读写分离，把单实例工作集压到内存能覆盖的范围。
+>
+> 报告里应给出：当前 buffer_pool 覆盖率（`bp / 数据量`）、热集所需 buffer_pool、对应所需 RAM 三个数。
 
 | 字段 | 值 |
 |---|---|
 | 维度 | `performance` |
 | Scope | `node` |
+| 优先级 | **P1（比例 > 50）/ P2** |
 
 
 ---

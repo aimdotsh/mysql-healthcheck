@@ -65,35 +65,45 @@ collectors/mysqlHealthCheckV3.0.sh \
 
 ## 执行流程（LLM 单次会话内完成）
 
-### Step 0: 检查预处理文件（**优先走快路径**）
+### Step 0: 按"客户环境是否有 node"分流（**核心决策**）
 
-skill 仓库下有 `tools/preprocess.js` — 一个**单文件 Node 预处理器**，能把 `MySQLHealthCheck_*.txt` 解析成结构化 `facts.json`（含 nodes 数据 + issues 规则评估结果 + healthScore），LLM 只需读 facts.json 就有所有规则结论。
+本 skill 有两种生成方式，**先判断客户机有没有 node**，再决定走哪条：
+
+- **有 node → 混合模式（node 出数据 + LLM 写总结，强烈推荐）**：
+  用 `tools/preprocess.js`（单文件零依赖 Node 预处理器，**不需要 npm install**）把
+  `MySQLHealthCheck_*.txt` 解析成结构化 `facts.json`（nodes 数据 + issues 规则评估
+  结果 + healthScore + currentValue/recommendedValue/sql）。**规则判定、阈值比较、
+  P0-P3 分级、健康度评分全部由 node 确定性计算**，LLM 只负责"读 facts.json → 写执行
+  摘要 / 章节小结 / 行动计划润色 / 结论"。这就是用户要的"node 生成报告 + 结合 LLM 总结"。
+- **无 node → 纯 LLM 兜底（md 路径）**：
+  LLM 自己读 `references/rules.md` + 全部 `.txt`，凭规则手册做判断并写报告。功能完整，
+  但规则判定靠 LLM 自由发挥，跨次运行一致性中等。**仅在客户机确实没有 node 时使用**。
 
 **决策树**：
 
 ```
 检查 <dataDir>/facts.json
-├── 存在 ─→ 进入「快路径」：跳过 Step 2-6，直接 Read facts.json
+├── 已存在 ─→ 直接进入「混合模式·快路径」：跳过 Step 2-6，Read facts.json
 │
-└── 不存在 ─→ 检测客户机 node 可用性（Bash 跑 `node --version`）
+└── 不存在 ─→ Bash 跑 `node --version` 检测客户机 node
     │
-    ├── 有 node ─→ 主动跑：
-    │   bash
-    │   node <skillDir>/tools/preprocess.js <dataDir> --out <dataDir>/facts.json
-    │   （约 5-15 秒）
-    │   完成后回到「快路径」
+    ├── 有 node（任意版本，无需 npm install）─→ 主动跑预处理：
+    │     node <skillDir>/tools/preprocess.js <dataDir> --out <dataDir>/facts.json
+    │     （约 5-15 秒）→ 完成后进入「混合模式·快路径」
     │
-    └── 无 node ─→ 走「纯 LLM 路径」：进入 Step 1（原工作流）
+    └── 无 node ─→ 走「纯 LLM 兜底（md 路径）」：进入 Step 1（原工作流）
 ```
 
 **两条路径对比**：
 
-| 路径 | LLM input | LLM output | 总时间 | 一致性 |
-|---|---|---|---|---|
-| 快路径（有 facts.json）| ~10 KB | 30-50K token | **5-10 min** | ✅ 高（规则确定性评估）|
-| 纯 LLM 路径 | ~50 KB | 30-50K token | 10-15 min | ⚠️ 中（LLM 自由发挥规则）|
+| 路径 | 规则判定者 | LLM input | LLM output | 总时间 | 一致性 |
+|---|---|---|---|---|---|
+| **混合模式**（有 node / facts.json）| **node 确定性** | ~10 KB | 30-50K token | **5-10 min** | ✅ 高 |
+| **纯 LLM 兜底**（无 node）| LLM | ~50 KB | 30-50K token | 10-15 min | ⚠️ 中 |
 
-**关键差异**：快路径下，**规则评估结果（issues / P0-P3 分类 / 健康度评分）由 preprocess.js 确定性计算**，跨次运行结果完全一致；LLM 只负责"按规则结果写叙事"。
+**关键差异**：混合模式下 **issues / P0-P3 分类 / 健康度评分 / 推荐值 / SQL 由 preprocess.js
+确定性计算**，跨次运行字字一致；LLM 只把这些确定性结论组织成自然语言报告。零依赖——
+`preprocess.js` 只用 Node 内置模块，**不装任何 npm 包、不产出 docx**（docx 转换交给独立 skill）。
 
 ### 快路径详细流程（facts.json 存在时）
 
