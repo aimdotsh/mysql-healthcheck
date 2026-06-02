@@ -1,0 +1,38 @@
+{
+  "_schema": "mysql-healthcheck v5.0.1",
+  "_doc": "security 维度规则。dimension 由文件名推断，与 v5.0 GA 行为等价。",
+  "rules": [
+    {
+      "id": "auth_plugin_native_on_80",
+      "scope": "node",
+      "priority": "P2",
+      "title": "MySQL 8.0+ 默认 mysql_native_password",
+      "rationale": "派生 SHA1 已弃用；8.4 起默认 disabled。",
+      "trigger": "node.authPluginNativeOn80 == true",
+      "groupKeyTpl": "auth_plugin_native_on_80",
+      "descriptionTpl": "MySQL 8.0+ 默认认证插件仍为 mysql_native_password — 该插件派生 SHA1，已被弃用；8.4 起 mysql_native_password 默认 disabled",
+      "currentValueTpl": "mysql_native_password",
+      "recommendedValueTpl": "caching_sha2_password",
+      "actionTpl": "新账号默认走 caching_sha2_password；存量账号灰度迁移；客户端驱动需 ≥ Connector/J 8.0、PyMySQL 1.0+",
+      "sqlTpl": "-- my.cnf:\ndefault_authentication_plugin = caching_sha2_password\n-- 单账号迁移：\nALTER USER 'app'@'10.%' IDENTIFIED WITH caching_sha2_password BY '<pwd>';"
+    },
+    {
+      "id": "tls_weak_protocol",
+      "scope": "node",
+      "priority": "P2",
+      "title": "TLS 配置含已废弃协议",
+      "rationale": "TLSv1 / TLSv1.1 存在已知漏洞，仅应保留 TLSv1.2+。",
+      "trigger": "node.tlsWeakDetail != null",
+      "groupKeyTpl": "tls_weak_protocol",
+      "descriptionTpl": "TLS 配置包含已废弃协议：{{node.tlsWeakDetail}}",
+      "actionTpl": "禁用 TLSv1/TLSv1.1，仅保留 TLSv1.2+；同时确认业务客户端驱动版本兼容"
+    },
+    {
+      "id": "wildcard_users",
+      "scope": "node",
+      "title": "host=% 用户安全分级",
+      "rationale": "root/admin → P0；复制/备份/监控 → P1；业务用户 → P2。",
+      "handler": "evalWildcardUsers"
+    }
+  ]
+}

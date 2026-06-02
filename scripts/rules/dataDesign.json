@@ -1,0 +1,62 @@
+{
+  "_schema": "mysql-healthcheck v5.0.1",
+  "_doc": "dataDesign 维度规则。dimension 由文件名推断，与 v5.0 GA 行为等价。",
+  "rules": [
+    {
+      "id": "auto_increment_exhausting",
+      "scope": "node",
+      "title": "自增列接近耗尽",
+      "rationale": "INT UNSIGNED 上限 ~42 亿，耗尽后 INSERT 报错；建议提前扩 BIGINT。",
+      "handler": "evalAutoIncrementExhausting"
+    },
+    {
+      "id": "charset_not_utf8mb4",
+      "scope": "node",
+      "priority": "P2",
+      "title": "character_set_server 非 utf8mb4",
+      "rationale": "utf8 实际是 utf8mb3，已被 MySQL 标记 deprecated；无法存 emoji。",
+      "trigger": "node.charsetNotUtf8mb4 == true",
+      "groupKeyTpl": "charset_server_not_utf8mb4",
+      "descriptionTpl": "character_set_server = {{node.variables.character_set_server}}，无法存储 emoji / 4 字节字符；utf8 实际是 utf8mb3，已被 MySQL 标记为 deprecated",
+      "currentValueTpl": "{{node.variables.character_set_server}}",
+      "recommendedValueTpl": "utf8mb4",
+      "actionTpl": "服务端 + 库 + 表 + 列四级都需要改；新建表前先改服务端默认，存量表用 CONVERT TO",
+      "sqlTpl": "-- my.cnf:\ncharacter_set_server = utf8mb4\ncollation_server = utf8mb4_0900_ai_ci  # MySQL 8.0\n# collation_server = utf8mb4_general_ci  # MySQL 5.7\n-- 库级转换：\nALTER DATABASE <dbname> CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;"
+    },
+    {
+      "id": "ghost_tables",
+      "scope": "node",
+      "title": "gh-ost / pt-osc 残留 ghost 表",
+      "rationale": "在线 DDL 未清理的中间表，占空间，确认无业务引用可 DROP。",
+      "handler": "evalGhostTables"
+    },
+    {
+      "id": "no_pk_tables",
+      "scope": "node",
+      "title": "无主键表",
+      "rationale": "ROW 复制下全表扫描匹配，无法 MTS 并行；区分业务/临时降级。",
+      "handler": "evalNoPkTables"
+    },
+    {
+      "id": "non_utf8_tables",
+      "scope": "node",
+      "title": "非 utf8/utf8mb4 表",
+      "rationale": "无法存储 emoji / 4 字节字符；统一字符集减少业务踩坑。",
+      "handler": "evalNonUtf8Tables"
+    },
+    {
+      "id": "sql_mode_missing_strict",
+      "scope": "node",
+      "priority": "P2",
+      "title": "sql_mode 缺少 STRICT_TRANS_TABLES",
+      "rationale": "宽松模式下错误数据被静默截断（INT 越界写 0、字符串超长被裁），存在数据完整性风险。",
+      "trigger": "node.sqlModeMissingStrict == true",
+      "groupKeyTpl": "sql_mode_no_strict",
+      "descriptionTpl": "sql_mode 未包含 STRICT_TRANS_TABLES — 错误数据会被静默截断（INT 越界写 0、字符串超长被裁），存在数据完整性风险",
+      "currentValueTpl": "{{node.sqlModeStr}}",
+      "recommendedValueTpl": "加上 STRICT_TRANS_TABLES + NO_ENGINE_SUBSTITUTION",
+      "actionTpl": "评估业务影响（旧应用可能依赖宽松模式静默成功）后再切换；建议先在测试环境验证",
+      "sqlTpl": "SET GLOBAL sql_mode = CONCAT(@@sql_mode, ',STRICT_TRANS_TABLES');\n-- 评估后持久化到 my.cnf:\nsql_mode = STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION,NO_ZERO_DATE,NO_ZERO_IN_DATE,ERROR_FOR_DIVISION_BY_ZERO"
+    }
+  ]
+}

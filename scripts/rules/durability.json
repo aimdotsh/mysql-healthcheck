@@ -1,0 +1,129 @@
+{
+  "_schema": "mysql-healthcheck v5.0.1",
+  "_doc": "durability 维度规则。dimension 由文件名推断，与 v5.0 GA 行为等价。",
+  "rules": [
+    {
+      "id": "doublewrite_off",
+      "scope": "node",
+      "priority": "P1",
+      "title": "InnoDB doublewrite 关闭",
+      "rationale": "半页写（torn page）崩溃恢复时无法修复，性能收益 < 5% 但风险远大于收益。",
+      "trigger": "node.variables.innodb_doublewrite == 'OFF' || node.variables.innodb_doublewrite == '0'",
+      "groupKeyTpl": "doublewrite_off",
+      "descriptionTpl": "innodb_doublewrite = OFF — 半页写崩溃会导致页损坏且不可恢复（torn page），性能收益 < 5% 但风险远大于收益",
+      "currentValueTpl": "OFF",
+      "recommendedValueTpl": "ON",
+      "actionTpl": "建议开启；仅在使用 ZFS 或支持原子写的存储（FusionIO 等）时才可考虑关闭",
+      "sqlTpl": "SET GLOBAL innodb_doublewrite = ON;\n-- my.cnf:\ninnodb_doublewrite = 1"
+    },
+    {
+      "id": "expire_logs_long",
+      "scope": "node",
+      "priority": "P3",
+      "title": "expire_logs_days 保留过长",
+      "rationale": "保留过长会占用磁盘空间；评估业务回滚需求。",
+      "trigger": "node.variables.expire_logs_days != '0' && node.variables.expire_logs_days > cfg.thresholds.binlog.expire_logs_max_days",
+      "groupKeyTpl": "expire_logs_long:{{node.ip}}",
+      "descriptionTpl": "expire_logs_days = {{node.variables.expire_logs_days}}（保留过长，> {{cfg.thresholds.binlog.expire_logs_max_days}} 天）",
+      "actionTpl": "评估磁盘成本与回滚需求"
+    },
+    {
+      "id": "expire_logs_zero",
+      "scope": "node",
+      "priority": "P1",
+      "title": "expire_logs_days = 0",
+      "rationale": "binlog 永不过期，存在磁盘打爆风险。",
+      "trigger": "node.variables.expire_logs_days == '0'",
+      "groupKeyTpl": "expire_logs_zero:{{node.ip}}",
+      "descriptionTpl": "expire_logs_days = 0（binlog 永不过期，存在磁盘打爆风险）",
+      "actionTpl": "建议改为 7-15 天；并尽快手工清理冗余 binlog",
+      "sqlTpl": "SET GLOBAL expire_logs_days = 7;\nPURGE BINARY LOGS BEFORE NOW() - INTERVAL 7 DAY;"
+    },
+    {
+      "id": "flush_log_weak",
+      "scope": "node",
+      "priority": "P1",
+      "title": "innodb_flush_log_at_trx_commit 弱化",
+      "rationale": "断电最多丢 1 秒事务。生产环境建议 1。",
+      "trigger": "node.variables.innodb_flush_log_at_trx_commit == '0'",
+      "groupKeyTpl": "flush_log_weak",
+      "descriptionTpl": "innodb_flush_log_at_trx_commit = 0（每秒一次刷盘，断电最多丢 1 秒事务）",
+      "actionTpl": "生产环境建议改为 1；如对写性能敏感可设为 2（重启不丢，断电可能丢）",
+      "sqlTpl": "SET GLOBAL innodb_flush_log_at_trx_commit = 1;\n-- 同时改 my.cnf 持久化"
+    },
+    {
+      "id": "gtid_off",
+      "scope": "node",
+      "priority": "P2",
+      "title": "GTID 未启用",
+      "rationale": "无 GTID 时主从切换/迁移操作步骤复杂、错切位点风险高。",
+      "trigger": "node.variables.gtid_mode == 'OFF'",
+      "groupKeyTpl": "gtid_off",
+      "descriptionTpl": "gtid_mode = OFF（未启用 GTID）",
+      "actionTpl": "建议规划升级到 GTID，简化故障切换与主从迁移",
+      "sqlTpl": "-- GTID 启用需顺序在所有节点滚动执行（不能同时）：\n-- 1) SET GLOBAL gtid_mode = OFF_PERMISSIVE;\n-- 2) SET GLOBAL enforce_gtid_consistency = WARN;\n-- 3) SET GLOBAL enforce_gtid_consistency = ON;\n-- 4) SET GLOBAL gtid_mode = ON_PERMISSIVE;\n-- 5) 等所有节点 @@global.gtid_owned 为空\n-- 6) SET GLOBAL gtid_mode = ON;\n-- 7) my.cnf 加 gtid_mode=ON / enforce_gtid_consistency=ON"
+    },
+    {
+      "id": "ibtmp1_no_max",
+      "scope": "node",
+      "priority": "P2",
+      "title": "innodb_temp_data_file_path 未设 :max: 上限",
+      "rationale": "ibtmp1 无上限会无限增长直至打爆磁盘。",
+      "trigger": "node.ibtmp1NoMax == true",
+      "groupKeyTpl": "ibtmp1_no_max",
+      "descriptionTpl": "innodb_temp_data_file_path 未配置 :max: 上限（{{node.variables.innodb_temp_data_file_path}}）",
+      "actionTpl": "建议加 :max:50G 上限，避免临时表无限增长打爆磁盘",
+      "sqlTpl": "-- my.cnf:\ninnodb_temp_data_file_path = ibtmp1:12M:autoextend:max:50G"
+    },
+    {
+      "id": "ibtmp1_oversize",
+      "scope": "node",
+      "priority": "P2",
+      "title": "ibtmp1 超大",
+      "rationale": "临时表空间无上限，已增长到危险体积。",
+      "trigger": "node.ibtmp1.sizeBytes > cfg.thresholds.innodb.ibtmp1_max_gb * 1073741824",
+      "groupKeyTpl": "ibtmp1:{{node.ip}}",
+      "descriptionTpl": "ibtmp1 已增长至 {{node.ibtmp1.sizeFormatted}}",
+      "actionTpl": "配置 innodb_temp_data_file_path 上限，维护窗口重启回收",
+      "sqlTpl": "-- my.cnf:\ninnodb_temp_data_file_path = ibtmp1:12M:autoextend:max:50G\n-- 重启 MySQL 后生效"
+    },
+    {
+      "id": "self_ref_slave_residue",
+      "scope": "node",
+      "priority": "P2",
+      "title": "self-referencing slave 残留",
+      "rationale": "Master_Host 指向本机，通常是历史从库被提升为主后未 RESET SLAVE ALL。",
+      "trigger": "node.selfRefSlaveHost != null",
+      "groupKeyTpl": "self_ref_slave_residue:{{node.ip}}",
+      "descriptionTpl": "节点 {{node.ip}} 存在 SHOW SLAVE STATUS 残留（Master_Host 指向自身 {{node.selfRefSlaveHost}}），通常是历史从库被提升为主后未执行 RESET SLAVE ALL",
+      "actionTpl": "执行 STOP SLAVE; RESET SLAVE ALL; 清理残留复制元数据，避免 SHOW SLAVE STATUS 输出误导监控/巡检工具",
+      "sqlTpl": "STOP SLAVE;\nRESET SLAVE ALL;"
+    },
+    {
+      "id": "slave_skip_errors_set",
+      "scope": "node",
+      "priority": "P0",
+      "title": "slave_skip_errors 已设置",
+      "rationale": "复制错误被强制跳过，从库数据漂移；任何 binlog 错误都不会再暴露。",
+      "trigger": "node.slaveSkipErrorsSet == true",
+      "groupKeyTpl": "slave_skip_errors:{{node.ip}}",
+      "descriptionTpl": "slave_skip_errors = {{node.slaveSkipErrorsValue}} — 复制错误被强制跳过，从库已经/将会与主库数据不一致；任何 binlog 错误都不会再暴露",
+      "currentValueTpl": "{{node.slaveSkipErrorsValue}}",
+      "recommendedValueTpl": "OFF",
+      "actionTpl": "建议尽快关闭；并用 pt-table-checksum / pt-table-sync 校验现有数据一致性",
+      "sqlTpl": "# slave_skip_errors 不能动态改，必须修改 my.cnf:\n# 删除该行或改为：\nslave_skip_errors = OFF\n# 重启 slave 后校验数据：\npt-table-checksum --replicate=percona.checksums h=<primary>,u=<user>,p=<pwd>"
+    },
+    {
+      "id": "sync_binlog_weak",
+      "scope": "node",
+      "priority": "P1",
+      "title": "sync_binlog 弱化",
+      "rationale": "binlog 依赖 OS 刷盘，断电/崩溃可能丢失事件。",
+      "trigger": "node.variables.sync_binlog == '0'",
+      "groupKeyTpl": "sync_binlog_weak",
+      "descriptionTpl": "sync_binlog = 0（binlog 依赖 OS 刷盘，可能丢失事件）",
+      "actionTpl": "主库建议设为 1（每事务刷盘）；高并发可考虑 100（每 100 事务）",
+      "sqlTpl": "SET GLOBAL sync_binlog = 1;\n-- 同时改 my.cnf 持久化"
+    }
+  ]
+}

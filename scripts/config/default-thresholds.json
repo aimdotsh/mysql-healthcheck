@@ -1,0 +1,78 @@
+{
+  "_schema": "mysql-healthcheck v4.8",
+  "_doc": "MySQL Healthcheck 阈值与规则默认配置。可在采集目录放 mysql-healthcheck.config.json 覆盖任意键；或用 --config <path> 覆盖。三层优先级：CLI > 采集目录 > 内置默认。注释字段以 _ 开头会被忽略。",
+  "thresholds": {
+    "_doc": "数值类阈值，规则触发的判定基线。仅写需要调整的键，其余自动用默认值。",
+    "disk": {
+      "_doc": "磁盘使用率告警阈值",
+      "critical_pct": 90,
+      "high_pct": 80
+    },
+    "memory": {
+      "_doc": "内存使用率告警阈值",
+      "high_pct": 90
+    },
+    "innodb": {
+      "_doc": "InnoDB 引擎相关阈值",
+      "hll_warn": 10000,
+      "hll_p1": 50000,
+      "bp_hit_low_pct": 95,
+      "bp_hit_warn_pct": 99,
+      "bp_too_small_ratio": 0.4,
+      "bp_too_small_p1_ratio": 0.2,
+      "bp_too_large_ratio": 0.8,
+      "bp_too_small_min_mem_gb": 4,
+      "ibtmp1_max_gb": 5,
+      "redo_log_min_mb": 512,
+      "redo_log_db_gb_busy": 50,
+      "redo_log_db_gb_heavy": 200
+    },
+    "session": {
+      "_doc": "会话与处理时间阈值",
+      "long_running_seconds_warn": 60,
+      "long_running_seconds_p2": 600
+    },
+    "replication": {
+      "_doc": "复制延迟与并行复制阈值",
+      "delay_p1_seconds": 300,
+      "delay_p2_seconds": 60,
+      "parallel_workers_data_gb_p2": 100,
+      "parallel_workers_data_gb_p1": 500
+    },
+    "sql": {
+      "_doc": "SQL 与慢查询阈值",
+      "slow_query_abs_high": 1000000,
+      "slow_query_abs_med": 100000,
+      "long_query_time_loose": 5
+    },
+    "frag": {
+      "_doc": "表碎片阈值",
+      "rate": 0.7,
+      "min_mb": 100
+    },
+    "binlog": {
+      "_doc": "Binlog 保留阈值",
+      "expire_logs_max_days": 30
+    },
+    "max_connections": {
+      "_doc": "max_connections 峰值内存占用阈值（peak = sort_buffer+join_buffer+read_buffer+read_rnd_buffer+tmp_table）",
+      "peak_memory_ratio_warn": 0.3,
+      "peak_memory_ratio_p1": 0.5
+    },
+    "data_memory": {
+      "_doc": "数据量 / 内存比阈值（dbTotalSizeGB / memGB）",
+      "ratio_warn": 10,
+      "ratio_p1": 50
+    },
+    "auto_increment": {
+      "_doc": "自增列使用率阈值（已用 / 类型上限）",
+      "rate_p2": 0.7,
+      "rate_p1": 0.8,
+      "rate_p0": 0.9
+    }
+  },
+  "priorities": {
+    "_doc": "可选：覆盖单条规则的 priority。例：把 wildcard_medium 从 P2 降到 P3 → 加 \"wildcard_medium\": \"P3\"。规则 type 完整清单见 CHANGELOG。"
+  },
+  "disabledRules": []
+}

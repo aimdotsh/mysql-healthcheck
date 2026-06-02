@@ -1,0 +1,23 @@
+{
+  "name": "mysql-healthcheck-ykt",
+  "version": "2.0.0",
+  "private": true,
+  "description": "MySQL 巡检报告生成器（txt → docx，内嵌 10 张图表）— ykt 节点版",
+  "bin": {
+    "mysql-extract": "./extract.js",
+    "mysql-render": "./render.js"
+  },
+  "scripts": {
+    "extract": "node extract.js",
+    "render": "node render.js",
+    "build": "node build.js",
+    "gen-rules-md": "node gen-rules-md.js"
+  },
+  "dependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "docx": "^8.5.0"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}

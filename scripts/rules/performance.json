@@ -1,0 +1,73 @@
+{
+  "_schema": "mysql-healthcheck v5.0.1",
+  "_doc": "performance 维度规则。dimension 由文件名推断，与 v5.0 GA 行为等价。",
+  "rules": [
+    {
+      "id": "bp_hit",
+      "scope": "node",
+      "title": "Buffer Pool 命中率分级",
+      "rationale": "命中率 < 95% 严重；< 99% 关注。",
+      "handler": "evalBpHit"
+    },
+    {
+      "id": "buffer_pool_size",
+      "scope": "node",
+      "title": "InnoDB Buffer Pool 与 RAM 比例",
+      "rationale": "过小（< 40% RAM）→ 命中率低、IO 拖累；过大（> 80% RAM）→ OS/连接无余量，OOM/Swap 风险。",
+      "handler": "evalBufferPoolSize"
+    },
+    {
+      "id": "data_to_memory_ratio_high",
+      "scope": "node",
+      "title": "数据集 vs RAM 比例过高",
+      "rationale": "工作集装不下 buffer pool，会持续磁盘 IO；架构层调整。",
+      "handler": "evalDataToMemoryRatio"
+    },
+    {
+      "id": "flush_method_not_o_direct",
+      "scope": "node",
+      "priority": "P2",
+      "title": "Linux 下 innodb_flush_method 非 O_DIRECT",
+      "rationale": "OS page cache + buffer pool 双重缓存，浪费内存并增加冗余 IO。",
+      "trigger": "node.flushMethodNotODirect == true",
+      "groupKeyTpl": "flush_method_default",
+      "descriptionTpl": "innodb_flush_method = {{node.variables.innodb_flush_method}} — Linux 下默认 fsync 会同时占用 OS page cache 与 buffer pool（双重缓存），浪费内存并增加冗余 IO",
+      "currentValueTpl": "{{node.variables.innodb_flush_method}}",
+      "recommendedValueTpl": "O_DIRECT",
+      "actionTpl": "Linux 推荐 O_DIRECT；该参数不可动态修改，需重启 MySQL",
+      "sqlTpl": "-- my.cnf:\ninnodb_flush_method = O_DIRECT\n# 重启 MySQL 生效"
+    },
+    {
+      "id": "heavy_frag_tables",
+      "scope": "node",
+      "title": "高碎片大表",
+      "rationale": "碎片≥70%+ 且 free≥100MB 的表，扫描成本浪费明显。",
+      "handler": "evalHeavyFragTables"
+    },
+    {
+      "id": "long_query_time_loose",
+      "scope": "node",
+      "priority": "P3",
+      "title": "long_query_time 阈值过宽",
+      "rationale": "慢日志门槛过高时大量真实慢 SQL 会被漏掉。",
+      "trigger": "node.variables.long_query_time >= cfg.thresholds.sql.long_query_time_loose",
+      "groupKeyTpl": "long_qt:{{node.ip}}",
+      "descriptionTpl": "long_query_time = {{node.variables.long_query_time}}（阈值过宽，应 < {{cfg.thresholds.sql.long_query_time_loose}}）",
+      "actionTpl": "建议设为 1 秒以更敏感地捕获慢 SQL"
+    },
+    {
+      "id": "redo_log_too_small",
+      "scope": "node",
+      "title": "InnoDB redo log 偏小",
+      "rationale": "频繁切换拉低写吞吐 + 放大恢复时间。",
+      "handler": "evalRedoLog"
+    },
+    {
+      "id": "slow_queries_abs",
+      "scope": "node",
+      "title": "累计慢查询数量分级",
+      "rationale": "1M+ 次需立即治理；100K-1M 次需定期分析。",
+      "handler": "evalSlowQueriesAbs"
+    }
+  ]
+}
