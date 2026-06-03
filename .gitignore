@@ -8,6 +8,14 @@
 *.swp
 *.swo
 
+# 依赖（preprocess.js 零依赖，仓库不应含 node_modules；
+# 万一有人在仓库里 npm install 出 scripts/node_modules 之类，忽略掉）
+node_modules/
+**/node_modules/
+
+# 打包产物（如 ykt_v2.0.zip 等，不入库）
+*.zip
+
 # 临时
 *.tmp
 *.bak
