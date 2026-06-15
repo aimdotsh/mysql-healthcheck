@@ -1,0 +1,20 @@
+name: release-binary
+on:
+  push:
+    tags: ['offline-v*']
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '18' }
+      - run: npm install
+      - run: npm test   # 数据相关测试无 fixture 时优雅 SKIP（exit 0），CI 仍绿
+      - run: npm run build:bin
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/mysql-healthcheck-linux-x64
