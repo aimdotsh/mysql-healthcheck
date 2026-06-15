@@ -116,7 +116,7 @@ ${htmlBlocks(blocks)}
 `;
 }
 
-// 顶层：把 facts 渲染成 block 数组（章节构造器在后续任务里逐个补全并 push 进来）
+// 顶层：把 facts 渲染成 block 数组（17 章完整结构 → toMarkdown/toHtml 序列化）
 function buildReportBlocks(facts) {
   const blocks = [];
   const title = `${facts.project || 'MySQL'} 巡检报告`;
@@ -152,7 +152,7 @@ function buildReportBlocks(facts) {
   }
   const eolNodes = facts.nodes.filter(n => n.osEolStatus && n.osEolStatus.status === 'eol');
   if (eolNodes.length) {
-    blocks.push(B.list(eolNodes.map(n => `${n.label || n.ip}：${n.osRelease ?? '-'} 已${n.osEolStatus.statusLabel || 'EOL'}（${n.osEolStatus.eolDate ?? '-'}），存在合规风险`)));
+    blocks.push(B.list(eolNodes.map(n => `${n.label || n.ip}：${n.osRelease ?? '-'} ${n.osEolStatus.statusLabel || '已 EOL'}（${n.osEolStatus.eolDate ?? '-'}），存在合规风险`)));
   }
   blocks.push(B.callout('info', '本章小结：展示操作系统、CPU、内存、磁盘概况；如有磁盘使用率过高或 OS 已 EOL，详见第十六章行动计划。'));
 
