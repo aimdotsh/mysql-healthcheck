@@ -1,10 +1,10 @@
 ---
 name: mysql-healthcheck
-version: 1.0.8
+version: 1.1.0
 description: 为 MySQL 数据库集群生成 markdown 格式的巡检报告。当用户提供 MySQLHealthCheck_*.txt 采集数据或要求「分析 MySQL 巡检 / 月度巡检 / 健康评估 / 上线评估 / 故障复盘 / 合规自查」时使用。LLM 读 txt → 应用 42 条 DBA 规则 → 输出 17 章 markdown 报告。零依赖、纯文本、适合内网环境。
 ---
 
-<!-- skill version: 1.0.8 — 查 VERSION 文件 / CHANGELOG.md / 本行任一处确认 -->
+<!-- skill version: 1.1.0 — 查 VERSION 文件 / CHANGELOG.md / 本行任一处确认 -->
 <!-- LLM 生成报告时必须在「报告头」记录：「巡检版本：v{VERSION 文件内容}」 -->
 
 
@@ -104,6 +104,20 @@ collectors/mysqlHealthCheckV3.0.sh \
 **关键差异**：混合模式下 **issues / P0-P3 分类 / 健康度评分 / 推荐值 / SQL 由 preprocess.js
 确定性计算**，跨次运行字字一致；LLM 只把这些确定性结论组织成自然语言报告。零依赖——
 `preprocess.js` 只用 Node 内置模块，**不装任何 npm 包、不产出 docx**（docx 转换交给独立 skill）。
+
+### 模式三：完全离线 / 无 LLM（无网客户，数据不出场）
+
+当客户现场无外网、数据不能带出、且**不能用 LLM** 时，可用纯确定性代码直接出报告（md+html），全程零 LLM：
+
+- **有 node**：`node tools/report.js <数据目录>` → 直接生成 `MySQL巡检报告_<日期>.md` + `.html`。
+  规则判定、章节、行动计划全部由本地代码生成；HTML 自包含（内联 CSS + 内联 SVG 图表），浏览器直接打开/打印 PDF。
+- **无 node**（如 RHEL 7.9 默认无 node）：用预编译二进制
+  `./mysql-healthcheck-linux-x64 <数据目录>`（pkg 打包，自带 Node 16 运行时，兼容 glibc 2.17，零安装）。
+  二进制由 CI 在 push `offline-v*` tag 时构建并发布到 Release，不入仓。
+
+现场交付包 = `collectors/mysqlHealthCheckV3.0.sh`（采集，纯 bash）+ 二进制（出报告）。
+`.txt` 与报告都在客户本机生成，不出场、不联网、不调用任何大模型。
+（实现：`tools/report.js` = `preprocess.js`(buildFacts) → `tools/render-offline.js`(block 模型 → md/html) + `tools/charts.js`(内联 SVG)。）
 
 ### 快路径详细流程（facts.json 存在时）
 

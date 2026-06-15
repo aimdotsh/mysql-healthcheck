@@ -5,6 +5,23 @@
 
 ---
 
+## [1.1.0] - 2026-06-15
+
+**离线 / 无 LLM / 无 node 出报告：新增 Node 渲染器 + 单文件二进制**
+
+面向无外网、RHEL 7.9、无 node 的隔离客户：复用现有零依赖规则管线，新增纯内置模块渲染器，
+本机直接生成 md + html 巡检报告，**全程不依赖 LLM、不依赖 docx/resvg**。
+
+- 新增 `tools/render-offline.js`：block 模型 + `toMarkdown`/`toHtml` 双序列化器（同源不漂移）；
+  17 章完整结构 + 行动计划（P0→P3 全覆盖 + 推荐值 + SQL）；HTML 自包含（内联 CSS + 内联 SVG）。
+- 新增 `tools/charts.js`：从 SaaS 移植的纯 SVG 图表构造器（删除 resvg，HTML 内联 SVG）。
+- 新增 `tools/report.js`：CLI 入口 `report <目录>` = preprocess→render→md+html（`--format`/`--out-dir`/`--emit-facts`）。
+- `tools/preprocess.js` 导出 `buildFacts()`（CLI 行为不变），供进程内/二进制调用。
+- `tools/rule-engine.js`：规则加载在 pkg 快照下用已知文件名兜底。
+- `pkg --target node16-linux-x64` 打成单文件二进制（自带运行时，兼容 glibc 2.17）；CI 在 push `offline-v*` tag 时构建并发布。
+- 已在 centos:7（glibc 2.17）实测：二进制零安装运行，问题判定与 Node 路径一致（脱敏集 49 项 / 健康度 88）。
+- 规则逻辑零改动；新增 6 个测试（buildfacts / charts / render 核心+章节+行动计划 / e2e），fixture 不入仓（无网时优雅跳过）。
+
 ## [1.0.9] - 2026-06-02
 
 **同步 4 条报告质量增强规则（与 ykt v2.0 / SaaS v5.0.8 一致）+ 修复缺失的默认阈值配置**

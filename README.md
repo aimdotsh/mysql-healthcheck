@@ -122,6 +122,22 @@ LLM: 我需要通过 Bash 工具 ssh 到 192.168.1.100 跑 collector，是否授
 LLM: （ssh 跑 collector → 拉回 .txt → 自动分析输出报告）
 ```
 
+### 用法 D：完全离线 / 无 LLM 出报告（无网客户）
+
+无外网、数据不能带出、且不能用 LLM 的客户（如 RHEL 7.9），用确定性代码本机直接出 md+html：
+
+```bash
+# 有 node（开发 / 其它客户）：
+node tools/report.js <数据目录>            # 生成 MySQL巡检报告_<日期>.md + .html
+
+# 无 node（RHEL 7.9 默认无 node）：用预编译二进制，零安装
+./mysql-healthcheck-linux-x64 <数据目录>   # 同样输出 md + html
+```
+
+- 全程**不调用任何大模型**；HTML 自包含（内联 CSS + SVG 图表），浏览器直接打开/打印 PDF。
+- 二进制由 CI 在 push `offline-v*` tag 时构建（pkg / node16-linux-x64，自带运行时，兼容 glibc 2.17），发布在 Releases 页，不入仓。
+- 常用参数：`--out-dir <目录>`、`--format md|html|both`（默认 both）、`--project "名称"`、`--emit-facts`（额外导出 facts.json）。
+
 ## 输出样例
 
 ```markdown
