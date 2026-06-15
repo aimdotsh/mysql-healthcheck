@@ -1,0 +1,20 @@
+{
+  "name": "mysql-healthcheck-offline",
+  "version": "1.1.0",
+  "private": true,
+  "description": "离线/无 LLM MySQL 巡检报告生成器（md+html），可打包为单文件二进制",
+  "bin": { "mysql-healthcheck": "tools/report.js" },
+  "scripts": {
+    "report": "node tools/report.js",
+    "test": "node tests/buildfacts_test.js && node tests/charts_test.js && node tests/render_offline_test.js && node tests/report_e2e_test.js",
+    "build:bin": "pkg . --targets node16-linux-x64 --output dist/mysql-healthcheck-linux-x64"
+  },
+  "pkg": {
+    "scripts": ["tools/**/*.js"],
+    "assets": ["tools/rules/*.json", "tools/config/*.json"],
+    "targets": ["node16-linux-x64"],
+    "outputPath": "dist"
+  },
+  "devDependencies": { "pkg": "^5.8.1" },
+  "engines": { "node": ">=16" }
+}
