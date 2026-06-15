@@ -24,5 +24,7 @@ assert.ok(html, 'expected a .html output');
 
 const htmlContent = fs.readFileSync(path.join(OUT, html), 'utf8');
 assert.ok(htmlContent.startsWith('<!DOCTYPE html>'), 'self-contained html');
-assert.ok(!/<script src=|https?:\/\//.test(htmlContent), 'no external refs');
+// 排除内联 SVG 的 xmlns 命名空间 URI（非网络引用），其余 http(s) 引用视为破坏自包含性
+const htmlNoSvgNs = htmlContent.replace(/xmlns="https?:\/\/[^"]*"/g, '');
+assert.ok(!/<script src=|https?:\/\//.test(htmlNoSvgNs), 'no external refs');
 console.log('OK report_e2e_test');

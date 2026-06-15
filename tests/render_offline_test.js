@@ -25,3 +25,24 @@ assert.ok(!/<script src=|https?:\/\//.test(html), 'html must be self-contained (
 const evil = toHtml([B.paragraph('<img onerror=x>')]);
 assert.ok(evil.includes('&lt;img'), 'html must escape user content');
 console.log('OK render_offline_test (core)');
+
+// ── 章节级断言（端到端用真实 facts）──
+const { requireFixtureOrSkip } = require('./fixture.js');
+const DATA = requireFixtureOrSkip('render_offline_test');
+const { buildFacts } = require('../tools/preprocess.js');
+const { buildReportBlocks } = require('../tools/render-offline.js');
+const facts = buildFacts(DATA, {});
+const { blocks: chapterBlocks } = buildReportBlocks(facts);
+const h2 = chapterBlocks.filter(b => b.t === 'heading' && b.level === 2).map(b => b.text);
+for (const kw of ['执行摘要', '操作系统', '集群拓扑', '数据库容量', '结论']) {
+  assert.ok(h2.some(h => h.includes(kw)), `missing chapter heading: ${kw}`);
+}
+assert.ok(chapterBlocks.some(b => b.t === 'chart'), 'expected at least one chart block');
+// 渲染整份不报错，且 html 自包含
+const mdAll = toMarkdown(chapterBlocks);
+const htmlAll = toHtml(chapterBlocks, { title: 't' });
+assert.ok(mdAll.length > 500 && htmlAll.startsWith('<!DOCTYPE html>'), 'renders both formats');
+// 排除内联 SVG 的 xmlns 命名空间 URI（非网络引用），其余 http(s) 引用视为破坏自包含性
+const htmlNoSvgNs = htmlAll.replace(/xmlns="https?:\/\/[^"]*"/g, '');
+assert.ok(!/<script src=|https?:\/\//.test(htmlNoSvgNs), 'html self-contained');
+console.log('OK render_offline_test (chapters)');
