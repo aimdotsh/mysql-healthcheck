@@ -136,7 +136,9 @@ node tools/report.js <数据目录>            # 生成 MySQL巡检报告_<日�
 
 - 全程**不调用任何大模型**；HTML 自包含（内联 CSS + SVG 图表），浏览器直接打开/打印 PDF。
 - 二进制由 CI 在 push `offline-v*` tag 时构建（pkg / node16-linux-x64，自带运行时，兼容 glibc 2.17），发布在 Releases 页，不入仓。
-- 常用参数：`--out-dir <目录>`、`--format md|html|both`（默认 both）、`--project "名称"`、`--emit-facts`（额外导出 facts.json）。
+- 常用参数：`--out-dir <目录>`、`--format md|html|both`（默认 both）、`--project "名称"`、`--config <path>`、`--emit-facts`。
+
+📖 **二进制完整使用说明 + 详细参数表见 [docs/binary-usage.md](docs/binary-usage.md)**（获取 / 参数 / 输出 / 配置 / 排错 / 安全合规）。
 
 ## 输出样例
 
