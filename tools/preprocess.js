@@ -17,30 +17,6 @@ const path = require('path');
 const { createEngine: createRuleEngine } = require('./rule-engine.js');
 const ruleHelpers = require('./rule-helpers');
 
-// ============== CLI 参数解析 ==============
-const args = process.argv.slice(2);
-if (!args[0] || args[0].startsWith('--')) {
-  console.error('用法: node extract.js <数据目录> [--project "项目名"] [--report-version 1.0] [--out data.json] [--config <path>]');
-  process.exit(1);
-}
-const dataDir = path.resolve(args[0]);
-const opts = { project: null, reportVersion: '1.0', out: null, config: null };
-for (let i = 1; i < args.length; i++) {
-  if (args[i] === '--project') opts.project = args[++i];
-  else if (args[i] === '--report-version') opts.reportVersion = args[++i];
-  else if (args[i] === '--out') opts.out = args[++i];
-  else if (args[i] === '--config') opts.config = args[++i];
-}
-
-if (!fs.existsSync(dataDir) || !fs.statSync(dataDir).isDirectory()) {
-  console.error(`错误：目录不存在或不是目录：${dataDir}`);
-  process.exit(1);
-}
-
-const outPath = opts.out
-  ? path.resolve(opts.out)
-  : path.join(dataDir, 'data.json');
-
 // ============== v4.8：阈值与规则配置（三层合并：内置默认 < 采集目录同名 < CLI --config） ==============
 function loadHcConfig(dataDir, cliPath) {
   const defaultPath = path.join(__dirname, 'config', 'default-thresholds.json');
@@ -116,10 +92,8 @@ function deepMergeConfig(target, source) {
   return target;
 }
 
-const hcConfig = loadHcConfig(dataDir, opts.config);
-const T = hcConfig.thresholds || {};
-const DISABLED_RULES = new Set(hcConfig.disabledRules || []);
-const PRIORITY_OVERRIDES = hcConfig.priorities || {};
+// 由 buildFacts() 在运行时赋值（保持模块级，使既有 ~46 处引用无需改动）
+let hcConfig, T, DISABLED_RULES, PRIORITY_OVERRIDES, dataDir;
 
 // ============== 辅助函数 ==============
 function fmtBytes(bytes) {
@@ -1606,7 +1580,15 @@ function inferProjectFromFilename(filename) {
 }
 
 // 主流程
-function main() {
+function buildFacts(inputDir, opts = {}) {
+  dataDir = path.resolve(inputDir);
+  if (!fs.existsSync(dataDir) || !fs.statSync(dataDir).isDirectory()) {
+    throw new Error(`目录不存在或不是目录：${dataDir}`);
+  }
+  hcConfig = loadHcConfig(dataDir, opts.config);
+  T = hcConfig.thresholds || {};
+  DISABLED_RULES = new Set(hcConfig.disabledRules || []);
+  PRIORITY_OVERRIDES = hcConfig.priorities || {};
   const allFiles = fs.readdirSync(dataDir);
   // v4.9.x：放宽文件名匹配以支持老版本 collector：
   // - 新版（V3）：MySQLHealthCheck_<IP>_<timestamp>.txt
@@ -1626,8 +1608,7 @@ function main() {
   const htmlFiles = allFiles.filter(f => /\.html$/i.test(f));
 
   if (txtFiles.length === 0) {
-    console.error(`错误：${dataDir} 下未找到任何巡检 txt 文件（接受文件名：MySQLHealthCheck_*.txt / MySQL_Check_*.txt / 内容含「----->>>---->>>」段标记）`);
-    process.exit(1);
+    throw new Error(`${dataDir} 下未找到任何巡检 txt 文件（接受文件名：MySQLHealthCheck_*.txt / MySQL_Check_*.txt / 内容含「----->>>---->>>」段标记）`);
   }
 
   // 推断项目名 / 日期
@@ -1752,18 +1733,7 @@ function main() {
     disabledRulesApplied: hcConfig.disabledRules,
   };
 
-  fs.writeFileSync(outPath, JSON.stringify(out, null, 2));
-  console.error(`\n数据已写入 ${outPath}`);
-  console.error(`  - 节点：${nodes.length} 个`);
-  console.error(`  - 自动检出问题：${issues.length} 项 (P0:${issues.filter(i => i.priority === 'P0').length}, P1:${issues.filter(i => i.priority === 'P1').length}, P2:${issues.filter(i => i.priority === 'P2').length}, P3:${issues.filter(i => i.priority === 'P3').length})`);
-  if (hcConfig._sources && hcConfig._sources.length > 1) {
-    const overrides = hcConfig._sources.filter(s => s.source !== 'default').map(s => `${s.source}:${path.basename(s.path)}`).join(', ');
-    console.error(`  - 阈值配置：${overrides} 已合并到默认值之上`);
-  }
-  if (hcConfig.disabledRules && hcConfig.disabledRules.length > 0) {
-    console.error(`  - 已禁用规则：${hcConfig.disabledRules.join(', ')}`);
-  }
-  console.error(`\n下一步：必要时手工编辑 ${path.basename(outPath)}（补充项目名/重要问题判断），然后运行 render.js。`);
+  return out;
 }
 
 // ============== 拓扑推断 ==============
@@ -2918,4 +2888,35 @@ function mysqlVersionEolStatus(versionStr) {
   return null;
 }
 
-main();
+if (require.main === module) {
+  const args = process.argv.slice(2);
+  if (!args[0] || args[0].startsWith('--')) {
+    console.error('用法: node preprocess.js <数据目录> [--project "项目名"] [--report-version 1.0] [--out data.json] [--config <path>]');
+    process.exit(1);
+  }
+  const cliOpts = { project: null, reportVersion: '1.0', out: null, config: null };
+  for (let i = 1; i < args.length; i++) {
+    if (args[i] === '--project') cliOpts.project = args[++i];
+    else if (args[i] === '--report-version') cliOpts.reportVersion = args[++i];
+    else if (args[i] === '--out') cliOpts.out = args[++i];
+    else if (args[i] === '--config') cliOpts.config = args[++i];
+  }
+  const inDir = path.resolve(args[0]);
+  const outPath = cliOpts.out ? path.resolve(cliOpts.out) : path.join(inDir, 'data.json');
+  const facts = buildFacts(inDir, cliOpts);
+  fs.writeFileSync(outPath, JSON.stringify(facts, null, 2));
+  const iss = facts.issues;
+  console.error(`\n数据已写入 ${outPath}`);
+  console.error(`  - 节点：${facts.nodes.length} 个`);
+  console.error(`  - 自动检出问题：${iss.length} 项 (P0:${iss.filter(i=>i.priority==='P0').length}, P1:${iss.filter(i=>i.priority==='P1').length}, P2:${iss.filter(i=>i.priority==='P2').length}, P3:${iss.filter(i=>i.priority==='P3').length})`);
+  const srcs = facts.hcConfig && facts.hcConfig.sources;
+  if (srcs && srcs.length > 1) {
+    console.error(`  - 阈值配置：${srcs.filter(s=>s.source!=='default').map(s=>`${s.source}:${path.basename(s.path)}`).join(', ')} 已合并到默认值之上`);
+  }
+  if (facts.disabledRulesApplied && facts.disabledRulesApplied.length) {
+    console.error(`  - 已禁用规则：${facts.disabledRulesApplied.join(', ')}`);
+  }
+  console.error(`\n下一步：必要时手工编辑 ${path.basename(outPath)}（补充项目名/重要问题判断），然后运行 render.js。`);
+}
+
+module.exports = { buildFacts, loadHcConfig };
