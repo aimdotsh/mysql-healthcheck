@@ -116,4 +116,19 @@ ${htmlBlocks(blocks)}
 `;
 }
 
-module.exports = { B, toMarkdown, toHtml };
+// 顶层：把 facts 渲染成 block 数组（章节构造器在后续任务里逐个补全并 push 进来）
+function buildReportBlocks(facts) {
+  const blocks = [];
+  const title = `${facts.project || 'MySQL'} 巡检报告`;
+  blocks.push(B.heading(1, title));
+  blocks.push(B.paragraph(`巡检日期：${facts.inspectionDate || facts.reportDate || '-'}　节点数：${facts.nodes.length}　健康度：${facts.healthScore?.total ?? '-'}/100`));
+  // CHAPTERS_PLACEHOLDER(Task 6/7)：在此依次 push 第一~十七章。交付前此标记必须被真实章节替换。
+  return { title, blocks };
+}
+
+function renderReport(facts) {
+  const { title, blocks } = buildReportBlocks(facts);
+  return { title, markdown: toMarkdown(blocks), html: toHtml(blocks, { title }) };
+}
+
+module.exports = { B, toMarkdown, toHtml, buildReportBlocks, renderReport };
