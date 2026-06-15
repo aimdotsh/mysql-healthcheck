@@ -192,10 +192,34 @@ function buildReportBlocks(facts) {
     '性能': ['innodb_buffer_pool_size', 'innodb_log_file_size', 'innodb_flush_method', 'max_connections'],
     '安全': ['default_authentication_plugin', 'sql_mode', 'character_set_server'],
   };
+  const formatBpSize = (n) => {
+    if (n.bpMB != null) return n.bpMB >= 1024 ? `${(n.bpMB / 1024).toFixed(1)} GB` : `${n.bpMB} MB`;
+    return n.variables?.innodb_buffer_pool_size_in_mb != null ? `${n.variables.innodb_buffer_pool_size_in_mb} MB` : '-';
+  };
+  const formatLogFileSize = (n) => n.variables?.innodb_log_file_size_in_mb != null ? `${n.variables.innodb_log_file_size_in_mb} MB` : '-';
+  const formatFlushMethod = (n) => {
+    if (n.variables?.innodb_flush_method != null) return n.variables.innodb_flush_method;
+    if (n.flushMethodNotODirect != null) return n.flushMethodNotODirect ? 'non-O_DIRECT' : 'O_DIRECT';
+    return '-';
+  };
+  const formatCharsetServer = (n) => {
+    if (n.variables?.character_set_server != null) return n.variables.character_set_server;
+    if (n.charsetNotUtf8mb4 != null) return n.charsetNotUtf8mb4 ? '非 utf8mb4' : 'utf8mb4';
+    return '-';
+  };
+  const PARAM_VALUE_RESOLVERS = {
+    innodb_buffer_pool_size: formatBpSize,
+    innodb_log_file_size: formatLogFileSize,
+    innodb_flush_method: formatFlushMethod,
+    max_connections: (n) => n.variables?.max_connections ?? '-',
+    default_authentication_plugin: (n) => n.variables?.default_authentication_plugin ?? '-',
+    sql_mode: (n) => n.sqlModeStr ?? '-',
+    character_set_server: formatCharsetServer,
+  };
   for (const [groupName, keys] of Object.entries(PARAM_GROUPS)) {
     blocks.push(B.heading(3, groupName));
     blocks.push(B.table(['参数', ...facts.nodes.map(n => n.label || n.ip)],
-      keys.map(key => [key, ...facts.nodes.map(n => n.variables?.[key] ?? '-')])));
+      keys.map(key => [key, ...facts.nodes.map(n => (PARAM_VALUE_RESOLVERS[key] ?? (n2 => n2.variables?.[key] ?? '-'))(n))])));
   }
   const inconsistent = (facts.paramJudgments || []).filter(p => p.ok === false);
   if (inconsistent.length) {
@@ -262,13 +286,13 @@ function buildReportBlocks(facts) {
   blocks.push(B.callout(hllHigh.length ? 'warn' : 'info',
     `本章小结：展示 InnoDB History List Length、脏页及 ibtmp1 临时表空间情况；${hllHigh.length ? `${hllHigh.map(n => n.label || n.ip).join('、')} History List Length 超过 10000，需排查长事务/未提交事务。` : '关键指标处于正常范围。'}`));
 
-  // ── 第九章 引擎深度（Buffer Pool/Redo/锁等待） ────────────────
-  blocks.push(B.heading(2, '第九章 引擎深度（Buffer Pool/Redo/锁等待）'));
+  // ── 第九章 引擎深度（Buffer Pool / Redo / 锁等待） ────────────────
+  blocks.push(B.heading(2, '第九章 引擎深度（Buffer Pool / Redo / 锁等待）'));
   blocks.push(B.table(['节点', 'BP 大小(MB)', '占 RAM 比例', 'BP 命中率', 'innodb_log_file_size'],
     facts.nodes.map(n => [
       n.label || n.ip, n.bpMB ?? '-',
       (n.bpMB != null && n.memGB) ? `${((n.bpMB / 1024 / n.memGB) * 100).toFixed(1)}%` : '-',
-      n.bpHitDisplay ?? '-', n.variables?.innodb_log_file_size ?? '-',
+      n.bpHitDisplay ?? '-', formatLogFileSize(n),
     ])));
   blocks.push(B.heading(3, '锁等待与事务（当前快照）'));
   blocks.push(B.table(['节点', 'INNODB LOCKS', 'INNODB LOCK WAITS', 'Metadata Locks'],
@@ -278,8 +302,8 @@ function buildReportBlocks(facts) {
     ])));
   blocks.push(B.callout('info', '本章小结：展示 Buffer Pool 容量与 RAM 占比、Redo Log 配置及当前锁等待快照；容量评估详见第十六章行动计划。'));
 
-  // ── 第十章 会话+锁+错误日志 ──────────────────────────────────
-  blocks.push(B.heading(2, '第十章 会话+锁+错误日志'));
+  // ── 第十章 会话 + 锁 + 错误日志 ──────────────────────────────────
+  blocks.push(B.heading(2, '第十章 会话 + 锁 + 错误日志'));
   blocks.push(B.table(['节点', '总会话数', '当前连接数'],
     facts.nodes.map(n => [n.label || n.ip, (n.processlist || []).length || 0, n.threadsConnected ?? '-'])));
   blocks.push(B.heading(3, '长时间运行会话'));
@@ -352,7 +376,7 @@ function buildReportBlocks(facts) {
   blocks.push(B.heading(2, '第十三章 Schema 审计'));
   blocks.push(B.heading(3, '字符集'));
   blocks.push(B.table(['节点', 'character_set_server', '是否 utf8mb4'],
-    facts.nodes.map(n => [n.label || n.ip, n.variables?.character_set_server ?? '-', n.charsetNotUtf8mb4 ? '否' : '是'])));
+    facts.nodes.map(n => [n.label || n.ip, formatCharsetServer(n), n.charsetNotUtf8mb4 ? '否' : '是'])));
   blocks.push(B.heading(3, '无主键表'));
   const noPkRows = [];
   for (const n of facts.nodes) for (const t of (n.noPkTables || [])) noPkRows.push([n.label || n.ip, t.schema ?? '-', t.table ?? '-']);
