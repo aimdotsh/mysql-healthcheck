@@ -19,7 +19,7 @@ git clone -b skill https://github.com/aimdotsh/mysql-healthcheck.git
 
 **没有 npm install / pip install / docker pull**。`git clone` 完就能用。
 
-## 2. 三种工作模式
+## 2. 四种工作模式
 
 ### 模式 1：已有 .txt（标准流程）
 
@@ -40,6 +40,21 @@ git clone -b skill https://github.com/aimdotsh/mysql-healthcheck.git
 2. LLM 问你"是否允许通过 ssh 跑 collector"
 3. 你同意 → LLM 自动跑、拉回 .txt、分析
 4. 你拒绝 → 退回模式 2
+
+### 模式 4：二进制离线出报告（无 LLM / 无 node / 无外网）
+
+面向无外网、无 node、数据不能带出的隔离客户（如 RHEL 7.9）。用确定性代码本机直接出 md+html，**全程不调用大模型**：
+
+```bash
+# 无 node：用预编译二进制（零安装，自带运行时，兼容 glibc 2.17）
+./mysql-healthcheck-linux-x64 /path/to/data --project "客户A 生产集群"
+
+# 有 node：等价命令
+node tools/report.js /path/to/data --project "客户A 生产集群"
+```
+
+规则判定、17 章报告、行动计划（P0→P3 + 推荐值 + SQL）全部由本地代码生成；HTML 自包含可直接浏览器打开/打印 PDF。
+👉 **完整参数表、获取方式、排错、安全合规见 [docs/binary-usage.md](docs/binary-usage.md)。**
 
 ## 3. 采集数据
 
