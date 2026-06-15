@@ -448,7 +448,25 @@ function buildReportBlocks(facts) {
   }
   blocks.push(B.callout('info', `本章小结：展示备份工具检测、备份产物发现及备份能力评估；${ba.assessment ? `当前评估：${ba.assessment}` : '维持现状。'}`));
 
-  // ACTION_PLAN_PLACEHOLDER(Task 7)：第十六章 行动计划在 Task 7 实现
+  // ── 第十六章 行动计划 ────────────────────────────────────────
+  blocks.push(B.heading(2, '第十六章 行动计划'));
+  const order = { P0: 0, P1: 1, P2: 2, P3: 3 };
+  const sorted = [...facts.issues].sort((a, b) =>
+    (order[a.priority] ?? 9) - (order[b.priority] ?? 9) || (a.seq || 0) - (b.seq || 0));
+  for (const pr of ['P0', 'P1', 'P2', 'P3']) {
+    const group = sorted.filter(i => i.priority === pr);
+    if (!group.length) continue;
+    const kind = pr === 'P0' ? 'crit' : pr === 'P1' ? 'warn' : 'info';
+    blocks.push(B.heading(3, `${pr} 优先级（${group.length} 项）`));
+    group.forEach((i) => {
+      blocks.push(B.callout(kind, `[${pr}] ${i.node ? i.node + '：' : ''}${i.description || ''}`));
+      if (i.currentValue && i.recommendedValue) {
+        blocks.push(B.paragraph(`✦ 当前值：${i.currentValue}　→　推荐值：${i.recommendedValue}`));
+      }
+      if (i.action) blocks.push(B.paragraph(`处置：${i.action}`));
+      if (i.sql) blocks.push(B.codeblock('sql', i.sql));
+    });
+  }
 
   // ── 第十七章 结论 ────────────────────────────────────────────
   blocks.push(B.heading(2, '第十七章 结论'));
