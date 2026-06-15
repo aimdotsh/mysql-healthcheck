@@ -6,9 +6,9 @@ const { execFileSync } = require('child_process');
 const { requireFixtureOrSkip } = require('./fixture.js');
 
 const DATA = requireFixtureOrSkip('report_e2e_test'); // skips (exit 0) if no fixture
-const OUT = '/tmp/report-e2e';
-fs.rmSync(OUT, { recursive: true, force: true });
-fs.mkdirSync(OUT, { recursive: true });
+const ROOT = '/tmp/report-e2e';
+fs.rmSync(ROOT, { recursive: true, force: true });
+const OUT = path.join(ROOT, 'nested', 'out'); // intentionally NOT pre-created — report.js must create it
 
 execFileSync('node', [
   path.join(__dirname, '..', 'tools', 'report.js'),

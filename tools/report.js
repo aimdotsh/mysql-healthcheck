@@ -31,6 +31,7 @@ function dateStamp() {
 
 function main() {
   const opts = parseArgs(process.argv);
+  fs.mkdirSync(opts.outDir, { recursive: true });
   const facts = buildFacts(opts.dataDir, { project: opts.project, config: opts.config });
   if (opts.emitFacts) fs.writeFileSync(path.join(opts.outDir, 'facts.json'), JSON.stringify(facts, null, 2));
   const { markdown, html } = renderReport(facts);
