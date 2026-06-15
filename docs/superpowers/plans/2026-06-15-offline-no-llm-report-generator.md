@@ -28,7 +28,25 @@
 
 **测试约定（零依赖）：** 每个测试文件是独立的 `node tests/xxx.js` 脚本，用内置 `assert`；失败 `throw`，成功打印 `OK`。无需测试框架。
 
-**测试数据：** `/Users/liups/ai/skill/test/v3/desensitized`（4 节点脱敏集），基线 **49 issues (P0:5 P1:11 P2:28 P3:5)**、healthScore.total=88。
+**测试数据 fixture 解析（公开仓库，不提交客户数据）：** 脱敏集 **不入仓**。所有需要数据的测试通过共享辅助 `tests/fixture.js` 解析 fixture 目录，顺序为：`process.env.HC_TEST_DATA` → 已知本地路径 `/Users/liups/ai/skill/test/v3/desensitized` → 都不存在则打印 `SKIP ...` 并 `process.exit(0)`（CI/他人机器优雅跳过，不报错）。基线（本地有 fixture 时）：**49 issues (P0:5 P1:11 P2:28 P3:5)**、healthScore.total=88、4 节点。
+
+`tests/fixture.js`（Task 1 创建）：
+```js
+'use strict';
+const fs = require('fs');
+function fixtureDir() {
+  const candidates = [process.env.HC_TEST_DATA, '/Users/liups/ai/skill/test/v3/desensitized'].filter(Boolean);
+  for (const c of candidates) { try { if (fs.statSync(c).isDirectory()) return c; } catch (_) {} }
+  return null;
+}
+function requireFixtureOrSkip(testName) {
+  const dir = fixtureDir();
+  if (!dir) { console.log(`SKIP ${testName}: no fixture (set HC_TEST_DATA to a desensitized data dir)`); process.exit(0); }
+  return dir;
+}
+module.exports = { fixtureDir, requireFixtureOrSkip };
+```
+凡示例里出现 `'/Users/liups/ai/skill/test/v3/desensitized'` 字面量的测试，一律改为 `const DATA = require('./fixture.js').requireFixtureOrSkip('<test 名>');`。
 
 ---
 
@@ -971,19 +989,15 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: '18' }
       - run: npm install
-      - run: npm test
+      - run: npm test   # 数据相关测试无 fixture 时优雅 SKIP（exit 0），CI 仍绿
       - run: npm run build:bin
-      - name: smoke (issues==49)
-        run: |
-          OUT=$(node tools/report.js test-fixtures/desensitized --out-dir /tmp 2>&1 || true)
-          echo "$OUT"
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/mysql-healthcheck-linux-x64
 ```
 
-注：CI 的 smoke 依赖一份仓库内脱敏 fixture。若仓库暂无 `test-fixtures/desensitized`，本 step 用 `|| true` 不致命；正式 fixture 入仓作为后续小任务（不在本计划范围，构建本身不依赖它）。
+注：脱敏 fixture 不入仓（公开仓库不放客户数据）。CI 的 `npm test` 中，依赖数据的测试因无 `HC_TEST_DATA`/本地路径而优雅 SKIP；不含数据的测试（charts/render 核心/转义）仍真实执行。二进制「问题数=49」的硬校验在 Task 9 本地用 docker 完成。如需 CI 也做数据级冒烟，后续可在 CI secret/runner 上挂 `HC_TEST_DATA`（不在本计划范围）。
 
 - [ ] **Step 2: 校验 YAML 语法**
 
