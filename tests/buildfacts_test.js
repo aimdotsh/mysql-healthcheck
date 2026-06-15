@@ -1,9 +1,9 @@
 'use strict';
 const assert = require('assert');
-const path = require('path');
 const { buildFacts } = require('../tools/preprocess.js');
+const { requireFixtureOrSkip } = require('./fixture.js');
 
-const DATA = '/Users/liups/ai/skill/test/v3/desensitized';
+const DATA = requireFixtureOrSkip('buildfacts_test');
 const facts = buildFacts(DATA, {});
 
 assert.strictEqual(facts.nodes.length, 4, 'expected 4 nodes');
