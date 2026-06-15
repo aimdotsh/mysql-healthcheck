@@ -245,11 +245,25 @@ function loadRulesFromDir(rulesDir) {
   // 每个 <dim>.json 文件含 `rules: [...]` 数组；dimension 由文件名（去 .json）推断。
   // 引擎接口和 rule 字段语义完全保持不变。
   const rules = [];
-  if (!fs.existsSync(rulesDir)) return rules;
-  const files = fs.readdirSync(rulesDir, { withFileTypes: true })
-    .filter(d => d.isFile() && d.name.endsWith('.json'))
-    .map(d => d.name)
-    .sort();
+  // pkg 快照下 readdirSync 可能失败/返空 → 回退到已知维度文件名（readFileSync 在快照下可靠）
+  const KNOWN_RULE_FILES = [
+    'availability.json', 'dataDesign.json', 'durability.json',
+    'operations.json', 'performance.json', 'security.json',
+  ];
+  let files = [];
+  try {
+    if (fs.existsSync(rulesDir)) {
+      files = fs.readdirSync(rulesDir, { withFileTypes: true })
+        .filter(d => d.isFile() && d.name.endsWith('.json'))
+        .map(d => d.name)
+        .sort();
+    }
+  } catch (_) { /* 快照下 readdirSync 不可用，走兜底 */ }
+  if (files.length === 0) {
+    files = KNOWN_RULE_FILES.filter(f => {
+      try { fs.accessSync(path.join(rulesDir, f)); return true; } catch (_) { return false; }
+    });
+  }
   for (const file of files) {
     const full = path.join(rulesDir, file);
     let payload;
