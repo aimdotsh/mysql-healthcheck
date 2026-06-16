@@ -29,3 +29,34 @@ function mkNode(ip, masterHost, role) {
 }
 
 console.log('OK dual_master_test (detection)');
+
+// ── 写冲突 handler ──
+const { evalDualMasterWriteConflict } = require('../tools/rule-helpers/index.js');
+const CONFLICT_ERR = "Could not execute Write_rows event on table appdb.orders; Duplicate entry '23138' for key 'orders.PRIMARY', Error_code: 1062; handler error HA_ERR_FOUND_DUPP_KEY";
+
+// 3) 双主 + SQL 线程停在 1062 → 1 条 P0，点名冲突表
+{
+  const node = {
+    ip: '10.0.0.2', isDualMaster: true, dualMasterPeer: '10.0.0.1',
+    replication: { status: { slaveSqlRunning: 'No', lastSqlError: CONFLICT_ERR } },
+  };
+  const out = evalDualMasterWriteConflict({ node, cfg: {} });
+  assert.strictEqual(out.length, 1, 'should emit 1 issue');
+  assert.strictEqual(out[0].type, 'dual_master_write_conflict', 'type');
+  assert.strictEqual(out[0].priority, 'P0', 'P0');
+  assert.ok(out[0].description.includes('appdb.orders'), 'names conflict table');
+  assert.ok(/10\.0\.0\.1/.test(out[0].action), 'action references peer');
+}
+
+// 4) 非双主 / SQL 正常 / 非 1062 → []
+{
+  assert.deepStrictEqual(evalDualMasterWriteConflict({ node: { isDualMaster: false }, cfg: {} }), [], 'not dual master');
+  assert.deepStrictEqual(
+    evalDualMasterWriteConflict({ node: { isDualMaster: true, replication: { status: { slaveSqlRunning: 'Yes' } } }, cfg: {} }),
+    [], 'sql running ok');
+  assert.deepStrictEqual(
+    evalDualMasterWriteConflict({ node: { isDualMaster: true, replication: { status: { slaveSqlRunning: 'No', lastSqlError: 'some other error' } } }, cfg: {} }),
+    [], 'not a 1062 conflict');
+}
+
+console.log('OK dual_master_test (write conflict)');

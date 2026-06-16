@@ -195,7 +195,7 @@ function evalRoleReadOnly(ctx) {
       needsConfirmation: inferred,
     }];
   }
-  if (node.role !== 'primary' && node.replication?.isSlave && v.read_only === '0') {
+  if (node.role !== 'primary' && !node.isDualMaster && node.replication?.isSlave && v.read_only === '0') {
     const isDr = !!node.isDrNode;
     return [{
       type: isDr ? 'dr_writable' : 'slave_writable',
@@ -936,6 +936,48 @@ function evalSwapUsed(ctx) {
   }];
 }
 
+// 双主写冲突：双主某端 SQL 复制线程因主键冲突（1062）中止 → 数据已分叉
+function evalDualMasterWriteConflict(ctx) {
+  const { node } = ctx;
+  if (!node.isDualMaster) return [];
+  const st = node.replication?.status || {};
+  if (st.slaveSqlRunning !== 'No') return [];
+  const err = String(st.lastSqlError || '');
+  if (!/1062|duplicate entry/i.test(err)) return [];
+
+  // 提取冲突表（优先 "on table X.Y"，回退 "for key 'X.Y.PRIMARY'" 去掉索引名）
+  const onTable = (err.match(/on table (\S+?)[;\s]/i) || [])[1] || null;
+  const keyName = (err.match(/for key '([^']+)'/) || [])[1] || null;
+  const tableName = onTable || (keyName ? keyName.replace(/\.[^.]+$/, '') : null);
+  const dupVal = (err.match(/Duplicate entry '([^']+)'/i) || [])[1] || null;
+  const peer = node.dualMasterPeer || '对端主库';
+  const tblText = tableName ? `表 ${tableName}` : '某张表';
+
+  return [{
+    type: 'dual_master_write_conflict',
+    priority: 'P0',
+    groupKey: `dual_master_conflict:${node.ip}`,
+    dimension: 'durability',
+    description: `双主写冲突：节点 ${node.ip} 的复制 SQL 线程因主键冲突中止（${tblText}${dupVal ? `，重复键 '${dupVal}'` : ''}）。本端与对端 ${peer} 同时写入了同一主键，两库数据已分叉，复制已断；继续双写会持续制造冲突。`,
+    currentValue: `SQL 线程 Stopped；${tblText} 主键冲突${dupVal ? `（Duplicate entry '${dupVal}'）` : ''}`,
+    recommendedValue: `选定权威端 → 核对修复分叉数据 → 重建复制；并按双主拆分自增（auto_increment_increment=2 + offset 1/2）或收敛为单边写`,
+    action: [
+      `1) 选定权威端：以业务写入量大 / 数据更全的一端为准（需人工判断 ${node.ip} 还是 ${peer}）；`,
+      `2) 核对分叉：用 pt-table-checksum 或人工比对两端 ${tableName || '冲突表'} 的差异行，决定保留/合并策略；`,
+      `3) 重建复制：权威端确认位点后，另一端 STOP SLAVE; 修复数据; RESET SLAVE; 重新 CHANGE MASTER 指向权威端；`,
+      `4) 防再发：按双主规范拆分自增（${node.ip}: auto_increment_offset=1、${peer}: =2，两端 auto_increment_increment=2），或收敛为「只写单边」的伪双主、应用层禁止双写。`,
+    ].join('\n   '),
+    sql: [
+      '-- 查看断点：',
+      'SHOW SLAVE STATUS\\G   -- 关注 Last_SQL_Error / Exec_Master_Log_Pos',
+      '-- 防再发：双主自增拆分（两端 increment=2，offset 分别 1 / 2）：',
+      'SET GLOBAL auto_increment_increment = 2;',
+      'SET GLOBAL auto_increment_offset = 1;   -- 对端设为 2',
+    ].join('\n'),
+    scope: 'node',
+  }];
+}
+
 module.exports = {
   evalDisks,
   evalReplication,
@@ -960,4 +1002,5 @@ module.exports = {
   evalInnodbHll,
   evalIbtmp1Oversize,
   evalSwapUsed,
+  evalDualMasterWriteConflict,
 };

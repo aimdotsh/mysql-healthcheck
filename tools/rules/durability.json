@@ -84,6 +84,14 @@
       "handler": "evalIbtmp1Oversize"
     },
     {
+      "id": "dual_master_write_conflict",
+      "scope": "node",
+      "priority": "P0",
+      "title": "双主写冲突",
+      "rationale": "双主双写同一主键导致复制 SQL 线程中止、两库数据已分叉。点名冲突表，给出选定权威端 + 重建复制 + 自增拆分的处置。",
+      "handler": "evalDualMasterWriteConflict"
+    },
+    {
       "id": "self_ref_slave_residue",
       "scope": "node",
       "priority": "P2",
