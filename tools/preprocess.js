@@ -1668,6 +1668,7 @@ function buildFacts(inputDir, opts = {}) {
   }
 
   normalizeNodeRoles(nodes);
+  detectDualMaster(nodes);   // 双主：互为主从对 → 两端 primary + isDualMaster
   sortNodesPrimaryFirst(nodes);
 
   // v4.9：计算每节点的磁盘归因（binlog / slow log / error log / relay log / ibtmp1 各占多少）
@@ -1737,7 +1738,27 @@ function buildFacts(inputDir, opts = {}) {
 }
 
 // ============== 拓扑推断 ==============
+// 双主识别：两节点互为主从（A 的 masterHost==B.ip 且 B 的 masterHost==A.ip）
+// → 两端都是 master（且互为对方的从）。标 role='primary' + isDualMaster + 对端 ip。
+function detectDualMaster(nodes) {
+  for (const a of nodes) {
+    const aMaster = a.replication?.status?.masterHost;
+    if (!a.replication?.isSlave || !aMaster) continue;
+    const b = nodes.find(n => n !== a && n.ip === aMaster);
+    if (!b) continue;
+    if (b.replication?.isSlave && b.replication?.status?.masterHost === a.ip) {
+      a.role = 'primary';
+      b.role = 'primary';
+      a.isDualMaster = true;
+      b.isDualMaster = true;
+      a.dualMasterPeer = b.ip;
+      b.dualMasterPeer = a.ip;
+    }
+  }
+}
+
 function deriveTopology(nodes) {
+  if (nodes.some(n => n.isDualMaster)) return '双主（master-master，互为主从）';
   const primary = nodes.find(n => n.role === 'primary');
   const slaves = nodes.filter(n => n.role !== 'primary');
   if (primary && slaves.length > 0) {
@@ -2127,7 +2148,7 @@ function businessLongSessions(node) {
 // ============== 问题自动分析（节点级 → 集群级聚合）==============
 function analyzeIssues(nodes) {
   const raw = [];
-  const nodeLabel = (n) => `${n.ip}（${roleLabel(n.role)}）`;
+  const nodeLabel = (n) => `${n.ip}（${roleLabel(n.role)}${n.isDualMaster ? '·双主' : ''}）`;
 
   // ============== v5.0 GA：全规则走声明式引擎 ==============
   // 所有节点级 / 集群级规则定义在 scripts/rules/<dim>/*.json，
@@ -2919,4 +2940,4 @@ if (require.main === module) {
   console.error(`\n下一步：必要时手工编辑 ${path.basename(outPath)}（补充项目名/重要问题判断），然后运行 render.js。`);
 }
 
-module.exports = { buildFacts, loadHcConfig };
+module.exports = { buildFacts, loadHcConfig, detectDualMaster };
