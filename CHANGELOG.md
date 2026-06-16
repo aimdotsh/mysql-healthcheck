@@ -5,6 +5,15 @@
 
 ---
 
+## [1.2.0] - 2026-06-16
+
+**双主（master-master）识别 + 写冲突诊断**
+
+- 新增 `detectDualMaster()`：两节点互为主从 → 两端标 `primary` + `isDualMaster`；拓扑显示「双主（master-master，互为主从）」，节点标签「主库·双主」。
+- 修复 `slave_writable` 在双主下的误报（双主两端可写是设计如此）。
+- 新增 P0 规则 `dual_master_write_conflict`：双主某端 SQL 复制线程因主键冲突（1062）中止时，点名冲突表 + 给出「选定权威端 → 核对修复分叉 → 重建复制 → 自增拆分防再发」的处置。
+- 单元测试 `tests/dual_master_test.js`；脱敏集（一主一从）49 项回归不受影响。
+
 ## [1.1.0] - 2026-06-15
 
 **离线 / 无 LLM / 无 node 出报告：新增 Node 渲染器 + 单文件二进制**
