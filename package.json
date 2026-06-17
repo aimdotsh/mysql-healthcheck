@@ -1,6 +1,6 @@
 {
   "name": "mysql-healthcheck-offline",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "private": true,
   "description": "离线/无 LLM MySQL 巡检报告生成器（md+html），可打包为单文件二进制",
   "bin": { "mysql-healthcheck": "tools/report.js" },
