@@ -1509,6 +1509,94 @@ collect_security() {
     run_sql "SELECT user, host FROM mysql.user WHERE authentication_string = '' OR authentication_string IS NULL;" 2>/dev/null || \
     run_sql "SELECT user, host FROM mysql.user WHERE password = '' OR password IS NULL;" 2>/dev/null
 
+    section "12" "Users with weak password"
+    # 库内哈希比对——只输出 user@host，哈希/密码明文永不出库
+    if [[ "$DB_VERSION" == "5.6" ]]; then
+        run_sql "SELECT user, host FROM mysql.user WHERE Password <> '' AND Password IS NOT NULL AND (Password IN (
+  PASSWORD('123456'),PASSWORD('password'),PASSWORD('12345678'),PASSWORD('qwerty'),PASSWORD('123456789'),
+  PASSWORD('12345'),PASSWORD('1234'),PASSWORD('111111'),PASSWORD('1234567'),PASSWORD('dragon'),
+  PASSWORD('123123'),PASSWORD('abc123'),PASSWORD('football'),PASSWORD('monkey'),PASSWORD('letmein'),
+  PASSWORD('shadow'),PASSWORD('master'),PASSWORD('666666'),PASSWORD('123321'),PASSWORD('mustang'),
+  PASSWORD('1234567890'),PASSWORD('iloveyou'),PASSWORD('000000'),PASSWORD('admin'),PASSWORD('root'),
+  PASSWORD('mysql'),PASSWORD('test'),PASSWORD('test123'),PASSWORD('admin123'),PASSWORD('root123'),
+  PASSWORD('pass'),PASSWORD('pass123'),PASSWORD('Pass123'),PASSWORD('P@ssword'),PASSWORD('P@ssw0rd'),
+  PASSWORD('Aa123456'),PASSWORD('Abc123456'),PASSWORD('1qaz2wsx'),PASSWORD('qaz123'),PASSWORD('mysql123'),
+  PASSWORD('oracle'),PASSWORD('oracle123'),PASSWORD('password1'),PASSWORD('password123'),PASSWORD('changeme'),
+  PASSWORD('welcome'),PASSWORD('login'),PASSWORD('123qwe'),PASSWORD('123abc'),PASSWORD('a123456'),
+  PASSWORD('654321'),PASSWORD('88888888'),PASSWORD('12341234'),PASSWORD('11111111'),PASSWORD('qwertyuiop'),
+  PASSWORD('superman'),PASSWORD('batman'),PASSWORD('trustno1'),PASSWORD('michael'),PASSWORD('55555555')
+) OR Password = PASSWORD(user));" 2>/dev/null || echo "(5.6 弱密码检测不可用)"
+    else
+        run_sql "SELECT user, host FROM mysql.user
+  WHERE plugin = 'mysql_native_password'
+    AND authentication_string <> '' AND authentication_string IS NOT NULL
+    AND (authentication_string IN (
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('123456'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('password'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('12345678'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('qwerty'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('123456789'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('12345'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('1234'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('111111'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('1234567'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('dragon'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('123123'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('abc123'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('football'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('monkey'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('letmein'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('shadow'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('master'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('666666'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('123321'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('mustang'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('1234567890'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('iloveyou'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('000000'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('admin'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('root'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('mysql'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('test'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('test123'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('admin123'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('root123'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('pass'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('pass123'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('Pass123'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('P@ssword'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('P@ssw0rd'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('Aa123456'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('Abc123456'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('1qaz2wsx'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('qaz123'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('mysql123'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('oracle'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('oracle123'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('password1'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('password123'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('changeme'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('welcome'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('login'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('123qwe'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('123abc'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('a123456'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('654321'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('88888888'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('12341234'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('11111111'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('qwertyuiop'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('superman'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('batman'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('trustno1'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('michael'))))),
+      CONCAT('*',UPPER(SHA1(UNHEX(SHA1('55555555')))))
+    ) OR authentication_string = CONCAT('*',UPPER(SHA1(UNHEX(SHA1(user))))));" 2>/dev/null || echo "(弱密码检测不可用)"
+    fi
+    # caching_sha2_password 账号无法离线字典比对（加盐哈希），不在检测范围内
+    section "12" "Users with caching_sha2 (not checked for weak password)"
+    run_sql "SELECT user, host FROM mysql.user WHERE plugin = 'caching_sha2_password' AND authentication_string <> '' AND authentication_string IS NOT NULL;" 2>/dev/null || echo "(无 caching_sha2_password 账号或版本不支持)"
+
     section "12" "Users with old auth plugin"
     run_sql "SELECT user, host, plugin FROM mysql.user WHERE plugin IN ('mysql_native_password','mysql_old_password');" 2>/dev/null
 
