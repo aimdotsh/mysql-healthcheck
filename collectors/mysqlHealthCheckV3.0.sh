@@ -449,6 +449,14 @@ mysql_ver_ge() {
     return 1
 }
 
+# mysql8_ver_ge MAJOR MINOR — 仅当是「MySQL 系（非 MariaDB）」且版本 >= MAJOR.MINOR 时为真。
+# 用于 MySQL 8.x 专有命名/命令（replica_*、redo_log_capacity、authentication_policy、
+# SHOW REPLICA STATUS 等）：MariaDB 主版本号 10/11 ≥ 8，但不遵循这些，须走旧命名分支。
+mysql8_ver_ge() {
+    [[ "${IS_MARIADB:-0}" -eq 1 ]] && return 1
+    mysql_ver_ge "$1" "$2"
+}
+
 # ============== 输出文件 ==============
 IP_ADDR=$(ip addr show 2>/dev/null | awk '/inet / && /brd/ {print $2}' | cut -d/ -f1 | awk 'NR==1')
 [[ -z "$IP_ADDR" ]] && IP_ADDR=$(hostname -I 2>/dev/null | awk '{print $1}')
@@ -514,9 +522,19 @@ skip_module() {
     [[ ",${SKIP_MODULES}," == *",$1,"* ]]
 }
 
-# ============== 全局：MySQL 版本探测 ==============
-DB_VERSION=${DB_VERSION:-$(run_sql_silent "SELECT LEFT(VERSION(),3);")}
+# ============== 全局：MySQL / MariaDB 版本探测 ==============
 DB_VERSION_FULL=${DB_VERSION_FULL:-$(run_sql_silent "SELECT VERSION();")}
+# 主版本号取 major.minor（兼容 5.6 / 5.7 / 8.0 / 8.4，以及 MariaDB 10.x / 11.x；
+# 不能用 LEFT(VERSION(),3)：MariaDB 10.6.x 会被截成 "10." 导致版本比较失效）。
+DB_VERSION=${DB_VERSION:-$(printf '%s\n' "$DB_VERSION_FULL" | awk -F. '{print $1 "." $2}')}
+# MariaDB 识别：VERSION() 或 @@version_comment 含 MariaDB。MariaDB 沿用 5.x 风格命名
+# （slave_*/log_slave_updates/SHOW SLAVE STATUS），无 MySQL 8 的 replica_*/redo_capacity/
+# authentication_policy/gtid_mode 等，后续按 IS_MARIADB 走兼容分支。
+IS_MARIADB=0
+if printf '%s' "$DB_VERSION_FULL" | grep -qi mariadb \
+   || run_sql_silent "SELECT @@version_comment;" 2>/dev/null | grep -qi mariadb; then
+    IS_MARIADB=1
+fi
 SLAVE_LOG_FILE=$(run_sql_silent "SELECT @@slow_query_log_file;")
 ERROR_LOG_PATH=$(run_sql_silent "SELECT @@log_error;")
 DATA_DIR=$(run_sql_silent "SELECT @@datadir;")
@@ -528,7 +546,7 @@ echo "  目标实例：${DB_HOST}:${DB_PORT}"
 [[ -n "$DB_SOCKET" ]] && echo "  连接 socket：${DB_SOCKET}"
 [[ -n "$DEFAULTS_FILE" ]] && echo "  配置文件：${DEFAULTS_FILE}"
 echo "  mysql 客户端：${EXEC_MYSQL}"
-echo "  MySQL 版本：${DB_VERSION_FULL} (主版本 ${DB_VERSION})"
+echo "  数据库版本：${DB_VERSION_FULL} (主版本 ${DB_VERSION}$([[ "$IS_MARIADB" -eq 1 ]] && echo '，MariaDB'))"
 echo "  本机 IP：${IP_ADDR}"
 echo "================================================================"
 
