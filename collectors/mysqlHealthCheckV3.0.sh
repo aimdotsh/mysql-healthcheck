@@ -47,6 +47,7 @@ BACKUP_PATHS="/backup,/data/backup,/data/mysql/backup,/home/backup,/data/backup_
 SKIP_MODULES=""
 NON_INTERACTIVE=0
 TEST_LOGIN_ONLY=0
+ENABLE_DIAGNOSTICS=0   # sys.diagnostics 运行 ~60s，默认关闭，--enable-diagnostics 开
 MYSQL_SSL_OPTION=""
 AUTO_DETECT_NOTES=()
 MYSQLD_PID_DETECTED=""
@@ -74,6 +75,7 @@ while [[ $# -gt 0 ]]; do
         --error-log-lines) ERROR_LOG_LINES="$2"; shift 2 ;;
         --backup-paths) BACKUP_PATHS="$2"; shift 2 ;;
         --skip-modules) SKIP_MODULES="$2"; shift 2 ;;
+        --enable-diagnostics) ENABLE_DIAGNOSTICS=1; shift ;;
         --non-interactive) NON_INTERACTIVE=1; shift ;;
         --test-login) TEST_LOGIN_ONLY=1; shift ;;
         -h|--help)
@@ -82,6 +84,7 @@ while [[ $# -gt 0 ]]; do
 
 常用自动发现参数：
   --test-login              只测试数据库登录，成功后退出，不生成报告
+  --enable-diagnostics      额外采集 sys.diagnostics 高级诊断快照（运行约 60s，默认关闭）
   --defaults-file PATH      指定 mysqld 配置文件；不指定时从 ps -ef 的 --defaults-file 自动发现
   --socket PATH             指定 socket；不指定时从 mysqld 进程或 cnf 自动发现
   --ssl-mode MODE           传给 mysql 客户端的 SSL 模式，例如 DISABLED / PREFERRED
@@ -830,6 +833,21 @@ collect_variables() {
 
     section "03" "Performance schema sizing"
     run_sql "SELECT * FROM performance_schema.global_variables WHERE VARIABLE_NAME LIKE 'performance_schema_%' LIMIT 30;" 2>/dev/null
+
+    section "03" "Supplementary variables"
+    if [[ "$DB_VERSION" == "5.6" || "$IS_MARIADB" -eq 1 ]]; then
+        run_sql "SELECT * FROM INFORMATION_SCHEMA.GLOBAL_VARIABLES WHERE VARIABLE_NAME IN ('connect_timeout','skip_name_resolve','max_user_connections','log_output','max_binlog_size','auto_increment_increment','auto_increment_offset','sql_log_bin','log_bin_index','max_allowed_packet','default_storage_engine','innodb_file_per_table','binlog_format','log_bin');"
+    else
+        run_sql "SELECT * FROM performance_schema.global_variables WHERE VARIABLE_NAME IN ('connect_timeout','skip_name_resolve','max_user_connections','log_output','max_binlog_size','auto_increment_increment','auto_increment_offset','sql_log_bin','log_bin_index','max_allowed_packet','default_storage_engine','innodb_file_per_table','binlog_format','log_bin');"
+    fi
+
+    # performance_schema 是否真正在采集（consumers/instruments 关了则 SQL/锁/历史会空）
+    if mysql_ver_ge 5 7 && [[ "$IS_MARIADB" -eq 0 ]]; then
+        section "03" "performance_schema setup_consumers"
+        run_sql "SELECT * FROM performance_schema.setup_consumers;" 2>/dev/null
+        section "03" "performance_schema setup_instruments (lock/statement)"
+        run_sql "SELECT NAME, ENABLED, TIMED FROM performance_schema.setup_instruments WHERE NAME LIKE 'wait/lock/metadata/%' OR NAME LIKE 'statement/sql/%' LIMIT 100;" 2>/dev/null
+    fi
 }
 
 ###############################################################################
@@ -895,6 +913,13 @@ collect_replication() {
     if [[ "$DB_VERSION" != "5.6" ]]; then
         run_sql_vert "SELECT * FROM performance_schema.replication_connection_status" 2>/dev/null
         run_sql_vert "SELECT * FROM performance_schema.replication_applier_status_by_worker" 2>/dev/null
+    fi
+
+    # Clone 插件状态（MySQL 8.0.17+ / MGR 克隆；未启用则为空）
+    if mysql8_ver_ge 8 0; then
+        section "04" "Clone status"
+        run_sql "SELECT * FROM performance_schema.clone_status;" 2>/dev/null
+        run_sql "SELECT * FROM performance_schema.clone_progress;" 2>/dev/null
     fi
 }
 
@@ -1027,6 +1052,12 @@ AND A.table_type='BASE TABLE' AND B.table_name IS NULL;"
     else
         run_sql "SELECT * FROM INFORMATION_SCHEMA.FILES WHERE FILE_TYPE <> 'TABLESPACE' OR TABLESPACE_NAME IN ('innodb_system','innodb_temporary');"
     fi
+
+    section "05" "Supported character sets"
+    run_sql "SELECT CHARACTER_SET_NAME, DEFAULT_COLLATE_NAME, MAXLEN FROM information_schema.CHARACTER_SETS ORDER BY CHARACTER_SET_NAME;"
+
+    section "05" "Engine distribution by database"
+    run_sql "SELECT TABLE_SCHEMA, ENGINE, COUNT(*) AS tables FROM information_schema.TABLES WHERE TABLE_TYPE='BASE TABLE' AND TABLE_SCHEMA NOT IN ('mysql','sys','information_schema','performance_schema') GROUP BY TABLE_SCHEMA, ENGINE ORDER BY TABLE_SCHEMA, tables DESC;"
 }
 
 ###############################################################################
@@ -1077,6 +1108,12 @@ AND DATEDIFF(DATE_ADD(password_last_changed, INTERVAL password_lifetime DAY), NO
 
     section "06" "login info by db+user+host"
     run_sql "SELECT DB AS database_name, USER AS login_user, LEFT(HOST, IFNULL(POSITION(':' IN HOST)-1, LENGTH(HOST))) AS login_ip, COUNT(1) AS login_count FROM information_schema.PROCESSLIST GROUP BY DB, USER, LEFT(HOST, IFNULL(POSITION(':' IN HOST)-1, LENGTH(HOST)));"
+
+    # connection_control 暴力破解防护插件（未安装则两段为空）
+    section "06" "connection_control variables"
+    run_sql "SELECT * FROM performance_schema.global_variables WHERE VARIABLE_NAME LIKE 'connection_control%';" 2>/dev/null
+    section "06" "connection_control failed login attempts"
+    run_sql "SELECT * FROM information_schema.connection_control_failed_login_attempts;" 2>/dev/null
 }
 
 ###############################################################################
@@ -1137,6 +1174,21 @@ collect_sessions_locks() {
         run_sql "SELECT * FROM INFORMATION_SCHEMA.GLOBAL_STATUS WHERE VARIABLE_NAME LIKE '%lock%';"
     else
         run_sql "SELECT * FROM performance_schema.global_status WHERE VARIABLE_NAME LIKE '%lock%';"
+    fi
+
+    # 高级诊断（依赖 sys 库 / performance_schema，5.7+ 且非 MariaDB；MariaDB PS 默认 OFF）
+    if mysql_ver_ge 5 7 && [[ "$IS_MARIADB" -eq 0 ]]; then
+        section "07" "MDL blocking chain (sys.schema_table_lock_waits)"
+        run_sql "SELECT * FROM sys.schema_table_lock_waits LIMIT 50;" 2>/dev/null
+
+        section "07" "Active transactions (sys.session)"
+        run_sql "SELECT thd_id, conn_id, user, db, command, state, time, current_statement, statement_latency, lock_latency, rows_examined, rows_sent, tmp_disk_tables, full_scan, trx_latency, trx_state FROM sys.session WHERE conn_id <> CONNECTION_ID() AND trx_state = 'ACTIVE' LIMIT 50;" 2>/dev/null
+
+        section "07" "Recent committed statements (sys.session)"
+        run_sql "SELECT thd_id, conn_id, user, db, last_statement, last_statement_latency, current_memory, trx_state FROM sys.session WHERE conn_id <> CONNECTION_ID() AND trx_state = 'COMMITTED' AND db IS NOT NULL LIMIT 50;" 2>/dev/null
+
+        section "07" "Long operation progress (events_stages_current)"
+        run_sql "SELECT THREAD_ID, EVENT_NAME, WORK_COMPLETED, WORK_ESTIMATED, TIMER_WAIT FROM performance_schema.events_stages_current WHERE WORK_ESTIMATED IS NOT NULL OR WORK_COMPLETED IS NOT NULL LIMIT 50;" 2>/dev/null
     fi
 }
 
@@ -1210,6 +1262,19 @@ FROM performance_schema.events_statements_summary_by_digest
 WHERE COUNT_STAR > 10
 AND (SCHEMA_NAME NOT IN ('mysql','sys','information_schema','performance_schema') OR SCHEMA_NAME IS NULL)
 ORDER BY AVG_TIMER_WAIT DESC LIMIT 20;"
+
+        if [[ "$IS_MARIADB" -eq 0 ]]; then
+            section "09" "TOP 10 SQL over 95th pct avg latency"
+            run_sql "SELECT sys.format_statement(DIGEST_TEXT) AS query, SCHEMA_NAME AS db,
+COUNT_STAR AS exec_count,
+sys.format_time(SUM_TIMER_WAIT) AS total_latency,
+sys.format_time(AVG_TIMER_WAIT) AS avg_latency,
+sys.format_time(MAX_TIMER_WAIT) AS max_latency,
+SUM_ROWS_EXAMINED AS rows_examined, SUM_ROWS_SENT AS rows_sent, DIGEST
+FROM performance_schema.events_statements_summary_by_digest s
+JOIN sys.x\$ps_digest_95th_percentile_by_avg_us p ON ROUND(s.AVG_TIMER_WAIT/1000000) >= p.avg_us
+ORDER BY s.AVG_TIMER_WAIT DESC LIMIT 10;" 2>/dev/null
+        fi
 
         section "09" "SQL with full scan"
         run_sql "SELECT object_schema, object_name, count_read AS rows_full_scanned, sys.format_time(sum_timer_wait) AS latency FROM performance_schema.table_io_waits_summary_by_index_usage WHERE index_name IS NULL AND count_read > 0 ORDER BY count_read DESC LIMIT 20;"
@@ -1511,6 +1576,21 @@ EOF
 }
 
 ###############################################################################
+# 模块 14（可选）：sys.diagnostics 高级诊断快照（运行 ~60s，--enable-diagnostics 开启）
+###############################################################################
+collect_diagnostics() {
+    [[ "$ENABLE_DIAGNOSTICS" -ne 1 ]] && return
+    skip_module "diagnostics" && { echo "(skipped)"; return; }
+    module_header "[14] sys.diagnostics 高级诊断快照（可选）"
+    if mysql_ver_ge 5 7 && [[ "$IS_MARIADB" -eq 0 ]]; then
+        section "14" "sys.diagnostics (60s,30s,current)"
+        run_sql "CALL sys.diagnostics(60, 30, 'current');" 2>/dev/null || echo "(sys.diagnostics 执行失败：需 sys 库 + performance_schema 开启)"
+    else
+        echo "(仅 MySQL 5.7+ 非 MariaDB 支持 sys.diagnostics)"
+    fi
+}
+
+###############################################################################
 # 主流程
 ###############################################################################
 collect_os
@@ -1525,6 +1605,7 @@ collect_sql_performance
 collect_logs
 collect_backup
 collect_security
+collect_diagnostics
 collect_interview_template
 
 echo ""
