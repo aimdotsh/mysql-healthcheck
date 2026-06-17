@@ -30,3 +30,5 @@ package-lock.json
 # 不在此分支里，但万一有人在仓库目录里跑：
 MySQL巡检报告_*.md
 *_MySQL巡检报告_*.md
+mysql-healthcheck-ykt-2.0/
+/yangben
