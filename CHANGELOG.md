@@ -6,6 +6,36 @@
 
 ---
 
+## [5.0.9] - 2026-06-18
+
+**弱密码检测 + 6 条高价值参数配置检查 + 采集端高级诊断增强**。
+
+### 采集端（`collectors/mysqlHealthCheckV3.0.sh`）
+
+- 新增 `"Users with weak password"` section（模块 12）：60 条常见弱密码字典库内 SHA1 比对，只输出 `user@host`，哈希/明文永不写入报告；5.6 分支用 `PASSWORD()` 函数，5.7+/8.x 用 `CONCAT('*',SHA1…)` 形式，caching_sha2_password 加盐账号单独 section 标注「未检测」
+- 高级诊断采集（PC1，已随 PC1 提交）：`sys.session`/MDL 阻塞链路/`setup_consumers`/95 分位 SQL/connection_control/clone status/`events_stages_current` + 可选 `sys.diagnostics` 模块（`--enable-diagnostics` 开启）+ 补充变量/字符集分布/引擎分布
+
+### 规则（`scripts/rules/`）
+
+| 规则 id | 维度 | 优先级 | 说明 |
+|---|---|---|---|
+| `log_bin_off` | durability | P1 | binlog 未开启，PITR/复制前提缺失 |
+| `binlog_format_not_row` | durability | P2 | binlog 已开但格式非 ROW，主从不一致风险 |
+| `file_per_table_off` | performance | P2 | ibdata 共享表空间，DROP TABLE 不释放磁盘 |
+| `default_engine_not_innodb` | dataDesign | P2 | 默认引擎非 InnoDB，新建表无事务/崩溃恢复 |
+| `skip_name_resolve_off` | operations | P2 | DNS 反向解析，连接超时/延迟风险 |
+| `validate_password_off` | security | P2 | 密码强度校验插件未启用 |
+| `weak_password` | security | P0/P1 | 弱密码账号（root/admin→P0，普通→P1） |
+
+总规则数：42 → 50 条。
+
+### 安全约束
+
+- 弱密码检测：哈希/密码明文**绝不写入 .txt 或报告**，仅输出 `user@host`
+- `caching_sha2_password` 账号显式标注「未检测」，避免误导客户
+
+---
+
 ## [5.0.8] - 2026-05-21
 
 **敏感信息全仓库脱敏审计 — 替换残留的真实客户标识为通用示例**。
