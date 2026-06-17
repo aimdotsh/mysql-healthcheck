@@ -457,6 +457,25 @@ mysql8_ver_ge() {
     mysql_ver_ge "$1" "$2"
 }
 
+# mysql_full_ge MAJOR MINOR PATCH — 基于完整版本号（DB_VERSION_FULL）做补丁级比较。
+# DB_VERSION 只有 major.minor（8.0 / 8.4），无法区分 8.0.23 / 8.0.30 这类补丁级差异；
+# 而 slave_*→replica_*（8.0.23）、redo_log_capacity（8.0.30）等正是补丁级变更。纯 bash 比较，避免依赖 sort -V。
+mysql_full_ge() {
+    local M m p
+    IFS=. read -r M m p _ <<< "$(printf '%s' "$DB_VERSION_FULL" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+    [[ -z "$M" ]] && return 1
+    (( M > $1 )) && return 0
+    (( M < $1 )) && return 1
+    (( m > $2 )) && return 0
+    (( m < $2 )) && return 1
+    (( p >= $3 ))
+}
+# mysql8_full_ge — 仅 MySQL 系（非 MariaDB）且完整版本 >= MAJOR.MINOR.PATCH
+mysql8_full_ge() {
+    [[ "${IS_MARIADB:-0}" -eq 1 ]] && return 1
+    mysql_full_ge "$1" "$2" "$3"
+}
+
 # ============== 输出文件 ==============
 IP_ADDR=$(ip addr show 2>/dev/null | awk '/inet / && /brd/ {print $2}' | cut -d/ -f1 | awk 'NR==1')
 [[ -z "$IP_ADDR" ]] && IP_ADDR=$(hostname -I 2>/dev/null | awk '{print $1}')
@@ -675,7 +694,8 @@ collect_mysql_basic() {
     run_sql "STATUS"
 
     section "02" "Version details"
-    if [[ "$DB_VERSION" == "5.6" ]]; then
+    # MariaDB 默认 performance_schema=OFF，用 INFORMATION_SCHEMA 更可靠（5.6 同）
+    if [[ "$DB_VERSION" == "5.6" || "$IS_MARIADB" -eq 1 ]]; then
         run_sql "SELECT * FROM INFORMATION_SCHEMA.GLOBAL_VARIABLES WHERE VARIABLE_NAME LIKE 'version_%';"
     else
         run_sql "SELECT * FROM performance_schema.global_variables WHERE VARIABLE_NAME LIKE 'version_%';"
@@ -721,13 +741,10 @@ collect_variables() {
 @@global.read_rnd_buffer_size/1024 AS read_rnd_buffer_size_in_kb,
 @@global.max_allowed_packet/1024/1024 AS max_allowed_packet_in_mb,
 @@global.log_bin,
-@@global.gtid_mode,
-@@global.enforce_gtid_consistency,
 @@global.innodb_doublewrite,
 @@global.innodb_flush_log_at_trx_commit,
 @@global.sync_binlog,
 @@global.innodb_data_file_path,
-@@global.innodb_temp_data_file_path,
 @@global.open_files_limit,
 @@global.innodb_open_files,
 @@global.slow_query_log,
@@ -739,7 +756,6 @@ collect_variables() {
 @@global.innodb_file_per_table,
 @@global.max_connections,
 @@global.max_connect_errors,
-@@global.transaction_isolation,
 @@global.default_storage_engine,
 @@global.innodb_adaptive_hash_index,
 @@global.basedir,
@@ -749,15 +765,32 @@ collect_variables() {
 @@global.log_error,
 @@global.server_id"
 
-    # binlog 保留时间：8.0.1+ 用 binlog_expire_logs_seconds，旧版用 expire_logs_days
-    if mysql_ver_ge 8 0; then
+    # 事务隔离：MySQL 5.7+/8 用 transaction_isolation；MySQL 5.6 与 MariaDB 用 tx_isolation（别名回同名）
+    if [[ "$IS_MARIADB" -eq 1 ]] || ! mysql_ver_ge 5 7; then
+        sql+=",@@global.tx_isolation AS transaction_isolation"
+    else
+        sql+=",@@global.transaction_isolation"
+    fi
+
+    # 临时表空间 ibtmp1：5.7+ 才有 innodb_temp_data_file_path（MariaDB 10.x 也有）
+    if [[ "$IS_MARIADB" -eq 1 ]] || mysql_ver_ge 5 7; then
+        sql+=",@@global.innodb_temp_data_file_path"
+    fi
+
+    # GTID：MySQL 专有 gtid_mode / enforce_gtid_consistency；MariaDB GTID 模型不同（gtid_strict_mode 等），此处跳过避免报错
+    if [[ "$IS_MARIADB" -eq 0 ]]; then
+        sql+=",@@global.gtid_mode,@@global.enforce_gtid_consistency"
+    fi
+
+    # binlog 保留时间：MySQL 8.0.1+ 用 binlog_expire_logs_seconds，旧版/MariaDB 用 expire_logs_days
+    if mysql8_ver_ge 8 0; then
         sql+=",@@global.binlog_expire_logs_seconds AS binlog_expire_logs_seconds"
     else
         sql+=",@@global.expire_logs_days AS expire_logs_days"
     fi
 
-    # 复制相关：8.0.23+ slave_* 改为 replica_*，8.4 完全移除 slave_*
-    if mysql_ver_ge 8 23; then
+    # 复制相关：MySQL 8.0.23+ slave_* 改为 replica_*，8.4 完全移除 slave_*；MariaDB 仍用 slave_*
+    if mysql8_full_ge 8 0 23; then
         sql+=",@@global.replica_net_timeout,@@global.replica_parallel_workers"
         sql+=",@@global.log_replica_updates"
     else
@@ -765,16 +798,18 @@ collect_variables() {
         sql+=",@@global.log_slave_updates"
     fi
 
-    # innodb_log_file_size 在 8.0.30+ 废弃，改由 innodb_redo_log_capacity 控制
-    if mysql_ver_ge 8 30; then
+    # innodb_log_file_size 在 MySQL 8.0.30+ 废弃，改由 innodb_redo_log_capacity 控制；MariaDB 仍用 innodb_log_file_size
+    if mysql8_full_ge 8 0 30; then
         sql+=",@@global.innodb_redo_log_capacity/1024/1024 AS innodb_redo_log_capacity_in_mb"
     else
         sql+=",@@global.innodb_log_file_size/1024/1024 AS innodb_log_file_size_in_mb"
         sql+=",@@global.innodb_log_files_in_group"
     fi
 
-    # default_authentication_plugin 在 8.4 移除，改用 authentication_policy
-    if mysql_ver_ge 8 4; then
+    # 认证插件：MySQL 8.4 用 authentication_policy，8.4 以下用 default_authentication_plugin；MariaDB 两者皆无，跳过
+    if [[ "$IS_MARIADB" -eq 1 ]]; then
+        :
+    elif mysql_ver_ge 8 4; then
         sql+=",@@global.authentication_policy"
     else
         sql+=",@@global.default_authentication_plugin"
@@ -783,9 +818,10 @@ collect_variables() {
     run_sql_vert "$sql"
 
     section "03" "Important variables (subset)"
-    if [[ "$DB_VERSION" == "5.6" ]]; then
+    # MariaDB 与 5.6 走 INFORMATION_SCHEMA（PS 默认关）+ tx_isolation / log_slave_updates（MariaDB 兼容）
+    if [[ "$DB_VERSION" == "5.6" || "$IS_MARIADB" -eq 1 ]]; then
         run_sql "SELECT * FROM INFORMATION_SCHEMA.GLOBAL_VARIABLES WHERE VARIABLE_NAME IN ('datadir','SQL_MODE','socket','TIME_ZONE','tx_isolation','autocommit','innodb_lock_wait_timeout','max_connections','slow_query_log','long_query_time','pid_file','log_error','lower_case_table_names','innodb_buffer_pool_size','innodb_flush_log_at_trx_commit','read_only','log_slave_updates','innodb_io_capacity','max_connect_errors','server_id');"
-    elif mysql_ver_ge 8 23; then
+    elif mysql8_full_ge 8 0 23; then
         # 8.0.23+ log_slave_updates → log_replica_updates
         run_sql "SELECT * FROM performance_schema.global_variables WHERE VARIABLE_NAME IN ('datadir','sql_mode','socket','time_zone','transaction_isolation','autocommit','innodb_lock_wait_timeout','max_connections','slow_query_log','long_query_time','pid_file','log_error','lower_case_table_names','innodb_buffer_pool_size','innodb_flush_log_at_trx_commit','read_only','log_replica_updates','innodb_io_capacity','max_connect_errors','server_id');"
     else
@@ -804,20 +840,20 @@ collect_replication() {
     module_header "[04] 主从复制状态"
 
     section "04" "MySQL Replication Info"
-    if mysql_ver_ge 8 4; then
+    if mysql8_ver_ge 8 4; then
         run_sql "SHOW REPLICAS;"
     else
         run_sql "SHOW SLAVE HOSTS;" 2>/dev/null || run_sql "SHOW REPLICAS;"
     fi
     echo ""
-    if mysql_ver_ge 8 4; then
+    if mysql8_ver_ge 8 4; then
         run_sql_vert "SHOW REPLICA STATUS"
     else
         run_sql_vert "SHOW SLAVE STATUS" 2>/dev/null || run_sql_vert "SHOW REPLICA STATUS"
     fi
 
     section "04" "Master status"
-    if mysql_ver_ge 8 4; then
+    if mysql8_ver_ge 8 4; then
         run_sql "SHOW BINARY LOG STATUS;"
     else
         run_sql "SHOW MASTER STATUS;" 2>/dev/null || run_sql "SHOW BINARY LOG STATUS;"
