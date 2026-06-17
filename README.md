@@ -1,8 +1,12 @@
 # mysql-healthcheck（skill 分支）
 
-> **轻量 LLM 驱动版本** — LLM 读 `MySQLHealthCheck_*.txt` → 应用 42 条 DBA 规则 → 生成 17 章 markdown 报告。
+> **轻量 LLM 驱动版本** — LLM 读 `MySQLHealthCheck_*.txt` → 应用 50 条 DBA 规则 → 生成 17 章 markdown 报告。
 >
 > 零外部依赖、纯文本、~500 KB。适合内网客户、私有化 LLM 场景。
+>
+> **当前版本：v1.3.0**（MySQL 5.6 / 5.7 / 8.0 / 8.4 / MariaDB 10.x / 11.x）
+>
+> > 📌 **维护状态**：本项目已进入**稳定生产阶段**，规则库趋于稳定，功能以维护为主，不再计划大规模迭代。生产 DBA 场景日常使用。
 
 ## 维护者：怎么发新版本
 
@@ -66,7 +70,7 @@ mysql-healthcheck/
 ├── CHANGELOG.md                   # 版本变更
 ├── LICENSE
 ├── references/
-│   ├── rules.md                   # 42 条巡检规则定义（按 6 维度分组）
+│   ├── rules.md                   # 50 条巡检规则定义（按 6 维度分组）
 │   ├── report-template.md         # 17 章 markdown 报告模板
 │   ├── parsing.md                 # txt 采集数据的段名 / 字段映射
 │   └── interview-guide.md         # 客户访谈表（业务背景填充）
@@ -94,7 +98,7 @@ LLM: （自动）
   1. Glob 找到 MySQLHealthCheck_*.txt
   2. Read references/rules.md + report-template.md + parsing.md
   3. Read 全部 .txt
-  4. 应用 42 条规则
+  4. 应用 50 条规则
   5. Write ~/data/mysql-inspect-2026Q2/MySQL巡检报告_2026-05-22.md
 ```
 
@@ -176,9 +180,14 @@ node tools/report.js <数据目录>            # 生成 MySQL巡检报告_<日�
 | **skill**（本分支）| ~500 KB，零依赖，LLM 单步出 markdown | 客户内网 / 私有化 LLM / 单次巡检 |
 | **SaaS** | ~10 MB，Node + Docker，HTTP 服务 / 自动 docx | 服务化 / 批量自动巡检 / 团队协作 |
 
-两个分支共享同一套规则知识（42 条），但实现方式完全不同：
+两个分支共享同一套规则知识（50 条），但实现方式完全不同：
 - skill 分支：LLM 读 markdown 规则 + 应用 + 输出 markdown
 - SaaS 分支：node 引擎读 JSON 规则 + 评估 + 输出 docx
+
+**v1.3.0 新增功能**（两分支同步）：
+- 弱密码检测：库内 SHA1 字典比对，只输出 `user@host`，哈希不出库；`caching_sha2_password` 账号单独标注「未检测」
+- 6 条参数配置规则：`log_bin_off` / `binlog_format_not_row` / `file_per_table_off` / `default_engine_not_innodb` / `skip_name_resolve_off` / `validate_password_off`
+- 采集端高级诊断：`sys.session` 活跃事务、MDL 阻塞链路、`setup_consumers` 状态、95 分位 SQL、`connection_control` 暴破记录、Clone 状态等
 
 ## 客户化配置
 
@@ -200,7 +209,7 @@ LLM 自动检测 + 应用。规则 id 在 `references/rules.md` 里查。
 |---|---|
 | 想理解工作流程 | `SKILL.md`（LLM 协议）|
 | 想给 LLM 用 | LLM 自动读 SKILL.md，无需人工干预 |
-| 想看 42 条规则细节 | `references/rules.md` |
+| 想看 50 条规则细节 | `references/rules.md` |
 | 想看报告章节结构 | `references/report-template.md` |
 | 想了解 txt 数据格式 | `references/parsing.md` |
 | 想加业务背景信息 | `references/interview-guide.md` |
