@@ -1,6 +1,6 @@
 # 巡检规则手册
 
-> **给 LLM 看的规则定义集** — 42 条 MySQL 巡检规则，按 6 个维度分组。
+> **给 LLM 看的规则定义集** — 50 条 MySQL 巡检规则，按 6 个维度分组。
 > 调用 skill 时 LLM 应当：
 > 1. 完整读这份文档
 > 2. 对照 `MySQLHealthCheck_*.txt` 的每个段，判断每条规则是否触发
@@ -44,7 +44,7 @@
 
 ## 🚀 规则速查矩阵（LLM 性能优化 — 第一遍扫这里）
 
-> **重要**：LLM 应当**先扫这张表**，根据 txt 数据快速判断**哪些规则可能触发**（只看 ~20 字的触发条件即可），然后**只阅读触发规则的详细段落**。这样可以从 42 条全读 → 5-15 条详读，input token 减 50-70%。
+> **重要**：LLM 应当**先扫这张表**，根据 txt 数据快速判断**哪些规则可能触发**（只看 ~20 字的触发条件即可），然后**只阅读触发规则的详细段落**。这样可以从 50 条全读 → 5-15 条详读，input token 减 50-70%。
 
 | 规则 id | 维度 | 默认 P | 触发信号速查（看 txt 哪段判断）|
 |---|---|---|---|
@@ -97,7 +97,7 @@
 2. 命中的规则 → 翻到下面的详细段读 description / action / sql / 阈值
 3. 未命中的规则 → **跳过详细段，节省 token**
 
-参考：本表 42 条规则与下面详细段一一对应。
+参考：本表 50 条规则与下面详细段一一对应。
 
 ---
 
@@ -307,6 +307,70 @@ SET GLOBAL innodb_buffer_pool_size = <推荐字节数>;
 ---
 
 ## 持久化 (durability)
+
+### `log_bin_off`
+
+**binlog 未开启**
+
+> binlog 是 PITR 和主从复制的前提；关闭后崩溃只能全量恢复，无法做时间点恢复。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `durability` |
+| Scope | `node` |
+| 优先级 | **P1** |
+
+**触发**：
+```
+node.variables.log_bin == 'OFF' || node.variables.log_bin == '0'
+```
+
+**说明文本**：log_bin = OFF — binlog 未开启，无法做 PITR（时间点恢复）且无法搭建主从复制
+
+**当前值 → 推荐值**：`OFF` → `ON`
+
+**行动**：开启 binlog；同时建议配合 expire_logs_days / binlog_expire_logs_seconds 设置保留期，避免磁盘打爆
+
+**SQL**：
+```sql
+-- my.cnf:
+log_bin = mysql-bin
+binlog_format = ROW
+expire_logs_days = 7
+# 重启 MySQL 生效
+```
+
+---
+
+### `binlog_format_not_row`
+
+**binlog_format 非 ROW**
+
+> STATEMENT 模式在存储函数/触发器/UUID 等场景下会产生主从不一致；ROW 是并行复制和 GTID 的推荐格式。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `durability` |
+| Scope | `node` |
+| 优先级 | **P2** |
+
+**触发**：binlog 已开启（log_bin=ON）且 `node.variables.binlog_format != 'ROW'`
+
+**说明文本**：binlog_format = {{value}}（非 ROW），存储函数/触发器/UUID 等场景可能导致主从不一致
+
+**当前值 → 推荐值**：`STATEMENT`/`MIXED` → `ROW`
+
+**行动**：切换为 ROW 格式；同时开启 binlog_row_image=FULL（默认值）
+
+**SQL**：
+```sql
+SET GLOBAL binlog_format = ROW;
+-- my.cnf:
+binlog_format = ROW
+binlog_row_image = FULL
+```
+
+---
 
 ### `doublewrite_off`
 
@@ -635,6 +699,38 @@ SET GLOBAL sync_binlog = 1;
 
 ## 性能 (performance)
 
+### `file_per_table_off`
+
+**innodb_file_per_table 关闭**
+
+> 共享表空间（ibdata）不可收缩；DROP TABLE 不释放空间；难以做表级备份/传输。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `performance` |
+| Scope | `node` |
+| 优先级 | **P2** |
+
+**触发**：
+```
+node.variables.innodb_file_per_table == 'OFF' || node.variables.innodb_file_per_table == '0'
+```
+
+**说明文本**：innodb_file_per_table = OFF — 所有表共享 ibdata，DROP TABLE 不释放磁盘空间，且无法做表级传输/备份
+
+**当前值 → 推荐值**：`OFF` → `ON`
+
+**行动**：开启 innodb_file_per_table；存量表需 OPTIMIZE TABLE 或 ALTER TABLE FORCE 才能迁移到独立表空间
+
+**SQL**：
+```sql
+SET GLOBAL innodb_file_per_table = ON;
+-- my.cnf:
+innodb_file_per_table = 1
+```
+
+---
+
 ### `bp_hit`
 
 **Buffer Pool 命中率分级**
@@ -793,6 +889,67 @@ node.variables.long_query_time >= cfg.thresholds.sql.long_query_time_loose
 
 ## 安全 (security)
 
+### `validate_password_off`
+
+**密码强度校验插件未启用**
+
+> 无 validate_password 时用户可设任意短/简单密码；配合弱密码检测规则效果更强。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `security` |
+| Scope | `node` |
+| 优先级 | **P2** |
+
+**触发**：`node.hasPasswordPolicy != true`（"Password validation policy" 段不存在或标注为未启用）
+
+**说明文本**：validate_password 插件未启用 — 用户可设置任意弱密码，与弱密码检测结果共同参考
+
+**当前值 → 推荐值**：未启用 → 启用 validate_password（policy=MEDIUM）
+
+**行动**：安装并启用 validate_password 插件，建议 policy=MEDIUM（8 字符 + 数字 + 大小写 + 特殊字符）
+
+**SQL**：
+```sql
+-- MySQL 5.7:
+INSTALL PLUGIN validate_password SONAME 'validate_password.so';
+SET GLOBAL validate_password_policy = MEDIUM;
+SET GLOBAL validate_password_length = 8;
+-- MySQL 8.0+:
+INSTALL COMPONENT 'file://component_validate_password';
+SET GLOBAL validate_password.policy = MEDIUM;
+SET GLOBAL validate_password.length = 8;
+```
+
+---
+
+### `weak_password`
+
+**弱密码账号（库内字典比对，哈希不出库）**
+
+> 常见弱密码账号是入侵突破口；仅检测 mysql_native_password，caching_sha2 加盐不可离线比对。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `security` |
+| Scope | `node` |
+| 优先级 | **P0**（高权限账号）/ **P1**（普通账号） |
+
+**触发**：`node.weakPasswordUsers` 数组非空（collector "Users with weak password" section 有命中行）
+
+**分级逻辑**：
+- `user` 为 `root`/`admin`/`dba`/`super`/`mysql.sys` 等高权限账号 → **P0**
+- 其他普通账号 → **P1**
+- 输出内容仅为 `user@host`，**不含密码、不含哈希**
+
+**安全约束**：
+- collector SQL 仅 SELECT user/host，authentication_string 哈希绝不出 txt 文件
+- `caching_sha2_password` 账号加盐，离线字典无法比对，单独 section 标注「未检测」
+
+**行动**：立即修改为高强度密码（≥12 字符，含大小写+数字+特殊字符）；并启用 validate_password 插件防止回退
+
+---
+
 ### `auth_plugin_native_on_80`
 
 **MySQL 8.0+ 默认 mysql_native_password**
@@ -870,6 +1027,38 @@ node.tlsWeakDetail != null
 ---
 
 ## 数据设计 (dataDesign)
+
+### `default_engine_not_innodb`
+
+**default_storage_engine 非 InnoDB**
+
+> 非 InnoDB 引擎（MyISAM/MEMORY 等）无事务/外键/崩溃恢复能力；误建非 InnoDB 表是常见数据丢失场景。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `dataDesign` |
+| Scope | `node` |
+| 优先级 | **P2** |
+
+**触发**：
+```
+node.variables.default_storage_engine != null && node.variables.default_storage_engine != 'InnoDB'
+```
+
+**说明文本**：default_storage_engine = {{value}}（非 InnoDB）— 新建表将默认使用该引擎，无事务/崩溃恢复保障
+
+**当前值 → 推荐值**：`{{value}}` → `InnoDB`
+
+**行动**：改为 InnoDB；并检查已有非 InnoDB 表是否需要迁移
+
+**SQL**：
+```sql
+SET GLOBAL default_storage_engine = InnoDB;
+-- my.cnf:
+default_storage_engine = InnoDB
+```
+
+---
 
 ### `auto_increment_exhausting`
 
@@ -1003,6 +1192,38 @@ sql_mode = STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION,NO_ZERO_DATE,NO_ZERO_IN_DA
 ---
 
 ## 运维 (operations)
+
+### `skip_name_resolve_off`
+
+**skip_name_resolve 未开启**
+
+> 每次新连接都做 DNS 反向解析，在 DNS 响应慢/不可达时导致连接超时甚至阻塞 MySQL 线程。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `operations` |
+| Scope | `node` |
+| 优先级 | **P2** |
+
+**触发**：
+```
+node.variables.skip_name_resolve == 'OFF' || node.variables.skip_name_resolve == '0'
+```
+
+**说明文本**：skip_name_resolve = OFF — 新连接会做 DNS 反向解析，DNS 慢/不可达时连接超时，影响可用性
+
+**当前值 → 推荐值**：`OFF` → `ON`
+
+**行动**：开启 skip_name_resolve；注意开启后 mysql.user 表的 host 列不能使用主机名（只能 IP 或 %），需检查现有授权
+
+**SQL**：
+```sql
+-- 注意：skip_name_resolve 不能动态修改，需重启
+-- my.cnf:
+skip_name_resolve = ON
+```
+
+---
 
 ### `lct_zero_linux`
 

@@ -5,6 +5,39 @@
 
 ---
 
+## [1.3.0] - 2026-06-18
+
+**弱密码检测 + 6 条高价值参数配置检查 + 采集端高级诊断增强**
+
+### 采集端
+
+- 新增 `"Users with weak password"` section（模块 12）：60 条常见弱密码字典库内 SHA1 比对，仅输出 `user@host`，哈希/明文绝不写入报告；5.6 分支用 `PASSWORD()`，5.7+/8.x 用 `CONCAT('*',UPPER(SHA1(UNHEX(SHA1('...')))))`；caching_sha2_password 加盐账号单独 section 标注「未检测」
+- 高级诊断采集（PC1）：`sys.session`/MDL 阻塞链路/`setup_consumers`+`setup_instruments`/95 分位 SQL/connection_control 失败记录/clone status/`events_stages_current` + 可选 `sys.diagnostics` 模块（默认关，`--enable-diagnostics` 开启）+ 补充变量/字符集分布/引擎分布
+
+### 规则（`tools/rules/`）
+
+| 规则 id | 维度 | 优先级 | 说明 |
+|---|---|---|---|
+| `log_bin_off` | durability | P1 | binlog 未开启（PITR/复制前提缺失） |
+| `binlog_format_not_row` | durability | P2 | binlog 已开但非 ROW 格式（主从不一致风险） |
+| `file_per_table_off` | performance | P2 | ibdata 共享表空间（DROP TABLE 不释放磁盘） |
+| `default_engine_not_innodb` | dataDesign | P2 | 默认引擎非 InnoDB |
+| `skip_name_resolve_off` | operations | P2 | DNS 反向解析（连接超时/延迟风险） |
+| `validate_password_off` | security | P2 | 密码强度校验插件未启用 |
+| `weak_password` | security | P0/P1 | 弱密码账号（root/admin→P0，普通→P1） |
+
+### 解析端
+
+- `tools/preprocess.js`：解析 `node.weakPasswordUsers`；`securityAssessment` 新增 `no_weak_password` 合规项
+- `tools/rule-helpers/index.js`：新增 `evalWeakPassword`（只输出 user@host，哈希/明文永不在 description/action 中出现）
+
+### 安全约束（延续）
+
+- 弱密码检测：`authentication_string` 哈希/密码明文**绝不写入 .txt 或报告**
+- `caching_sha2_password` 账号显式标注「未检测」
+
+---
+
 ## [1.2.0] - 2026-06-16
 
 **双主（master-master）识别 + 写冲突诊断**
