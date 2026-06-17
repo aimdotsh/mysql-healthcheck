@@ -10,6 +10,20 @@
       "handler": "evalAutoIncrementExhausting"
     },
     {
+      "id": "default_engine_not_innodb",
+      "scope": "node",
+      "priority": "P2",
+      "title": "default_storage_engine 非 InnoDB",
+      "rationale": "非 InnoDB 引擎（MyISAM/MEMORY 等）无事务/外键/崩溃恢复能力；误建非 InnoDB 表是常见数据丢失场景。",
+      "trigger": "node.variables.default_storage_engine != null && node.variables.default_storage_engine != 'InnoDB'",
+      "groupKeyTpl": "default_engine_not_innodb",
+      "descriptionTpl": "default_storage_engine = {{node.variables.default_storage_engine}}（非 InnoDB）— 新建表将默认使用该引擎，无事务/崩溃恢复保障",
+      "currentValueTpl": "{{node.variables.default_storage_engine}}",
+      "recommendedValueTpl": "InnoDB",
+      "actionTpl": "改为 InnoDB；并检查已有非 InnoDB 表是否需要迁移",
+      "sqlTpl": "SET GLOBAL default_storage_engine = InnoDB;\n-- my.cnf:\ndefault_storage_engine = InnoDB"
+    },
+    {
       "id": "charset_not_utf8mb4",
       "scope": "node",
       "priority": "P2",

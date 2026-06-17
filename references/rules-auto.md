@@ -1,7 +1,7 @@
 # 巡检规则手册（自动生成）
 
 > **本文档由 `scripts/gen-rules-md.js` 从 `scripts/rules/*.json` 自动生成。请勿手动编辑。**
-> 生成时间：2026-06-02　|　规则总数：42
+> 生成时间：2026-06-17　|　规则总数：50
 
 v5.0 GA：所有 ~51 条巡检规则（节点级 + 集群级）全部以声明式 JSON 描述，由 `scripts/rule-engine.js` 加载并求值；复杂规则通过 `scripts/rule-helpers/index.js` 注册的 handler 计算。详细 schema 见 [`scripts/rules/SCHEMA.md`](../scripts/rules/SCHEMA.md)。
 
@@ -14,11 +14,11 @@ v5.0 GA：所有 ~51 条巡检规则（节点级 + 集群级）全部以声明�
 | 维度 | 规则数 |
 |---|---|
 | 可用性 (availability) | 10 |
-| 持久化 (durability) | 10 |
-| 性能 (performance) | 8 |
-| 安全 (security) | 3 |
-| 数据设计 (dataDesign) | 6 |
-| 运维 (operations) | 5 |
+| 持久化 (durability) | 13 |
+| 性能 (performance) | 9 |
+| 安全 (security) | 5 |
+| 数据设计 (dataDesign) | 7 |
+| 运维 (operations) | 6 |
 
 ## 可用性 (availability)
 
@@ -204,6 +204,44 @@ node.memUsagePct > cfg.thresholds.memory.high_pct
 
 ## 持久化 (durability)
 
+### `binlog_format_not_row`
+
+**binlog_format 非 ROW**
+
+> STATEMENT 模式在存储函数/触发器/UUID 等场景下会产生主从不一致；ROW 是并行复制和 GTID 的推荐格式。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `durability` |
+| Scope | `node` |
+| 优先级 | **P2** |
+| 文件 | `scripts/rules/durability.json` |
+
+**触发**：
+```
+(node.variables.log_bin == 'ON' || node.variables.log_bin == '1') && node.variables.binlog_format != null && node.variables.binlog_format != 'ROW'
+```
+
+**说明文本**：
+> binlog_format = {{node.variables.binlog_format}}（非 ROW），存储函数/触发器/UUID 等场景可能导致主从不一致；ROW 是并行复制和 GTID 的推荐格式
+
+**值对照**：
+- 当前：`{{node.variables.binlog_format}}`
+- 推荐：`ROW`
+
+**建议行动**：
+> 切换为 ROW 格式；同时开启 binlog_row_image=FULL（默认值）
+
+**示例 SQL / 配置**：
+```sql
+SET GLOBAL binlog_format = ROW;
+-- my.cnf:
+binlog_format = ROW
+binlog_row_image = FULL
+```
+
+---
+
 ### `doublewrite_off`
 
 **InnoDB doublewrite 关闭**
@@ -238,6 +276,24 @@ SET GLOBAL innodb_doublewrite = ON;
 -- my.cnf:
 innodb_doublewrite = 1
 ```
+
+---
+
+### `dual_master_write_conflict`
+
+**双主写冲突**
+
+> 双主双写同一主键导致复制 SQL 线程中止、两库数据已分叉。点名冲突表，给出选定权威端 + 重建复制 + 自增拆分的处置。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `durability` |
+| Scope | `node` |
+| 优先级 | **P0** |
+| Handler | `evalDualMasterWriteConflict` |
+| 文件 | `scripts/rules/durability.json` |
+
+**触发**：调用 helper `evalDualMasterWriteConflict`（详见 `scripts/rule-helpers/`）
 
 ---
 
@@ -419,6 +475,45 @@ innodb_temp_data_file_path = ibtmp1:12M:autoextend:max:50G
 
 ---
 
+### `log_bin_off`
+
+**binlog 未开启**
+
+> binlog 是 PITR 和主从复制的前提；关闭后崩溃只能全量恢复，无法做时间点恢复。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `durability` |
+| Scope | `node` |
+| 优先级 | **P1** |
+| 文件 | `scripts/rules/durability.json` |
+
+**触发**：
+```
+node.variables.log_bin == 'OFF' || node.variables.log_bin == '0'
+```
+
+**说明文本**：
+> log_bin = OFF — binlog 未开启，无法做 PITR（时间点恢复）且无法搭建主从复制
+
+**值对照**：
+- 当前：`OFF`
+- 推荐：`ON`
+
+**建议行动**：
+> 开启 binlog；同时建议配合 expire_logs_days / binlog_expire_logs_seconds 设置保留期，避免磁盘打爆
+
+**示例 SQL / 配置**：
+```sql
+-- my.cnf:
+log_bin = mysql-bin
+binlog_format = ROW
+expire_logs_days = 7
+# 重启 MySQL 生效
+```
+
+---
+
 ### `self_ref_slave_residue`
 
 **self-referencing slave 残留**
@@ -572,6 +667,43 @@ SET GLOBAL sync_binlog = 1;
 | 文件 | `scripts/rules/performance.json` |
 
 **触发**：调用 helper `evalDataToMemoryRatio`（详见 `scripts/rule-helpers/`）
+
+---
+
+### `file_per_table_off`
+
+**innodb_file_per_table 关闭**
+
+> 共享表空间（ibdata）不可收缩；DROP TABLE 不释放空间；难以做表级备份/传输。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `performance` |
+| Scope | `node` |
+| 优先级 | **P2** |
+| 文件 | `scripts/rules/performance.json` |
+
+**触发**：
+```
+node.variables.innodb_file_per_table == 'OFF' || node.variables.innodb_file_per_table == '0'
+```
+
+**说明文本**：
+> innodb_file_per_table = OFF — 所有表共享 ibdata，DROP TABLE 不释放磁盘空间，且无法做表级传输/备份
+
+**值对照**：
+- 当前：`OFF`
+- 推荐：`ON`
+
+**建议行动**：
+> 开启 innodb_file_per_table；存量表需要 OPTIMIZE TABLE 或 ALTER TABLE FORCE 才能迁移到独立表空间
+
+**示例 SQL / 配置**：
+```sql
+SET GLOBAL innodb_file_per_table = ON;
+-- my.cnf:
+innodb_file_per_table = 1
+```
 
 ---
 
@@ -755,6 +887,65 @@ node.tlsWeakDetail != null
 
 ---
 
+### `validate_password_off`
+
+**密码强度校验插件未启用**
+
+> 无 validate_password 时用户可设任意短/简单密码；配合弱密码检测规则效果更强。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `security` |
+| Scope | `node` |
+| 优先级 | **P2** |
+| 文件 | `scripts/rules/security.json` |
+
+**触发**：
+```
+node.hasPasswordPolicy != true
+```
+
+**说明文本**：
+> validate_password 插件未启用 — 用户可设置任意弱密码，与弱密码检测结果共同参考
+
+**值对照**：
+- 当前：`未启用`
+- 推荐：`启用 validate_password（policy=MEDIUM）`
+
+**建议行动**：
+> 安装并启用 validate_password 插件，建议 policy=MEDIUM（8 字符 + 数字 + 大小写 + 特殊字符）
+
+**示例 SQL / 配置**：
+```sql
+-- MySQL 5.7:
+INSTALL PLUGIN validate_password SONAME 'validate_password.so';
+SET GLOBAL validate_password_policy = MEDIUM;
+SET GLOBAL validate_password_length = 8;
+-- MySQL 8.0+:
+INSTALL COMPONENT 'file://component_validate_password';
+SET GLOBAL validate_password.policy = MEDIUM;
+SET GLOBAL validate_password.length = 8;
+```
+
+---
+
+### `weak_password`
+
+**弱密码账号（库内字典比对，哈希不出库）**
+
+> 常见弱密码账号是入侵突破口；仅检测 mysql_native_password，caching_sha2 加盐不可离线比对。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `security` |
+| Scope | `node` |
+| Handler | `evalWeakPassword` |
+| 文件 | `scripts/rules/security.json` |
+
+**触发**：调用 helper `evalWeakPassword`（详见 `scripts/rule-helpers/`）
+
+---
+
 ### `wildcard_users`
 
 **host=% 用户安全分级**
@@ -827,6 +1018,43 @@ collation_server = utf8mb4_0900_ai_ci  # MySQL 8.0
 # collation_server = utf8mb4_general_ci  # MySQL 5.7
 -- 库级转换：
 ALTER DATABASE <dbname> CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+```
+
+---
+
+### `default_engine_not_innodb`
+
+**default_storage_engine 非 InnoDB**
+
+> 非 InnoDB 引擎（MyISAM/MEMORY 等）无事务/外键/崩溃恢复能力；误建非 InnoDB 表是常见数据丢失场景。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `dataDesign` |
+| Scope | `node` |
+| 优先级 | **P2** |
+| 文件 | `scripts/rules/dataDesign.json` |
+
+**触发**：
+```
+node.variables.default_storage_engine != null && node.variables.default_storage_engine != 'InnoDB'
+```
+
+**说明文本**：
+> default_storage_engine = {{node.variables.default_storage_engine}}（非 InnoDB）— 新建表将默认使用该引擎，无事务/崩溃恢复保障
+
+**值对照**：
+- 当前：`{{node.variables.default_storage_engine}}`
+- 推荐：`InnoDB`
+
+**建议行动**：
+> 改为 InnoDB；并检查已有非 InnoDB 表是否需要迁移
+
+**示例 SQL / 配置**：
+```sql
+SET GLOBAL default_storage_engine = InnoDB;
+-- my.cnf:
+default_storage_engine = InnoDB
 ```
 
 ---
@@ -1014,6 +1242,43 @@ node.variables.performance_schema == 'OFF'
 -- my.cnf:
 performance_schema = ON
 # 重启 MySQL 生效
+```
+
+---
+
+### `skip_name_resolve_off`
+
+**skip_name_resolve 未开启**
+
+> 每次新连接都做 DNS 反向解析，在 DNS 响应慢/不可达时导致连接超时甚至阻塞 MySQL 线程。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `operations` |
+| Scope | `node` |
+| 优先级 | **P2** |
+| 文件 | `scripts/rules/operations.json` |
+
+**触发**：
+```
+node.variables.skip_name_resolve == 'OFF' || node.variables.skip_name_resolve == '0'
+```
+
+**说明文本**：
+> skip_name_resolve = OFF — 新连接会做 DNS 反向解析，DNS 慢/不可达时连接超时，影响可用性
+
+**值对照**：
+- 当前：`OFF`
+- 推荐：`ON`
+
+**建议行动**：
+> 开启 skip_name_resolve；注意：开启后 mysql.user 表的 host 列不能使用主机名（只能 IP 或 %），需检查现有授权
+
+**示例 SQL / 配置**：
+```sql
+-- 注意：skip_name_resolve 不能动态修改，需重启
+-- my.cnf:
+skip_name_resolve = ON
 ```
 
 ---

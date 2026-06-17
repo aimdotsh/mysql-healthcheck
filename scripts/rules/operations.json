@@ -3,6 +3,20 @@
   "_doc": "operations 维度规则。dimension 由文件名推断，与 v5.0 GA 行为等价。",
   "rules": [
     {
+      "id": "skip_name_resolve_off",
+      "scope": "node",
+      "priority": "P2",
+      "title": "skip_name_resolve 未开启",
+      "rationale": "每次新连接都做 DNS 反向解析，在 DNS 响应慢/不可达时导致连接超时甚至阻塞 MySQL 线程。",
+      "trigger": "node.variables.skip_name_resolve == 'OFF' || node.variables.skip_name_resolve == '0'",
+      "groupKeyTpl": "skip_name_resolve_off",
+      "descriptionTpl": "skip_name_resolve = OFF — 新连接会做 DNS 反向解析，DNS 慢/不可达时连接超时，影响可用性",
+      "currentValueTpl": "OFF",
+      "recommendedValueTpl": "ON",
+      "actionTpl": "开启 skip_name_resolve；注意：开启后 mysql.user 表的 host 列不能使用主机名（只能 IP 或 %），需检查现有授权",
+      "sqlTpl": "-- 注意：skip_name_resolve 不能动态修改，需重启\n-- my.cnf:\nskip_name_resolve = ON"
+    },
+    {
       "id": "lct_zero_linux",
       "scope": "node",
       "priority": "P3",

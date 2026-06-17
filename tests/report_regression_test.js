@@ -124,7 +124,8 @@ assert.strictEqual(securityItems.strong_password_policy.status, 'FAIL', 'empty p
 assert.strictEqual(securityItems.innodb_encryption.status, 'WARN', 'empty encryption section with no keyring should be treated as collected evidence of missing at-rest encryption');
 assert.strictEqual(securityItems.no_empty_password.status, 'PASS', 'empty result set for empty-password users should be treated as a passing check');
 assert.strictEqual(securityItems.failed_login_baseline.status, 'PASS', 'empty host_cache failure list should be treated as a passing check');
-assert.strictEqual(data.securityAssessment.unknown, 0, 'current V3 samples should no longer be reported as UNKNOWN once empty sections are interpreted correctly');
+assert.strictEqual(data.securityAssessment.unknown, 1, 'no_weak_password is UNKNOWN for pre-V3.0 fixture data (weak password section not yet collected)');
+assert(data.securityAssessment.items.find(i => i.id === 'no_weak_password').status === 'UNKNOWN', 'no_weak_password should be UNKNOWN for old fixture data');
 
 const render = spawnSync('node', [renderPath, outPath, '--out', docxPath], {
   encoding: 'utf8',

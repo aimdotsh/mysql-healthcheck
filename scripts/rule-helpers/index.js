@@ -579,6 +579,45 @@ function evalWildcardUsers(ctx) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// 弱密码检测（只输出 user@host，哈希/明文永不出库）
+// ─────────────────────────────────────────────────────────────
+
+function evalWeakPassword(ctx) {
+  const { node } = ctx;
+  const weakUsers = node.weakPasswordUsers || [];
+  if (weakUsers.length === 0) return [];
+  const isHighRisk = (user) => {
+    const u = String(user || '').toLowerCase();
+    return u === 'root' || u === 'admin' || /dba|super|mysql\.sys/.test(u);
+  };
+  const highRisk = weakUsers.filter(u => isHighRisk(u.user));
+  const normal = weakUsers.filter(u => !isHighRisk(u.user));
+  const fmt = (arr) => arr.map(u => `${u.user}@${u.host}`).join('、');
+  const out = [];
+  if (highRisk.length > 0) {
+    out.push({
+      type: 'weak_password', priority: 'P0',
+      groupKey: `weak_password_critical:${node.ip}`,
+      description: `高权限账号使用常见弱密码：${fmt(highRisk)}`,
+      action: '立即修改为高强度密码（≥12 字符，含大小写+数字+特殊字符）；并启用 validate_password 插件防止回退',
+      sql: highRisk.map(u => `ALTER USER '${u.user}'@'${u.host}' IDENTIFIED BY '<新强密码>';`).join('\n'),
+      scope: 'node',
+    });
+  }
+  if (normal.length > 0) {
+    out.push({
+      type: 'weak_password', priority: 'P1',
+      groupKey: `weak_password_normal:${node.ip}`,
+      description: `普通账号使用常见弱密码：${fmt(normal)}`,
+      action: '修改为强密码；并启用 validate_password 插件防止后续使用弱密码',
+      sql: normal.map(u => `ALTER USER '${u.user}'@'${u.host}' IDENTIFIED BY '<新强密码>';`).join('\n'),
+      scope: 'node',
+    });
+  }
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────
 // 7) 集群级：slave_parallel_workers_zero
 // ─────────────────────────────────────────────────────────────
 
@@ -961,4 +1000,5 @@ module.exports = {
   evalInnodbHll,
   evalIbtmp1Oversize,
   evalSwapUsed,
+  evalWeakPassword,
 };

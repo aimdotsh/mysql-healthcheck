@@ -845,6 +845,10 @@ function parseTxt(filepath) {
   if (emptyPwdSec || hasSection(content, 'Users with empty password')) {
     node.emptyPasswordUsers = parseMysqlTable(emptyPwdSec).rows.map(r => ({ user: r[0], host: r[1] }));
   }
+  const weakPwdSec = getSection(content, 'Users with weak password');
+  if (weakPwdSec || hasSection(content, 'Users with weak password')) {
+    node.weakPasswordUsers = parseMysqlTable(weakPwdSec).rows.map(r => ({ user: r[0], host: r[1] }));
+  }
   const oldAuthSec = getSection(content, 'Users with old auth plugin');
   if (oldAuthSec) {
     node.oldAuthUsers = parseMysqlTable(oldAuthSec).rows.map(r => ({ user: r[0], host: r[1], plugin: r[2] }));
@@ -1997,6 +2001,7 @@ function assessSecurity(nodes) {
     tlsConfig:         nodes.some(n => n.tlsConfig != null && Object.keys(n.tlsConfig).length > 0),
     innodbEncryption:  nodes.some(n => n.encryptionStatus != null || n.keyringPlugin != null),
     emptyPasswordData: nodes.some(n => n.emptyPasswordUsers != null),
+    weakPasswordData:  nodes.some(n => n.weakPasswordUsers != null),
     oldAuthData:       nodes.some(n => n.oldAuthUsers != null),
     failedLoginData:   nodes.some(n => n.failedLogins != null),
   };
@@ -2039,6 +2044,13 @@ function assessSecurity(nodes) {
       !nodes.some(n => (n.emptyPasswordUsers || []).length > 0),
       '所有账号均设置密码', '发现空密码账号',
       '未采集空密码检查'),
+
+    mkItem('no_weak_password', '无弱密码账号',
+      has.weakPasswordData,
+      !nodes.some(n => (n.weakPasswordUsers || []).length > 0),
+      'mysql_native_password 账号未发现常见弱密码',
+      '发现使用常见弱密码的账号',
+      '未采集弱密码检测（需 V3.0+ 采集脚本）'),
 
     mkItem('auth_plugin', '认证插件 (caching_sha2_password)',
       has.oldAuthData,
