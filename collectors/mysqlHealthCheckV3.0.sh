@@ -48,7 +48,6 @@ SKIP_MODULES=""
 NON_INTERACTIVE=0
 TEST_LOGIN_ONLY=0
 MYSQL_SSL_OPTION=""
-MYSQL_DEFAULTS_EXTRA_FILE=""
 AUTO_DETECT_NOTES=()
 MYSQLD_PID_DETECTED=""
 EXPLICIT_MYSQL_CMD=0
@@ -277,45 +276,23 @@ detect_mysql_runtime() {
         MYSQL_SSL_OPTION="--ssl-mode=DISABLED"
     fi
 
-    # 检测 mysqld 是否仅监听 IPv6（ss 显示 [::]:PORT 但无 0.0.0.0:PORT）
-    # 若是，且用户未显式指定 host，则将默认 127.0.0.1 替换为 ::1
-    if [[ "$EXPLICIT_HOST" -eq 0 && -z "$DB_SOCKET" && "$DB_HOST" == "127.0.0.1" ]]; then
-        local ss_out
-        ss_out="$(ss -tlnp 2>/dev/null | grep ":${DB_PORT} ")"
-        local has_ipv4=0 has_ipv6=0
-        printf '%s\n' "$ss_out" | grep -qE '0\.0\.0\.0:'"${DB_PORT}" && has_ipv4=1
-        printf '%s\n' "$ss_out" | grep -qE '\[?::\]?:'"${DB_PORT}"        && has_ipv6=1
-        if [[ "$has_ipv6" -eq 1 && "$has_ipv4" -eq 0 ]]; then
-            DB_HOST="::1"
-            AUTO_DETECT_NOTES+=("ipv6-only: mysqld 仅监听 IPv6，已自动切换到 ::1")
-        fi
-    fi
+    # IPv6-only / socket / TCP 等连接方式由 test_mysql_login_or_exit 的候选列表统一兜底，
+    # 不在此处预改 DB_HOST，避免偏离「跟随 mysql 自身默认」的连接行为。
 }
 
-cleanup_defaults_extra_file() {
-    [[ -n "$MYSQL_DEFAULTS_EXTRA_FILE" && -f "$MYSQL_DEFAULTS_EXTRA_FILE" ]] && rm -f "$MYSQL_DEFAULTS_EXTRA_FILE"
-}
-trap cleanup_defaults_extra_file EXIT
-
-prepare_mysql_defaults_extra_file() {
-    # 用 --no-defaults 模式：密码写入临时文件，其余参数全部命令行传递
-    # 避免 /etc/my.cnf 的 socket/host 设置干扰连接方式
-    MYSQL_DEFAULTS_EXTRA_FILE="$(mktemp /tmp/mysql-healthcheck-client.XXXXXX.cnf)"
-    chmod 600 "$MYSQL_DEFAULTS_EXTRA_FILE"
-    {
-        echo "[client]"
-        [[ -n "$DB_USER" ]] && printf 'user=%s\n' "$DB_USER"
-        [[ -n "$DB_PWD" ]] && printf 'password=%s\n' "$DB_PWD"
-    } > "$MYSQL_DEFAULTS_EXTRA_FILE"
-}
+# 连接方式：default = 不强制 --protocol/--host，跟随 mysql 自身默认（本机走 socket，
+# 与手工 `mysql -uroot -p` 完全一致）；socket / tcp = 显式指定。由候选列表逐个尝试。
+CONN_MODE="default"   # default | socket | tcp
 
 build_mysql_args() {
-    MYSQL_ARGS=(--defaults-file="$MYSQL_DEFAULTS_EXTRA_FILE")
-    if [[ -n "$DB_SOCKET" ]]; then
-        MYSQL_ARGS+=(--protocol=SOCKET --socket="$DB_SOCKET")
-    else
-        MYSQL_ARGS+=(--protocol=TCP --host="$DB_HOST" --port="$DB_PORT")
-    fi
+    # 凭据：用户名走 -u；密码走 MYSQL_PWD 环境变量（见 test_mysql_login_or_exit），
+    # 不写命令行（不进 ps）、也不写选项文件（密码含 # / 空格 / 反斜杠等不会被破坏）。
+    MYSQL_ARGS=(-u "$DB_USER")
+    case "$CONN_MODE" in
+        socket) MYSQL_ARGS+=(--protocol=SOCKET --socket="$DB_SOCKET") ;;
+        tcp)    MYSQL_ARGS+=(--protocol=TCP --host="$DB_HOST" --port="$DB_PORT") ;;
+        # default: 不加 host/socket/protocol —— 跟随 mysql 默认（与手工登录一致）
+    esac
     # MYSQL_SSL_OPTION 可能包含多个空格分隔的 flag，逐一展开
     if [[ -n "$MYSQL_SSL_OPTION" ]]; then
         read -ra _ssl_arr <<< "$MYSQL_SSL_OPTION"
@@ -347,28 +324,55 @@ test_mysql_login_or_exit() {
         exit 1
     fi
 
-    prepare_mysql_defaults_extra_file
+    # 密码通过 MYSQL_PWD 环境变量传给所有后续 mysql 调用（不进 ps、不写选项文件）。
+    # 仅在有密码时导出；无密码时让 mysql 走 my.cnf / 无密码（与手工 `mysql -uroot` 一致）。
+    [[ -n "$DB_PWD" ]] && export MYSQL_PWD="$DB_PWD"
 
     err_file="$(mktemp /tmp/mysql-healthcheck-login.XXXXXX.err)"
-    # TCP 重试顺序：
-    #   1. --ssl-mode=DISABLED                          普通连接
-    #   2. --ssl-mode=PREFERRED                         MySQL 8+ 默认，可走 SSL
-    #   3. --ssl-mode=PREFERRED --get-server-public-key caching_sha2_password 无 SSL 场景
-    #   4. --ssl=0                                      兼容旧版本客户端
-    #   5. ""                                           完全由服务端决定
+    # SSL 重试梯度（主要对 TCP 有意义；socket/default 下 mysql 会忽略）：
+    #   1. 用户指定的 / 默认 DISABLED   2. PREFERRED（8+ 默认）
+    #   3. PREFERRED + get-server-public-key（caching_sha2_password 无 SSL）
+    #   4. --ssl=0（旧客户端兼容）       5. ""（完全由服务端决定）
     local ssl_opts=("${MYSQL_SSL_OPTION:-}" "--ssl-mode=PREFERRED" "--ssl-mode=PREFERRED --get-server-public-key" "--ssl=0" "")
 
-    # 127.0.0.1 失败时自动尝试 ::1（mysqld 仅监听 IPv6 的场景）
-    local hosts_to_try=("$DB_HOST")
-    if [[ -z "$DB_SOCKET" && "$DB_HOST" == "127.0.0.1" ]]; then
-        hosts_to_try+=("::1")
+    # 连接候选（顺序 = 越像手工 mysql 越靠前）。格式 "mode:value"
+    #   default        跟随 mysql 自身默认（本机=socket，与手工 `mysql -uroot -p` 完全一致）
+    #   socket:/path   显式 socket
+    #   tcp:host       显式 TCP（端口用全局 DB_PORT）
+    local candidates=()
+    if [[ "$EXPLICIT_SOCKET" -eq 1 ]]; then
+        candidates+=("socket:$DB_SOCKET")
+    elif [[ "$EXPLICIT_HOST" -eq 1 ]]; then
+        candidates+=("tcp:$DB_HOST")
+        [[ "$DB_HOST" == "127.0.0.1" ]] && candidates+=("tcp:::1")
+    else
+        # 1) 纯默认：与手工登录一致（本机走 socket，读 /etc/my.cnf [client]）
+        candidates+=("default:")
+        # 2) 自动发现到的 socket（来自 mysqld 进程 / my.cnf / 编译默认）
+        [[ -n "$DB_SOCKET" ]] && candidates+=("socket:$DB_SOCKET")
+        # 3) 常见 socket 路径兜底
+        local compiled_sock _s
+        compiled_sock="$("$EXEC_MYSQL" --help 2>/dev/null | awk '/^  socket/{print $NF; exit}')"
+        for _s in "$compiled_sock" /tmp/mysql.sock /var/run/mysqld/mysqld.sock /var/lib/mysql/mysql.sock /usr/local/mysql/data/mysql.sock /opt/mysql/data/mysql.sock; do
+            [[ -n "$_s" && -S "$_s" && "$_s" != "$DB_SOCKET" ]] && candidates+=("socket:$_s")
+        done
+        # 4) 最后退到 TCP（root 可能只允许 TCP 接入；含 IPv6-only 场景）
+        candidates+=("tcp:127.0.0.1" "tcp:::1")
     fi
-    for try_host in "${hosts_to_try[@]}"; do
-        DB_HOST="$try_host"
+
+    local cand mode val opt
+    for cand in "${candidates[@]}"; do
+        mode="${cand%%:*}"; val="${cand#*:}"
+        CONN_MODE="$mode"
+        case "$mode" in
+            socket) DB_SOCKET="$val" ;;
+            tcp)    DB_HOST="$val" ;;
+            default) DB_SOCKET=""; ;;
+        esac
         for opt in "${ssl_opts[@]}"; do
             if mysql_try_login "$opt" >"$err_file" 2>&1; then
                 [[ -n "$opt" ]] && MYSQL_SSL_OPTION="$opt"
-                [[ "$try_host" == "::1" ]] && AUTO_DETECT_NOTES+=("ipv6-fallback: mysqld 仅监听 IPv6，已自动切换到 ::1")
+                AUTO_DETECT_NOTES+=("login: mode=${mode}${val:+ (${val})}")
                 build_mysql_args
                 rm -f "$err_file"
                 return 0
@@ -376,43 +380,14 @@ test_mysql_login_or_exit() {
             last_err="$(cat "$err_file" 2>/dev/null)"
         done
     done
-
-    # TCP 全部失败，尝试 socket 兜底（mysqld 仅 IPv6 监听 + caching_sha2_password 等场景）
-    if [[ -z "$DB_SOCKET" ]]; then
-        # 优先从 mysql --help 获取编译内置的默认 socket 路径
-        local compiled_sock=""
-        compiled_sock="$("$EXEC_MYSQL" --help 2>/dev/null | awk '/^  socket/{print $NF; exit}')"
-        local default_sockets=()
-        [[ -n "$compiled_sock" ]] && default_sockets+=("$compiled_sock")
-        # 再补充常见路径兜底
-        default_sockets+=("/tmp/mysql.sock" "/var/run/mysqld/mysqld.sock" "/var/lib/mysql/mysql.sock" "/usr/local/mysql/data/mysql.sock" "/opt/mysql/data/mysql.sock")
-        for sock in "${default_sockets[@]}"; do
-            [[ ! -S "$sock" ]] && continue
-            DB_SOCKET="$sock"
-            for opt in "${ssl_opts[@]}"; do
-                if mysql_try_login "$opt" >"$err_file" 2>&1; then
-                    [[ -n "$opt" ]] && MYSQL_SSL_OPTION="$opt"
-                    AUTO_DETECT_NOTES+=("socket-fallback: TCP 失败，自动切换到 socket ${DB_SOCKET}")
-                    build_mysql_args
-                    rm -f "$err_file"
-                    return 0
-                fi
-                last_err="$(cat "$err_file" 2>/dev/null)"
-            done
-            DB_SOCKET=""
-        done
-    fi
     rm -f "$err_file"
 
     echo "错误：无法登录 MySQL，采集已终止。" >&2
     echo "  mysql: ${EXEC_MYSQL}" >&2
-    if [[ -n "$DB_SOCKET" ]]; then
-        echo "  socket: ${DB_SOCKET}" >&2
-    else
-        echo "  host/port: ${DB_HOST}:${DB_PORT}" >&2
-    fi
     echo "  user: ${DB_USER}" >&2
+    echo "  已尝试连接方式：${candidates[*]}" >&2
     [[ -n "$DEFAULTS_FILE" ]] && echo "  defaults-file: ${DEFAULTS_FILE}" >&2
+    echo "  提示：本机若能用 'mysql -u${DB_USER} -p' 登录，请确认密码正确；如用 socket 登录，可加 --socket <path>。" >&2
     echo "  最后一次错误：" >&2
     printf '%s\n' "$last_err" >&2
     exit 1
@@ -445,11 +420,11 @@ if [[ "$TEST_LOGIN_ONLY" -eq 1 ]]; then
     echo "MySQL 登录测试成功"
     echo "  mysql: ${EXEC_MYSQL}"
     [[ -n "$DEFAULTS_FILE" ]] && echo "  defaults-file: ${DEFAULTS_FILE}"
-    if [[ -n "$DB_SOCKET" ]]; then
-        echo "  socket: ${DB_SOCKET}"
-    else
-        echo "  host/port: ${DB_HOST}:${DB_PORT}"
-    fi
+    case "$CONN_MODE" in
+        socket) echo "  连接方式: socket (${DB_SOCKET})" ;;
+        tcp)    echo "  连接方式: TCP (${DB_HOST}:${DB_PORT})" ;;
+        *)      echo "  连接方式: 默认 (跟随 mysql 自身默认，本机通常走 socket)" ;;
+    esac
     echo "  user: ${DB_USER}"
     echo "  version: ${DB_VERSION_FULL}"
     echo "  ssl-option: ${MYSQL_SSL_OPTION:-无}"
