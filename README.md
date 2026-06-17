@@ -17,11 +17,11 @@
   <a href="https://github.com/aimdotsh/mysql-healthcheck/issues"><img alt="GitHub issues" src="https://img.shields.io/github/issues/aimdotsh/mysql-healthcheck?style=flat-square&logo=github"></a>
   <a href="https://github.com/aimdotsh/mysql-healthcheck/commits/main"><img alt="GitHub last commit" src="https://img.shields.io/github/last-commit/aimdotsh/mysql-healthcheck?style=flat-square&logo=github"></a>
   <img alt="Tests" src="https://img.shields.io/badge/tests-passing-43853d?style=flat-square&logo=githubactions&logoColor=white">
-  <img alt="Version" src="https://img.shields.io/badge/version-v4.9-1F4E79?style=flat-square">
+  <img alt="Version" src="https://img.shields.io/badge/version-v5.0.9-1F4E79?style=flat-square">
   <img alt="Node" src="https://img.shields.io/badge/node-%E2%89%A516-43853d?style=flat-square&logo=node.js">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square">
   <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey?style=flat-square">
-  <img alt="MySQL" src="https://img.shields.io/badge/MySQL-5.6%20%7C%205.7%20%7C%208.0-4479A1?style=flat-square&logo=mysql&logoColor=white">
+  <img alt="MySQL" src="https://img.shields.io/badge/MySQL-5.6%20%7C%205.7%20%7C%208.0%20%7C%208.4%20%7C%20MariaDB-4479A1?style=flat-square&logo=mysql&logoColor=white">
   <img alt="Output" src="https://img.shields.io/badge/output-.docx-2B579A?style=flat-square&logo=microsoftword&logoColor=white">
 </p>
 
@@ -93,7 +93,7 @@
 | 🩺 **六维度健康度评分** | 可用性 / 安全性 / 性能 / 数据规范 / 持久化 / 运维 — 一个数字看健康，一张雷达看薄弱 |
 | 🔗 **根因关联分析** | 自动识别 6 类典型关联（如「DR 磁盘高位 ↔ binlog 永不过期」），帮 DBA 找到症状背后的真因 |
 | 📊 **10 张嵌入图表** | 健康度仪表 / 六维雷达 / 问题分布 / MySQL 拓扑 / 磁盘 / 连接 / Processlist / Buffer Pool / TOP10 大表 / 合规分布 |
-| 🎯 **20+ 条巡检规则** | P0/P1/P2/P3 自动分级，跨节点同类问题智能聚合（35 项 → 27 项零重复） |
+| 🎯 **50 条巡检规则** | P0/P1/P2/P3 自动分级，跨节点同类问题智能聚合，含弱密码检测、参数合理性校验 |
 | 🛡️ **9 项安全合规检查** | 自动映射等保 2.0 / PCI DSS / GDPR / SOX，PASS/WARN/FAIL 一目了然 |
 | 🔍 **TOP 20 慢 SQL 治理** | 直接从 performance_schema 抓 TOP SQL + 慢日志 tail 实际 SQL 样本 + 缺索引识别 |
 | 💾 **备份能力评估** | 检测备份工具 / cron 调度 / 备份产物 / binlog 保留 → 推算 RTO·RPO |
@@ -205,7 +205,7 @@ flowchart LR
 | 组件 | 角色 | 关键能力 |
 |---|---|---|
 | `collectors/mysqlHealthCheckV3.0.sh` | 采集端 | 13 个模块，统一 txt 输出（OS / DB / 慢日志 / 错误日志 / 备份 / 安全）|
-| `scripts/extract.js` | 解析端 | 段落解析 + 20+ 规则 + 健康度评分 + 关联推断 + 备份评估 + 安全合规 |
+| `scripts/extract.js` | 解析端 | 段落解析 + 50 条规则 + 健康度评分 + 关联推断 + 备份评估 + 安全合规 |
 | `scripts/render.js` | 渲染端 | 17 章 docx + 10 张嵌入图表（SVG→PNG）+ 占位符自检 |
 
 ---
@@ -214,7 +214,7 @@ flowchart LR
 
 巡检规则按健康度的 **6 个维度** 分组。每条规则在报告里都会生成一条 issue（含优先级、节点、措施、SQL），并按 `disabledRules` / `priorities` 配置接管开关与优先级。
 
-> **图例**：P0 = 紧急（立即修） · P1 = 重要（两周内） · P2 = 建议（一月内） · P3 = 观察 · 🆕 = v4.8 新增 · ⚙️ = 阈值可配置
+> **图例**：P0 = 紧急（立即修） · P1 = 重要（两周内） · P2 = 建议（一月内） · P3 = 观察 · 🆕 = v5.0 新增 · ⚙️ = 阈值可配置
 
 ### 🟥 可用性（availability）— 影响服务能否对外提供
 
@@ -250,6 +250,8 @@ flowchart LR
 | `swap_used` | P1 | 见可用性段 | - | - |
 | `ibtmp1_oversize` | P2 | 临时表空间膨胀，可能撑爆磁盘 | ibtmp1 > 5 GB | ⚙️ `innodb.ibtmp1_max_gb` |
 | `ibtmp1_no_max` | P2 | 临时表空间未配 `:max:` 上限 | `innodb_temp_data_file_path` 缺 `:max:` | - |
+| 🆕 `log_bin_off` | P1 | binlog 未开启，无法做 PITR 时间点恢复，且无法搭建复制 | `log_bin = OFF` | - |
+| 🆕 `binlog_format_not_row` | P2 | binlog_format 非 ROW，MTS 并行复制受限，DDL 可能导致主从数据不一致 | `log_bin = ON` 且 `binlog_format ≠ ROW` | - |
 | 🆕 `doublewrite_off` | P1 | 半页写崩溃会导致页损坏不可恢复（torn page） | `innodb_doublewrite = OFF` | - |
 | 🆕 `slave_skip_errors_set` | **P0** | 复制错误被静默跳过，从库与主库已经/将会数据不一致 | `slave_skip_errors ≠ OFF/NONE` | - |
 
@@ -267,6 +269,7 @@ flowchart LR
 | `slave_parallel_workers_zero` | P1/P2 | 大数据量集群单线程应用 binlog，大事务会延迟堆积 | parallel_workers=0 且数据 ≥ 100 GB | ⚙️ `replication.parallel_workers_data_gb_p2` / `_p1` |
 | 🆕 `bp_too_small` | P1/P2 | **用户的示例规则**：buffer pool 占 RAM 过低，工作集 cache miss | bp 占 RAM < 40%（P1 < 20%） | ⚙️ `innodb.bp_too_small_ratio` / `_p1_ratio` |
 | 🆕 `redo_log_too_small` | P1/P2 | redo log 文件过小，频繁切换拉低写吞吐 + 放大恢复时间 | log_file_size < 512 MB 且数据 ≥ 50 GB | ⚙️ `innodb.redo_log_min_mb` 等 |
+| 🆕 `file_per_table_off` | P2 | 所有表共用系统表空间（ibdata1），无法单独回收空间，DROP TABLE 后磁盘不释放 | `innodb_file_per_table = OFF` | - |
 | 🆕 `flush_method_not_o_direct` | P2 | Linux 上 fsync 双重缓存浪费内存 | Linux 且 flush_method ≠ O_DIRECT | - |
 | 🆕 `data_to_memory_ratio_high` | P1/P2 | 数据量远大于内存，工作集无法常驻 buffer pool | `dbSize / RAM > 10`（P1 > 50） | ⚙️ `data_memory.ratio_warn` / `_p1` |
 
@@ -280,6 +283,7 @@ flowchart LR
 | `heavy_frag_tables` | P2 | 存在大表碎片，浪费磁盘且影响顺序扫描 | 碎片率 ≥ 70% 且碎片 ≥ 100 MB | ⚙️ `frag.rate` / `frag.min_mb` |
 | `ghost_tables` | P2 | pt-osc / gh-ost 在线 DDL 残留 ghost 表（≥ 1 GB） | 单表 ≥ 1 GB 的 `_gho_*` / `_*_new` | - |
 | `lct_zero_linux` | P3 | Linux 上大小写敏感（lower_case_table_names=0），跨平台风险 | Linux + LCT=0 | - |
+| 🆕 `default_engine_not_innodb` | P2 | 默认存储引擎非 InnoDB，新建表可能意外使用 MyISAM 等无事务引擎 | `default_storage_engine ≠ InnoDB` | - |
 | 🆕 `charset_not_utf8mb4` | P2 | utf8 实际是 utf8mb3，已 deprecated，无法存 4 字节字符（emoji） | `character_set_server` 非 utf8mb4 | - |
 | 🆕 `sql_mode_missing_strict` | P2 | sql_mode 不严格，错误数据被静默截断（INT 越界写 0、字符串裁断） | sql_mode 缺 `STRICT_TRANS_TABLES` | - |
 | 🆕 `auto_increment_exhausting` | P0/P1/P2 | 自增列接近耗尽，耗尽后 INSERT 会报 ER_AUTOINC_READ_FAILED | rate ≥ 0.7（≥ 0.9 升 P0）| ⚙️ `auto_increment.rate_p2` / `_p1` / `_p0` |
@@ -292,6 +296,8 @@ flowchart LR
 | `wildcard_high` | P1 | 复制 / 备份账号开放 host=%，应限定到具体网段 | host=% 用户名 ∈ {repl*, backup*, dump*} | - |
 | `wildcard_medium` | P2 | 业务账号开放 host=%，建议限定到内网网段 | host=% 业务账号（一行聚合所有用户）| - |
 | `tls_weak_protocol` | P2 | TLS 协议含 TLSv1 / TLSv1.1，NIST 已废弃 | `tls_version` 含旧版本 | - |
+| 🆕 `validate_password_off` | P2 | 未启用密码强度校验插件，账号可设置任意弱密码 | `validate_password` 插件未启用 | - |
+| 🆕 `weak_password` | P0/P1 | 账号使用常见弱密码（库内 SHA1 字典比对，哈希不出库）；高权限账号升 P0 | `mysql_native_password` 账号哈希命中内置字典 | - |
 | 🆕 `auth_plugin_native_on_80` | P2 | 8.0+ 默认 mysql_native_password（SHA1 派生），8.4 起 disabled | 8.0+ 且 plugin = `mysql_native_password` | - |
 
 ### ⚪ 运维（operations）— 备份、监控、版本生命周期
@@ -304,13 +310,14 @@ flowchart LR
 | `mysql_version_eol` | P0/P1 | MySQL 主版本已 EOL（5.5/5.6/5.7） | 通过 MYSQL_EOL_TABLE 匹配 | - |
 | `mysql_version_security` | P3 | MySQL 进入仅安全更新阶段（8.0 自 2026-04 起）| 同上 | - |
 | `param_inconsistent` | P2 | 跨节点关键参数不一致（read_only、long_query_time 等） | 节点间核心参数有差异 | - |
+| 🆕 `skip_name_resolve_off` | P2 | skip_name_resolve 未开启，每次连接都做 DNS 反查，高并发场景连接延迟明显 | `skip_name_resolve = OFF` | - |
 | 🆕 `performance_schema_off` | P2 | P_S 关闭，失去 TOP SQL 与监控指标（PMM/exporter 缺核心指标）| `performance_schema = OFF` | - |
 
 > 想看每条规则的实际 push() 代码与完整 SQL 模板，请阅读 [`references/rules.md`](references/rules.md) 或直接看 `scripts/extract.js` 的 `analyzeIssues()` 函数。
 
-### 🧠 根因关联（v4.9 重写为数据驱动）
+### 🧠 根因关联（v5.0 数据驱动）
 
-报告里除了单条 issue，还会自动生成跨规则的「根因关联」（Root-Cause Correlations），把多个孤立指标串成一条因果链。v4.9 共 16 条关联模式，全部用**多信号交叉验证 + 「已确认 / 已排除 / 需进一步排查」三态判定**，避免「可能 / 疑似」类弱推断。
+报告里除了单条 issue，还会自动生成跨规则的「根因关联」（Root-Cause Correlations），把多个孤立指标串成一条因果链。当前共 16 条关联模式，全部用**多信号交叉验证 + 「已确认 / 已排除 / 需进一步排查」三态判定**，避免「可能 / 疑似」类弱推断。
 
 举例 — 老版本会说"从库间 ibtmp1 大小差异显著，**通常源于**节点重启时间不同"（猜测）；v4.9 改为：
 > 各从库 ibtmp1 占用差异显著：最小 12.00 MB（节点 A，uptime 275 天） · 最大 17.20 GB（节点 B，uptime 967 天），相差 1467× 。
@@ -516,15 +523,18 @@ Claude 会自动加载本 skill 的 `SKILL.md` playbook，按 2 步流程完成�
 
 ---
 
-## 🗺️ Roadmap
+## 📌 维护状态
 
-- [ ] 上次巡检对比（diff 历史 data.json，输出趋势图）
-- [ ] HTML 版本报告（除 docx 外多一种产物）
-- [ ] 监控告警配置一键生成（Prometheus / Zabbix 模板）
-- [ ] PostgreSQL / Oracle 巡检（同架构复用 extract+render 设计）
-- [ ] 在线 SaaS 版本（上传 txt → 下载 docx，无需本地 Node 环境）
+> 本项目已进入**稳定生产阶段**。规则库（50 条）已涵盖 DBA 日常巡检的核心场景，功能以维护为主，不再计划大规模迭代。生产 DBA 场景日常使用中。
 
-提交需求请开 issue。
+如有 Bug 或高优先级规则缺口，欢迎到 [Issues](https://github.com/aimdotsh/mysql-healthcheck/issues) 反馈。
+
+## 🗺️ 参考方向（不承诺版本）
+
+- 上次巡检对比（diff 历史 data.json，输出趋势图）
+- 运行时百分比指标（临时磁盘表占比 / BP 脏页率 / Table_open_cache 命中率）
+- Schema 反模式扫描（单表索引 >6 / 联合索引列 >4 / 字段数 >50）
+- 监控告警配置一键生成（Prometheus / Zabbix 模板）
 
 ---
 
