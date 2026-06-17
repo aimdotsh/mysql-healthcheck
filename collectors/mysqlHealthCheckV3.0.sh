@@ -224,9 +224,32 @@ detect_mysql_runtime() {
         fi
     fi
 
+    # ps 和 my.cnf 都没找到 socket 时，从 mysql 客户端编译默认值获取
+    if [[ -z "$socket" && -n "$EXEC_MYSQL" ]]; then
+        socket="$("$EXEC_MYSQL" --help 2>/dev/null | awk '/^  socket/{print $NF; exit}')"
+    fi
+
     if [[ "$EXPLICIT_SOCKET" -eq 0 && -n "$socket" ]]; then
-        DB_SOCKET="$socket"
-        AUTO_DETECT_NOTES+=("socket=${DB_SOCKET}")
+        # 检测 mysqld 是否运行在 Docker 容器内；若是则跳过 socket，改用 TCP/IP
+        local in_docker=0
+        if [[ -n "$MYSQLD_PID_DETECTED" && -f "/proc/${MYSQLD_PID_DETECTED}/cgroup" ]]; then
+            grep -qE '(docker|kubepods|containerd|\.scope)' "/proc/${MYSQLD_PID_DETECTED}/cgroup" 2>/dev/null && in_docker=1
+        fi
+        if [[ "$in_docker" -eq 1 ]]; then
+            # 尝试从 cgroup 拿容器 ID，再用 docker inspect 获取容器 IP
+            if [[ "$EXPLICIT_HOST" -eq 0 ]] && command -v docker >/dev/null 2>&1; then
+                local container_id container_ip
+                container_id="$(grep -oE '[a-f0-9]{64}' "/proc/${MYSQLD_PID_DETECTED}/cgroup" 2>/dev/null | head -1)"
+                if [[ -n "$container_id" ]]; then
+                    container_ip="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container_id" 2>/dev/null)"
+                    [[ -n "$container_ip" ]] && DB_HOST="$container_ip"
+                fi
+            fi
+            AUTO_DETECT_NOTES+=("docker-detected: skip socket, use TCP ${DB_HOST}:${DB_PORT}")
+        else
+            DB_SOCKET="$socket"
+            AUTO_DETECT_NOTES+=("socket=${DB_SOCKET}")
+        fi
     fi
     if [[ "$EXPLICIT_PORT" -eq 0 && -n "$port" ]]; then
         DB_PORT="$port"
@@ -253,6 +276,20 @@ detect_mysql_runtime() {
     if [[ -z "$MYSQL_SSL_OPTION" ]]; then
         MYSQL_SSL_OPTION="--ssl-mode=DISABLED"
     fi
+
+    # 检测 mysqld 是否仅监听 IPv6（ss 显示 [::]:PORT 但无 0.0.0.0:PORT）
+    # 若是，且用户未显式指定 host，则将默认 127.0.0.1 替换为 ::1
+    if [[ "$EXPLICIT_HOST" -eq 0 && -z "$DB_SOCKET" && "$DB_HOST" == "127.0.0.1" ]]; then
+        local ss_out
+        ss_out="$(ss -tlnp 2>/dev/null | grep ":${DB_PORT} ")"
+        local has_ipv4=0 has_ipv6=0
+        printf '%s\n' "$ss_out" | grep -qE '0\.0\.0\.0:'"${DB_PORT}" && has_ipv4=1
+        printf '%s\n' "$ss_out" | grep -qE '\[?::\]?:'"${DB_PORT}"        && has_ipv6=1
+        if [[ "$has_ipv6" -eq 1 && "$has_ipv4" -eq 0 ]]; then
+            DB_HOST="::1"
+            AUTO_DETECT_NOTES+=("ipv6-only: mysqld 仅监听 IPv6，已自动切换到 ::1")
+        fi
+    fi
 }
 
 cleanup_defaults_extra_file() {
@@ -261,30 +298,30 @@ cleanup_defaults_extra_file() {
 trap cleanup_defaults_extra_file EXIT
 
 prepare_mysql_defaults_extra_file() {
+    # 用 --no-defaults 模式：密码写入临时文件，其余参数全部命令行传递
+    # 避免 /etc/my.cnf 的 socket/host 设置干扰连接方式
     MYSQL_DEFAULTS_EXTRA_FILE="$(mktemp /tmp/mysql-healthcheck-client.XXXXXX.cnf)"
     chmod 600 "$MYSQL_DEFAULTS_EXTRA_FILE"
     {
         echo "[client]"
         [[ -n "$DB_USER" ]] && printf 'user=%s\n' "$DB_USER"
         [[ -n "$DB_PWD" ]] && printf 'password=%s\n' "$DB_PWD"
-        if [[ -n "$DB_SOCKET" ]]; then
-            printf 'socket=%s\n' "$DB_SOCKET"
-        else
-            [[ -n "$DB_HOST" ]] && printf 'host=%s\n' "$DB_HOST"
-            [[ -n "$DB_PORT" ]] && printf 'port=%s\n' "$DB_PORT"
-        fi
     } > "$MYSQL_DEFAULTS_EXTRA_FILE"
 }
 
 build_mysql_args() {
-    MYSQL_ARGS=(--defaults-extra-file="$MYSQL_DEFAULTS_EXTRA_FILE")
+    MYSQL_ARGS=(--defaults-file="$MYSQL_DEFAULTS_EXTRA_FILE")
     if [[ -n "$DB_SOCKET" ]]; then
         MYSQL_ARGS+=(--protocol=SOCKET --socket="$DB_SOCKET")
     else
-        MYSQL_ARGS+=(--host="$DB_HOST" --port="$DB_PORT")
+        MYSQL_ARGS+=(--protocol=TCP --host="$DB_HOST" --port="$DB_PORT")
     fi
-    [[ -n "$MYSQL_SSL_OPTION" ]] && MYSQL_ARGS+=("$MYSQL_SSL_OPTION")
-    MYSQL_ARGS+=(--connect-timeout=10)
+    # MYSQL_SSL_OPTION 可能包含多个空格分隔的 flag，逐一展开
+    if [[ -n "$MYSQL_SSL_OPTION" ]]; then
+        read -ra _ssl_arr <<< "$MYSQL_SSL_OPTION"
+        MYSQL_ARGS+=("${_ssl_arr[@]}")
+    fi
+    MYSQL_ARGS+=(--connect-timeout=30)
 }
 
 mysql_try_login() {
@@ -313,15 +350,58 @@ test_mysql_login_or_exit() {
     prepare_mysql_defaults_extra_file
 
     err_file="$(mktemp /tmp/mysql-healthcheck-login.XXXXXX.err)"
-    for opt in "${MYSQL_SSL_OPTION:-}" "--ssl=0" ""; do
-        if mysql_try_login "$opt" >"$err_file" 2>&1; then
-            [[ -n "$opt" ]] && MYSQL_SSL_OPTION="$opt"
-            build_mysql_args
-            rm -f "$err_file"
-            return 0
-        fi
-        last_err="$(cat "$err_file" 2>/dev/null)"
+    # TCP 重试顺序：
+    #   1. --ssl-mode=DISABLED                          普通连接
+    #   2. --ssl-mode=PREFERRED                         MySQL 8+ 默认，可走 SSL
+    #   3. --ssl-mode=PREFERRED --get-server-public-key caching_sha2_password 无 SSL 场景
+    #   4. --ssl=0                                      兼容旧版本客户端
+    #   5. ""                                           完全由服务端决定
+    local ssl_opts=("${MYSQL_SSL_OPTION:-}" "--ssl-mode=PREFERRED" "--ssl-mode=PREFERRED --get-server-public-key" "--ssl=0" "")
+
+    # 127.0.0.1 失败时自动尝试 ::1（mysqld 仅监听 IPv6 的场景）
+    local hosts_to_try=("$DB_HOST")
+    if [[ -z "$DB_SOCKET" && "$DB_HOST" == "127.0.0.1" ]]; then
+        hosts_to_try+=("::1")
+    fi
+    for try_host in "${hosts_to_try[@]}"; do
+        DB_HOST="$try_host"
+        for opt in "${ssl_opts[@]}"; do
+            if mysql_try_login "$opt" >"$err_file" 2>&1; then
+                [[ -n "$opt" ]] && MYSQL_SSL_OPTION="$opt"
+                [[ "$try_host" == "::1" ]] && AUTO_DETECT_NOTES+=("ipv6-fallback: mysqld 仅监听 IPv6，已自动切换到 ::1")
+                build_mysql_args
+                rm -f "$err_file"
+                return 0
+            fi
+            last_err="$(cat "$err_file" 2>/dev/null)"
+        done
     done
+
+    # TCP 全部失败，尝试 socket 兜底（mysqld 仅 IPv6 监听 + caching_sha2_password 等场景）
+    if [[ -z "$DB_SOCKET" ]]; then
+        # 优先从 mysql --help 获取编译内置的默认 socket 路径
+        local compiled_sock=""
+        compiled_sock="$("$EXEC_MYSQL" --help 2>/dev/null | awk '/^  socket/{print $NF; exit}')"
+        local default_sockets=()
+        [[ -n "$compiled_sock" ]] && default_sockets+=("$compiled_sock")
+        # 再补充常见路径兜底
+        default_sockets+=("/tmp/mysql.sock" "/var/run/mysqld/mysqld.sock" "/var/lib/mysql/mysql.sock" "/usr/local/mysql/data/mysql.sock" "/opt/mysql/data/mysql.sock")
+        for sock in "${default_sockets[@]}"; do
+            [[ ! -S "$sock" ]] && continue
+            DB_SOCKET="$sock"
+            for opt in "${ssl_opts[@]}"; do
+                if mysql_try_login "$opt" >"$err_file" 2>&1; then
+                    [[ -n "$opt" ]] && MYSQL_SSL_OPTION="$opt"
+                    AUTO_DETECT_NOTES+=("socket-fallback: TCP 失败，自动切换到 socket ${DB_SOCKET}")
+                    build_mysql_args
+                    rm -f "$err_file"
+                    return 0
+                fi
+                last_err="$(cat "$err_file" 2>/dev/null)"
+            done
+            DB_SOCKET=""
+        done
+    fi
     rm -f "$err_file"
 
     echo "错误：无法登录 MySQL，采集已终止。" >&2
@@ -381,6 +461,19 @@ if [[ "${MYSQL_HEALTHCHECK_SKIP_COLLECTION:-0}" = "1" ]]; then
     exit 0
 fi
 
+# ============== 版本比较工具函数 ==============
+# mysql_ver_ge MAJOR MINOR — 当前 DB_VERSION >= MAJOR.MINOR 时返回 0
+mysql_ver_ge() {
+    local major="$1" minor="$2"
+    local cur_major cur_minor
+    cur_major="${DB_VERSION%%.*}"
+    cur_minor="${DB_VERSION#*.}"
+    cur_minor="${cur_minor%%.*}"
+    [[ "$cur_major" -gt "$major" ]] && return 0
+    [[ "$cur_major" -eq "$major" && "$cur_minor" -ge "$minor" ]] && return 0
+    return 1
+}
+
 # ============== 输出文件 ==============
 IP_ADDR=$(ip addr show 2>/dev/null | awk '/inet / && /brd/ {print $2}' | cut -d/ -f1 | awk 'NR==1')
 [[ -z "$IP_ADDR" ]] && IP_ADDR=$(hostname -I 2>/dev/null | awk '{print $1}')
@@ -395,17 +488,35 @@ exec 3>&1
 exec > "$OUT_FILE"
 
 # ============== MySQL 执行包装 ==============
+# Docker TCP NAT 下偶发 EINTR（errno 4），最多重试 2 次
+_run_mysql_with_retry() {
+    local rc out
+    local retries=2
+    while true; do
+        out=$("${@}" 2>&1)
+        rc=$?
+        if [[ $rc -eq 0 ]]; then
+            printf '%s\n' "$out"
+            return 0
+        fi
+        # 仅对 2003/errno 4 重试（Docker conntrack 偶发丢包）
+        if [[ $retries -gt 0 ]] && printf '%s\n' "$out" | grep -q 'ERROR 2003'; then
+            retries=$((retries - 1))
+            sleep 0.5
+            continue
+        fi
+        printf '%s\n' "$out"
+        return $rc
+    done
+}
 run_sql() {
-    # 表格格式（默认）
-    "$EXEC_MYSQL" "${MYSQL_ARGS[@]}" -t -e "$1" 2>&1
+    _run_mysql_with_retry "$EXEC_MYSQL" "${MYSQL_ARGS[@]}" -t -e "$1"
 }
 run_sql_silent() {
-    # 取单值
     "$EXEC_MYSQL" "${MYSQL_ARGS[@]}" -s -N -e "$1" 2>/dev/null
 }
 run_sql_vert() {
-    # \G 垂直格式
-    "$EXEC_MYSQL" "${MYSQL_ARGS[@]}" -e "$1\G" 2>&1
+    _run_mysql_with_retry "$EXEC_MYSQL" "${MYSQL_ARGS[@]}" -e "$1\G"
 }
 
 # ============== 段标记 ==============
@@ -592,6 +703,10 @@ collect_variables() {
     module_header "[03] 变量与配置"
 
     section "03" "MySQL Variables"
+    # 根据版本构建兼容的变量查询
+    # 8.4+ 移除：expire_logs_days / slave_net_timeout / slave_parallel_workers
+    # 8.0.1+ 新增：binlog_expire_logs_seconds
+    # 8.0.23+ 新增：replica_net_timeout / replica_parallel_workers
     local sql="SELECT @@global.binlog_format AS binlog_format,
 @@global.innodb_buffer_pool_size/1024/1024 AS innodb_buffer_pool_size_in_mb,
 @@global.innodb_flush_method,
@@ -600,13 +715,10 @@ collect_variables() {
 @@global.innodb_read_io_threads,
 @@global.innodb_write_io_threads,
 @@global.innodb_buffer_pool_instances,
-@@global.expire_logs_days AS expire_logs_days,
 @@global.innodb_log_buffer_size/1024/1024 AS innodb_log_buffer_size_in_mb,
-@@global.innodb_log_file_size/1024/1024 AS innodb_log_file_size_in_mb,
 @@global.wait_timeout,
 @@global.interactive_timeout,
 @@global.innodb_lock_wait_timeout,
-@@global.slave_net_timeout,
 @@global.tmp_table_size/1024/1024 AS tmp_table_size_in_mb,
 @@global.max_heap_table_size/1024/1024 AS max_heap_table_size_in_mb,
 @@global.read_only,
@@ -615,7 +727,6 @@ collect_variables() {
 @@global.read_buffer_size/1024 AS read_buffer_size_in_kb,
 @@global.read_rnd_buffer_size/1024 AS read_rnd_buffer_size_in_kb,
 @@global.max_allowed_packet/1024/1024 AS max_allowed_packet_in_mb,
-@@global.slave_parallel_workers,
 @@global.log_bin,
 @@global.gtid_mode,
 @@global.enforce_gtid_consistency,
@@ -644,13 +755,48 @@ collect_variables() {
 @@global.pid_file,
 @@global.log_error,
 @@global.server_id"
+
+    # binlog 保留时间：8.0.1+ 用 binlog_expire_logs_seconds，旧版用 expire_logs_days
+    if mysql_ver_ge 8 0; then
+        sql+=",@@global.binlog_expire_logs_seconds AS binlog_expire_logs_seconds"
+    else
+        sql+=",@@global.expire_logs_days AS expire_logs_days"
+    fi
+
+    # 复制相关：8.0.23+ slave_* 改为 replica_*，8.4 完全移除 slave_*
+    if mysql_ver_ge 8 23; then
+        sql+=",@@global.replica_net_timeout,@@global.replica_parallel_workers"
+        sql+=",@@global.log_replica_updates"
+    else
+        sql+=",@@global.slave_net_timeout,@@global.slave_parallel_workers"
+        sql+=",@@global.log_slave_updates"
+    fi
+
+    # innodb_log_file_size 在 8.0.30+ 废弃，改由 innodb_redo_log_capacity 控制
+    if mysql_ver_ge 8 30; then
+        sql+=",@@global.innodb_redo_log_capacity/1024/1024 AS innodb_redo_log_capacity_in_mb"
+    else
+        sql+=",@@global.innodb_log_file_size/1024/1024 AS innodb_log_file_size_in_mb"
+        sql+=",@@global.innodb_log_files_in_group"
+    fi
+
+    # default_authentication_plugin 在 8.4 移除，改用 authentication_policy
+    if mysql_ver_ge 8 4; then
+        sql+=",@@global.authentication_policy"
+    else
+        sql+=",@@global.default_authentication_plugin"
+    fi
+
     run_sql_vert "$sql"
 
     section "03" "Important variables (subset)"
     if [[ "$DB_VERSION" == "5.6" ]]; then
         run_sql "SELECT * FROM INFORMATION_SCHEMA.GLOBAL_VARIABLES WHERE VARIABLE_NAME IN ('datadir','SQL_MODE','socket','TIME_ZONE','tx_isolation','autocommit','innodb_lock_wait_timeout','max_connections','slow_query_log','long_query_time','pid_file','log_error','lower_case_table_names','innodb_buffer_pool_size','innodb_flush_log_at_trx_commit','read_only','log_slave_updates','innodb_io_capacity','max_connect_errors','server_id');"
+    elif mysql_ver_ge 8 23; then
+        # 8.0.23+ log_slave_updates → log_replica_updates
+        run_sql "SELECT * FROM performance_schema.global_variables WHERE VARIABLE_NAME IN ('datadir','sql_mode','socket','time_zone','transaction_isolation','autocommit','innodb_lock_wait_timeout','max_connections','slow_query_log','long_query_time','pid_file','log_error','lower_case_table_names','innodb_buffer_pool_size','innodb_flush_log_at_trx_commit','read_only','log_replica_updates','innodb_io_capacity','max_connect_errors','server_id');"
     else
-        run_sql "SELECT * FROM performance_schema.global_variables WHERE VARIABLE_NAME IN ('datadir','SQL_MODE','socket','time_zone','transaction_isolation','autocommit','innodb_lock_wait_timeout','max_connections','slow_query_log','long_query_time','pid_file','log_error','lower_case_table_names','innodb_buffer_pool_size','innodb_flush_log_at_trx_commit','read_only','log_slave_updates','innodb_io_capacity','max_connect_errors','server_id');"
+        run_sql "SELECT * FROM performance_schema.global_variables WHERE VARIABLE_NAME IN ('datadir','sql_mode','socket','time_zone','transaction_isolation','autocommit','innodb_lock_wait_timeout','max_connections','slow_query_log','long_query_time','pid_file','log_error','lower_case_table_names','innodb_buffer_pool_size','innodb_flush_log_at_trx_commit','read_only','log_slave_updates','innodb_io_capacity','max_connect_errors','server_id');"
     fi
 
     section "03" "Performance schema sizing"
@@ -665,12 +811,24 @@ collect_replication() {
     module_header "[04] 主从复制状态"
 
     section "04" "MySQL Replication Info"
-    run_sql "SHOW SLAVE HOSTS;"
+    if mysql_ver_ge 8 4; then
+        run_sql "SHOW REPLICAS;"
+    else
+        run_sql "SHOW SLAVE HOSTS;" 2>/dev/null || run_sql "SHOW REPLICAS;"
+    fi
     echo ""
-    run_sql_vert "SHOW SLAVE STATUS"
+    if mysql_ver_ge 8 4; then
+        run_sql_vert "SHOW REPLICA STATUS"
+    else
+        run_sql_vert "SHOW SLAVE STATUS" 2>/dev/null || run_sql_vert "SHOW REPLICA STATUS"
+    fi
 
     section "04" "Master status"
-    run_sql "SHOW MASTER STATUS;"
+    if mysql_ver_ge 8 4; then
+        run_sql "SHOW BINARY LOG STATUS;"
+    else
+        run_sql "SHOW MASTER STATUS;" 2>/dev/null || run_sql "SHOW BINARY LOG STATUS;"
+    fi
 
     section "04" "Binary logs"
     run_sql "SHOW BINARY LOGS;"
@@ -682,14 +840,15 @@ collect_replication() {
     if [[ "$DB_VERSION" == "5.6" ]]; then
         run_sql "SELECT * FROM INFORMATION_SCHEMA.GLOBAL_VARIABLES WHERE VARIABLE_NAME LIKE 'rpl_semi%';"
     else
-        run_sql "SELECT * FROM performance_schema.global_variables WHERE VARIABLE_NAME LIKE 'rpl_semi%';"
+        # 8.0.23+ 变量名从 master/slave 改为 source/replica，用 LIKE 通配两种命名
+        run_sql "SELECT VARIABLE_NAME, VARIABLE_VALUE FROM performance_schema.global_variables WHERE VARIABLE_NAME LIKE 'rpl_semi_sync_%' ORDER BY VARIABLE_NAME;"
     fi
 
     section "04" "Semi sync status"
     if [[ "$DB_VERSION" == "5.6" ]]; then
         run_sql "SELECT * FROM INFORMATION_SCHEMA.GLOBAL_STATUS WHERE VARIABLE_NAME LIKE 'rpl_semi%';"
     else
-        run_sql "SELECT * FROM performance_schema.global_status WHERE VARIABLE_NAME LIKE 'rpl_semi%';"
+        run_sql "SELECT VARIABLE_NAME, VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME LIKE 'rpl_semi_sync_%' ORDER BY VARIABLE_NAME;"
     fi
 
     section "04" "Replication threads"
@@ -834,7 +993,7 @@ AND A.table_type='BASE TABLE' AND B.table_name IS NULL;"
     run_sql "SELECT * FROM information_schema.ENGINES;"
 
     section "05" "innodb_tablespaces (含 ibtmp1)"
-    if [[ "$DB_VERSION" == "8.0" ]]; then
+    if mysql_ver_ge 8 0; then
         run_sql "SELECT SPACE, NAME, FLAG, FILE_SIZE, ALLOCATED_SIZE, AUTOEXTEND_SIZE FROM information_schema.INNODB_TABLESPACES WHERE NAME LIKE '%ibtmp%' OR NAME='innodb_temporary';"
     else
         run_sql "SELECT * FROM INFORMATION_SCHEMA.FILES WHERE FILE_TYPE <> 'TABLESPACE' OR TABLESPACE_NAME IN ('innodb_system','innodb_temporary');"
@@ -916,14 +1075,14 @@ collect_sessions_locks() {
     run_sql "SHOW OPEN TABLES WHERE in_use > 0;"
 
     section "07" "INNODB LOCKS"
-    if [[ "$DB_VERSION" == "8.0" ]]; then
+    if mysql_ver_ge 8 0; then
         run_sql "SELECT * FROM performance_schema.data_locks LIMIT 100;" 2>/dev/null
     else
         run_sql "SELECT * FROM information_schema.innodb_locks LIMIT 100;" 2>/dev/null
     fi
 
     section "07" "INNODB LOCK WAITS"
-    if [[ "$DB_VERSION" == "8.0" ]]; then
+    if mysql_ver_ge 8 0; then
         run_sql "SELECT * FROM performance_schema.data_lock_waits LIMIT 100;" 2>/dev/null
     else
         run_sql "SELECT * FROM information_schema.innodb_lock_waits LIMIT 100;" 2>/dev/null
@@ -933,14 +1092,14 @@ collect_sessions_locks() {
     run_sql "SELECT * FROM information_schema.innodb_trx LIMIT 50;"
 
     section "07" "LOCK DETAILS (waiting & blocking)"
-    if [[ "$DB_VERSION" == "8.0" ]]; then
+    if mysql_ver_ge 8 0; then
         run_sql "SELECT r.trx_id AS waiting_trx_id, r.trx_mysql_thread_id AS waiting_thread, r.trx_query AS waiting_query, b.trx_id AS blocking_trx_id, b.trx_mysql_thread_id AS blocking_thread, b.trx_query AS blocking_query FROM performance_schema.data_lock_waits w INNER JOIN information_schema.innodb_trx b ON b.trx_id=w.BLOCKING_ENGINE_TRANSACTION_ID INNER JOIN information_schema.innodb_trx r ON r.trx_id=w.REQUESTING_ENGINE_TRANSACTION_ID LIMIT 50;" 2>/dev/null
     else
         run_sql "SELECT r.trx_id AS waiting_trx_id, r.trx_mysql_thread_id AS waiting_thread, r.trx_query AS waiting_query, b.trx_id AS blocking_trx_id, b.trx_mysql_thread_id AS blocking_thread, b.trx_query AS blocking_query FROM information_schema.innodb_lock_waits w INNER JOIN information_schema.innodb_trx b ON b.trx_id=w.blocking_trx_id INNER JOIN information_schema.innodb_trx r ON r.trx_id=w.requesting_trx_id LIMIT 50;" 2>/dev/null
     fi
 
     section "07" "Metadata locks"
-    if [[ "$DB_VERSION" != "5.6" ]]; then
+    if ! [[ "$DB_VERSION" == "5.6" ]]; then
         run_sql "SELECT * FROM performance_schema.metadata_locks LIMIT 50;" 2>/dev/null
     fi
 
@@ -1242,7 +1401,7 @@ collect_security() {
     run_sql "SHOW VARIABLES LIKE 'validate_password%';" 2>/dev/null || echo "(validate_password 插件未启用)"
 
     section "12" "InnoDB encryption status"
-    if [[ "$DB_VERSION" == "8.0" ]]; then
+    if mysql_ver_ge 8 0; then
         run_sql "SELECT SPACE, NAME, ENCRYPTION FROM information_schema.INNODB_TABLESPACES WHERE ENCRYPTION='Y' LIMIT 30;" 2>/dev/null || echo "(未启用 InnoDB 加密)"
     else
         run_sql "SELECT SPACE, NAME, FLAG FROM information_schema.INNODB_SYS_TABLESPACES WHERE FLAG & 8192 LIMIT 30;" 2>/dev/null || echo "(未启用 InnoDB 加密)"
