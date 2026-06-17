@@ -369,7 +369,7 @@ function evalBufferPoolSize(ctx) {
 function evalRedoLog(ctx) {
   const { node, cfg } = ctx;
   const logMB = _mb(node, 'innodb_log_file_size_in_mb');
-  const dbGB = Number(node.dbTotalSizeGB || 0);
+  const dbGB = parseFloat(node.dbTotalSizeGB) || 0;
   const T = cfg.thresholds?.innodb || {};
   const minMB = T.redo_log_min_mb ?? 512;
   const busyGB = T.redo_log_db_gb_busy ?? 50;
@@ -429,12 +429,12 @@ function evalMaxConnectionsVsMemory(ctx) {
 function evalDataToMemoryRatio(ctx) {
   const { node, cfg } = ctx;
   const memGB = node.memGB;
-  const dbGB = Number(node.dbTotalSizeGB || 0);
+  const dbGB = parseFloat(node.dbTotalSizeGB) || 0;
   const T = cfg.thresholds?.data_memory || {};
   const warn = T.ratio_warn ?? 10;
   const p1 = T.ratio_p1 ?? 50;
   const hotPct = T.hot_set_pct ?? 0.25;        // 经验值：活跃工作集约占全量 25%
-  if (!memGB || dbGB <= 0) return [];
+  if (!memGB || !dbGB || isNaN(dbGB) || dbGB <= 0) return [];
   const ratio = dbGB / memGB;
   if (ratio <= warn) return [];
 
