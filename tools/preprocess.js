@@ -487,6 +487,17 @@ function parseTxt(filepath) {
   const variables = getSectionAny(content, 'MySQL Variables', 'variables');
   node.variables = parseVariables(variables);
 
+  // -------- 补充变量段（VARIABLE_NAME/VARIABLE_VALUE 管道表格格式）--------
+  const suppVars = getSection(content, 'Supplementary variables');
+  if (suppVars) {
+    parseMysqlTable(suppVars).rows.forEach(r => {
+      if (r[0] && r[1] !== undefined) {
+        const key = r[0].toLowerCase();
+        if (!node.variables[key]) node.variables[key] = normalizeVarValue(r[1]);
+      }
+    });
+  }
+
   // -------- 从 my.cnf 补充 server_id（MySQL Variables 段不含）--------
   // 注意：my.cnf 中可能有多个 server_id 赋值，按 MySQL 行为后者覆盖前者，所以取最后一行
   const mycnf = getSection(content, 'my.cnf detail');
