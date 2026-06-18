@@ -1702,6 +1702,7 @@ function main() {
   }
 
   normalizeNodeRoles(nodes);
+  detectDualMaster(nodes);   // 双主：互为主从对 → 两端 primary + isDualMaster
   sortNodesPrimaryFirst(nodes);
 
   // v4.9：计算每节点的磁盘归因（binlog / slow log / error log / relay log / ibtmp1 各占多少）
@@ -1779,6 +1780,24 @@ function main() {
     console.error(`  - 已禁用规则：${hcConfig.disabledRules.join(', ')}`);
   }
   console.error(`\n下一步：必要时手工编辑 ${path.basename(outPath)}（补充项目名/重要问题判断），然后运行 render.js。`);
+}
+
+// ============== 双主识别 ==============
+function detectDualMaster(nodes) {
+  for (const a of nodes) {
+    const aMaster = a.replication?.status?.masterHost;
+    if (!a.replication?.isSlave || !aMaster) continue;
+    const b = nodes.find(n => n !== a && n.ip === aMaster);
+    if (!b) continue;
+    if (b.replication?.isSlave && b.replication?.status?.masterHost === a.ip) {
+      a.role = 'primary';
+      b.role = 'primary';
+      a.isDualMaster = true;
+      b.isDualMaster = true;
+      a.dualMasterPeer = b.ip;
+      b.dualMasterPeer = a.ip;
+    }
+  }
 }
 
 // ============== 拓扑推断 ==============
