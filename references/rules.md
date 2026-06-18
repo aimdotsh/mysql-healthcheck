@@ -422,7 +422,7 @@ innodb_doublewrite = 1
 
 **触发**：
 ```
-node.variables.expire_logs_days != '0' && node.variables.expire_logs_days > cfg.thresholds.binlog.expire_logs_max_days
+(node.variables.log_bin == 'ON' || node.variables.log_bin == '1') && node.variables.expire_logs_days != '0' && node.variables.expire_logs_days > cfg.thresholds.binlog.expire_logs_max_days
 ```
 
 **说明文本**：
@@ -447,7 +447,7 @@ node.variables.expire_logs_days != '0' && node.variables.expire_logs_days > cfg.
 
 **触发**：
 ```
-node.variables.expire_logs_days == '0'
+(node.variables.log_bin == 'ON' || node.variables.log_bin == '1') && node.variables.expire_logs_days == '0'
 ```
 
 **说明文本**：
@@ -680,7 +680,7 @@ pt-table-checksum --replicate=percona.checksums h=<primary>,u=<user>,p=<pwd>
 
 **触发**：
 ```
-node.variables.sync_binlog == '0'
+(node.variables.log_bin == 'ON' || node.variables.log_bin == '1') && node.variables.sync_binlog == '0'
 ```
 
 **说明文本**：
