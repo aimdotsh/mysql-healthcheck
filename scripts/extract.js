@@ -525,6 +525,17 @@ function parseTxt(filepath) {
     }
   }
 
+  // -------- 补充变量段（VARIABLE_NAME/VARIABLE_VALUE 管道表格格式）--------
+  const suppVars = getSection(content, 'Supplementary variables');
+  if (suppVars) {
+    parseMysqlTable(suppVars).rows.forEach(r => {
+      if (r[0] && r[1] !== undefined) {
+        const key = r[0].toLowerCase();
+        if (!node.variables[key]) node.variables[key] = normalizeVarValue(r[1]);
+      }
+    });
+  }
+
   // -------- 主从复制 --------
   const replSec = getSectionAny(content, 'MySQL Replication Info', 'replication');
   node.replication = parseReplication(replSec);
@@ -844,6 +855,10 @@ function parseTxt(filepath) {
   const emptyPwdSec = getSection(content, 'Users with empty password');
   if (emptyPwdSec || hasSection(content, 'Users with empty password')) {
     node.emptyPasswordUsers = parseMysqlTable(emptyPwdSec).rows.map(r => ({ user: r[0], host: r[1] }));
+  }
+  const weakPwdSec = getSection(content, 'Users with weak password');
+  if (weakPwdSec || hasSection(content, 'Users with weak password')) {
+    node.weakPasswordUsers = parseMysqlTable(weakPwdSec).rows.map(r => ({ user: r[0], host: r[1] }));
   }
   const oldAuthSec = getSection(content, 'Users with old auth plugin');
   if (oldAuthSec) {
@@ -1687,6 +1702,7 @@ function main() {
   }
 
   normalizeNodeRoles(nodes);
+  detectDualMaster(nodes);   // 双主：互为主从对 → 两端 primary + isDualMaster
   sortNodesPrimaryFirst(nodes);
 
   // v4.9：计算每节点的磁盘归因（binlog / slow log / error log / relay log / ibtmp1 各占多少）
@@ -1764,6 +1780,24 @@ function main() {
     console.error(`  - 已禁用规则：${hcConfig.disabledRules.join(', ')}`);
   }
   console.error(`\n下一步：必要时手工编辑 ${path.basename(outPath)}（补充项目名/重要问题判断），然后运行 render.js。`);
+}
+
+// ============== 双主识别 ==============
+function detectDualMaster(nodes) {
+  for (const a of nodes) {
+    const aMaster = a.replication?.status?.masterHost;
+    if (!a.replication?.isSlave || !aMaster) continue;
+    const b = nodes.find(n => n !== a && n.ip === aMaster);
+    if (!b) continue;
+    if (b.replication?.isSlave && b.replication?.status?.masterHost === a.ip) {
+      a.role = 'primary';
+      b.role = 'primary';
+      a.isDualMaster = true;
+      b.isDualMaster = true;
+      a.dualMasterPeer = b.ip;
+      b.dualMasterPeer = a.ip;
+    }
+  }
 }
 
 // ============== 拓扑推断 ==============

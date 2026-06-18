@@ -3,6 +3,20 @@
   "_doc": "performance 维度规则。dimension 由文件名推断，与 v5.0 GA 行为等价。",
   "rules": [
     {
+      "id": "file_per_table_off",
+      "scope": "node",
+      "priority": "P2",
+      "title": "innodb_file_per_table 关闭",
+      "rationale": "共享表空间（ibdata）不可收缩；DROP TABLE 不释放空间；难以做表级备份/传输。",
+      "trigger": "node.variables.innodb_file_per_table == 'OFF' || node.variables.innodb_file_per_table == '0'",
+      "groupKeyTpl": "file_per_table_off",
+      "descriptionTpl": "innodb_file_per_table = OFF — 所有表共享 ibdata，DROP TABLE 不释放磁盘空间，且无法做表级传输/备份",
+      "currentValueTpl": "OFF",
+      "recommendedValueTpl": "ON",
+      "actionTpl": "开启 innodb_file_per_table；存量表需要 OPTIMIZE TABLE 或 ALTER TABLE FORCE 才能迁移到独立表空间",
+      "sqlTpl": "SET GLOBAL innodb_file_per_table = ON;\n-- my.cnf:\ninnodb_file_per_table = 1"
+    },
+    {
       "id": "bp_hit",
       "scope": "node",
       "title": "Buffer Pool 命中率分级",

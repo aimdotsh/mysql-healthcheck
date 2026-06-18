@@ -3,6 +3,27 @@
   "_doc": "security 维度规则。dimension 由文件名推断，与 v5.0 GA 行为等价。",
   "rules": [
     {
+      "id": "validate_password_off",
+      "scope": "node",
+      "priority": "P2",
+      "title": "密码强度校验插件未启用",
+      "rationale": "无 validate_password 时用户可设任意短/简单密码；配合弱密码检测规则效果更强。",
+      "trigger": "node.hasPasswordPolicy != true",
+      "groupKeyTpl": "validate_password_off",
+      "descriptionTpl": "validate_password 插件未启用 — 用户可设置任意弱密码，与弱密码检测结果共同参考",
+      "currentValueTpl": "未启用",
+      "recommendedValueTpl": "启用 validate_password（policy=MEDIUM）",
+      "actionTpl": "安装并启用 validate_password 插件，建议 policy=MEDIUM（8 字符 + 数字 + 大小写 + 特殊字符）",
+      "sqlTpl": "-- MySQL 5.7:\nINSTALL PLUGIN validate_password SONAME 'validate_password.so';\nSET GLOBAL validate_password_policy = MEDIUM;\nSET GLOBAL validate_password_length = 8;\n-- MySQL 8.0+:\nINSTALL COMPONENT 'file://component_validate_password';\nSET GLOBAL validate_password.policy = MEDIUM;\nSET GLOBAL validate_password.length = 8;"
+    },
+    {
+      "id": "weak_password",
+      "scope": "node",
+      "title": "弱密码账号（库内字典比对，哈希不出库）",
+      "rationale": "常见弱密码账号是入侵突破口；仅检测 mysql_native_password，caching_sha2 加盐不可离线比对。",
+      "handler": "evalWeakPassword"
+    },
+    {
       "id": "auth_plugin_native_on_80",
       "scope": "node",
       "priority": "P2",
