@@ -4,3 +4,4 @@ node_modules/
 data.json
 *.docx
 ykt_v*.zip
+dist/mysql-healthcheck-linux-x64

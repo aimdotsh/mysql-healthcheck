@@ -1,0 +1,33 @@
+{
+  "name": "mysql-healthcheck",
+  "version": "2.1.0",
+  "private": true,
+  "description": "MySQL 巡检报告生成器（txt → docx，50 条规则，内嵌 10 张图表）",
+  "bin": {
+    "mysql-healthcheck": "scripts/cli.js"
+  },
+  "scripts": {
+    "build": "node scripts/cli.js",
+    "build:bin": "pkg . --targets node18-linux-x64 --output dist/mysql-healthcheck-linux-x64 --compress GZip"
+  },
+  "pkg": {
+    "scripts": [
+      "scripts/**/*.js"
+    ],
+    "assets": [
+      "scripts/rules/*.json",
+      "scripts/config/*.json",
+      "scripts/assets/**"
+    ],
+    "targets": [
+      "node18-linux-x64"
+    ],
+    "outputPath": "dist"
+  },
+  "devDependencies": {
+    "pkg": "^5.8.1"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}
