@@ -169,7 +169,7 @@ cnf_get() {
             sub(/[[:space:]]*[#;].*$/, "", line)
             if (line ~ "^[[:space:]]*" key "[[:space:]]*=") {
                 sub("^[[:space:]]*" key "[[:space:]]*=[[:space:]]*", "", line)
-                gsub(/^[\"\047]|[\"\047]$/, "", line)
+                gsub(/^["\047]|["\047]$/, "", line)
                 found = line
             }
         }
