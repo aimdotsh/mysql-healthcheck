@@ -169,7 +169,7 @@ cnf_get() {
             sub(/[[:space:]]*[#;].*$/, "", line)
             if (line ~ "^[[:space:]]*" key "[[:space:]]*=") {
                 sub("^[[:space:]]*" key "[[:space:]]*=[[:space:]]*", "", line)
-                gsub(/^[\"\047]|[\"\047]$/, "", line)
+                gsub(/^["\047]|["\047]$/, "", line)
                 found = line
             }
         }
@@ -708,7 +708,11 @@ collect_mysql_basic() {
     run_sql "SELECT PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_STATUS, PLUGIN_TYPE, PLUGIN_LIBRARY, LOAD_OPTION FROM INFORMATION_SCHEMA.PLUGINS WHERE PLUGIN_STATUS='ACTIVE';"
 
     section "02" "Database basic info"
-    run_sql "SELECT NOW() AS now_date,USER() AS user,CURRENT_USER() AS current_user1,CONNECTION_ID() AS connection_id,DATABASE() AS db_name,VERSION() AS version,@@datadir AS datadir,@@socket AS socket,@@server_id AS server_id,@@server_uuid AS server_uuid,@@log_error AS log_error;"
+    if [[ "$IS_MARIADB" -eq 1 ]]; then
+        run_sql "SELECT NOW() AS now_date,USER() AS user,CURRENT_USER() AS current_user1,CONNECTION_ID() AS connection_id,DATABASE() AS db_name,VERSION() AS version,@@datadir AS datadir,@@socket AS socket,@@server_id AS server_id,'' AS server_uuid,@@log_error AS log_error;"
+    else
+        run_sql "SELECT NOW() AS now_date,USER() AS user,CURRENT_USER() AS current_user1,CONNECTION_ID() AS connection_id,DATABASE() AS db_name,VERSION() AS version,@@datadir AS datadir,@@socket AS socket,@@server_id AS server_id,@@server_uuid AS server_uuid,@@log_error AS log_error;"
+    fi
 }
 
 ###############################################################################
@@ -730,7 +734,6 @@ collect_variables() {
 @@global.innodb_purge_threads,
 @@global.innodb_read_io_threads,
 @@global.innodb_write_io_threads,
-@@global.innodb_buffer_pool_instances,
 @@global.innodb_log_buffer_size/1024/1024 AS innodb_log_buffer_size_in_mb,
 @@global.wait_timeout,
 @@global.interactive_timeout,
@@ -780,6 +783,11 @@ collect_variables() {
         sql+=",@@global.innodb_temp_data_file_path"
     fi
 
+    # innodb_buffer_pool_instances：MySQL 专有，MariaDB 10.6+ 已移除
+    if [[ "$IS_MARIADB" -eq 0 ]]; then
+        sql+=",@@global.innodb_buffer_pool_instances"
+    fi
+
     # GTID：MySQL 专有 gtid_mode / enforce_gtid_consistency；MariaDB GTID 模型不同（gtid_strict_mode 等），此处跳过避免报错
     if [[ "$IS_MARIADB" -eq 0 ]]; then
         sql+=",@@global.gtid_mode,@@global.enforce_gtid_consistency"
@@ -802,8 +810,11 @@ collect_variables() {
     fi
 
     # innodb_log_file_size 在 MySQL 8.0.30+ 废弃，改由 innodb_redo_log_capacity 控制；MariaDB 仍用 innodb_log_file_size
+    # innodb_log_files_in_group：MariaDB 11.x 已移除，仅 MySQL 采集
     if mysql8_full_ge 8 0 30; then
         sql+=",@@global.innodb_redo_log_capacity/1024/1024 AS innodb_redo_log_capacity_in_mb"
+    elif [[ "$IS_MARIADB" -eq 1 ]]; then
+        sql+=",@@global.innodb_log_file_size/1024/1024 AS innodb_log_file_size_in_mb"
     else
         sql+=",@@global.innodb_log_file_size/1024/1024 AS innodb_log_file_size_in_mb"
         sql+=",@@global.innodb_log_files_in_group"
@@ -832,7 +843,9 @@ collect_variables() {
     fi
 
     section "03" "Performance schema sizing"
-    run_sql "SELECT * FROM performance_schema.global_variables WHERE VARIABLE_NAME LIKE 'performance_schema_%' LIMIT 30;" 2>/dev/null
+    if [[ "$IS_MARIADB" -eq 0 ]]; then
+        run_sql "SELECT * FROM performance_schema.global_variables WHERE VARIABLE_NAME LIKE 'performance_schema_%' LIMIT 30;" 2>/dev/null
+    fi
 
     section "03" "Supplementary variables"
     if [[ "$DB_VERSION" == "5.6" || "$IS_MARIADB" -eq 1 ]]; then
@@ -881,10 +894,12 @@ collect_replication() {
     run_sql "SHOW BINARY LOGS;"
 
     section "04" "GTID sets"
-    run_sql "SELECT @@global.gtid_executed AS gtid_executed, @@global.gtid_purged AS gtid_purged;" 2>/dev/null
+    if [[ "$IS_MARIADB" -eq 0 ]]; then
+        run_sql "SELECT @@global.gtid_executed AS gtid_executed, @@global.gtid_purged AS gtid_purged;" 2>/dev/null
+    fi
 
     section "04" "Semi sync variables"
-    if [[ "$DB_VERSION" == "5.6" ]]; then
+    if [[ "$DB_VERSION" == "5.6" || "$IS_MARIADB" -eq 1 ]]; then
         run_sql "SELECT * FROM INFORMATION_SCHEMA.GLOBAL_VARIABLES WHERE VARIABLE_NAME LIKE 'rpl_semi%';"
     else
         # 8.0.23+ 变量名从 master/slave 改为 source/replica，用 LIKE 通配两种命名
@@ -904,13 +919,13 @@ collect_replication() {
     fi
 
     section "04" "Replication group members"
-    if [[ "$DB_VERSION" != "5.6" ]]; then
+    if [[ "$DB_VERSION" != "5.6" && "$IS_MARIADB" -eq 0 ]]; then
         run_sql "SELECT * FROM performance_schema.replication_group_members;" 2>/dev/null
         run_sql_vert "SELECT * FROM performance_schema.replication_group_member_stats" 2>/dev/null
     fi
 
     section "04" "Replication connection status"
-    if [[ "$DB_VERSION" != "5.6" ]]; then
+    if [[ "$DB_VERSION" != "5.6" && "$IS_MARIADB" -eq 0 ]]; then
         run_sql_vert "SELECT * FROM performance_schema.replication_connection_status" 2>/dev/null
         run_sql_vert "SELECT * FROM performance_schema.replication_applier_status_by_worker" 2>/dev/null
     fi
@@ -1047,10 +1062,10 @@ AND A.table_type='BASE TABLE' AND B.table_name IS NULL;"
     run_sql "SELECT * FROM information_schema.ENGINES;"
 
     section "05" "innodb_tablespaces (含 ibtmp1)"
-    if mysql_ver_ge 8 0; then
+    if mysql8_ver_ge 8 0; then
         run_sql "SELECT SPACE, NAME, FLAG, FILE_SIZE, ALLOCATED_SIZE, AUTOEXTEND_SIZE FROM information_schema.INNODB_TABLESPACES WHERE NAME LIKE '%ibtmp%' OR NAME='innodb_temporary';"
     else
-        run_sql "SELECT * FROM INFORMATION_SCHEMA.FILES WHERE FILE_TYPE <> 'TABLESPACE' OR TABLESPACE_NAME IN ('innodb_system','innodb_temporary');"
+        run_sql "SELECT * FROM INFORMATION_SCHEMA.FILES WHERE FILE_TYPE <> 'TABLESPACE' OR TABLESPACE_NAME IN ('innodb_system','innodb_temporary');" 2>/dev/null
     fi
 
     section "05" "Supported character sets"
@@ -1070,6 +1085,8 @@ collect_users() {
     section "06" "user check"
     if [[ "$DB_VERSION" == "5.6" ]]; then
         run_sql "SELECT user, host, password_expired FROM mysql.user;"
+    elif [[ "$IS_MARIADB" -eq 1 ]]; then
+        run_sql "SELECT user, host, password_expired, plugin FROM mysql.user;"
     else
         run_sql "SELECT user, host, password_expired, password_last_changed, password_lifetime, account_locked, plugin FROM mysql.user;"
     fi
@@ -1083,7 +1100,7 @@ Create_user_priv
 FROM mysql.user;"
 
     section "06" "password check (expire within 30 days)"
-    if [[ "$DB_VERSION" != "5.6" ]]; then
+    if [[ "$DB_VERSION" != "5.6" && "$IS_MARIADB" -eq 0 ]]; then
         run_sql "SELECT CONCAT(USER,'@',HOST) AS user_host, DATE_ADD(password_last_changed, INTERVAL password_lifetime DAY) AS expire_time
 FROM mysql.user
 WHERE password_lifetime IS NOT NULL
@@ -1111,7 +1128,11 @@ AND DATEDIFF(DATE_ADD(password_last_changed, INTERVAL password_lifetime DAY), NO
 
     # connection_control 暴力破解防护插件（未安装则两段为空）
     section "06" "connection_control variables"
-    run_sql "SELECT * FROM performance_schema.global_variables WHERE VARIABLE_NAME LIKE 'connection_control%';" 2>/dev/null
+    if [[ "$DB_VERSION" == "5.6" || "$IS_MARIADB" -eq 1 ]]; then
+        run_sql "SELECT * FROM INFORMATION_SCHEMA.GLOBAL_VARIABLES WHERE VARIABLE_NAME LIKE 'connection_control%';" 2>/dev/null
+    else
+        run_sql "SELECT * FROM performance_schema.global_variables WHERE VARIABLE_NAME LIKE 'connection_control%';" 2>/dev/null
+    fi
     section "06" "connection_control failed login attempts"
     run_sql "SELECT * FROM information_schema.connection_control_failed_login_attempts;" 2>/dev/null
 }
@@ -1133,7 +1154,7 @@ collect_sessions_locks() {
     run_sql "SELECT * FROM information_schema.PROCESSLIST WHERE command = 'Sleep' ORDER BY time DESC LIMIT 20;"
 
     section "07" "Threads info (no sleep, perf_schema)"
-    if [[ "$DB_VERSION" != "5.6" ]]; then
+    if [[ "$DB_VERSION" != "5.6" && "$IS_MARIADB" -eq 0 ]]; then
         run_sql "SELECT THREAD_ID, NAME, TYPE, PROCESSLIST_ID, PROCESSLIST_USER, PROCESSLIST_HOST, PROCESSLIST_DB, PROCESSLIST_COMMAND, PROCESSLIST_TIME, PROCESSLIST_STATE FROM performance_schema.threads WHERE TYPE <> 'BACKGROUND' AND PROCESSLIST_COMMAND <> 'Sleep' AND PROCESSLIST_ID <> CONNECTION_ID();"
     fi
 
@@ -1141,14 +1162,14 @@ collect_sessions_locks() {
     run_sql "SHOW OPEN TABLES WHERE in_use > 0;"
 
     section "07" "INNODB LOCKS"
-    if mysql_ver_ge 8 0; then
+    if mysql8_ver_ge 8 0; then
         run_sql "SELECT * FROM performance_schema.data_locks LIMIT 100;" 2>/dev/null
     else
         run_sql "SELECT * FROM information_schema.innodb_locks LIMIT 100;" 2>/dev/null
     fi
 
     section "07" "INNODB LOCK WAITS"
-    if mysql_ver_ge 8 0; then
+    if mysql8_ver_ge 8 0; then
         run_sql "SELECT * FROM performance_schema.data_lock_waits LIMIT 100;" 2>/dev/null
     else
         run_sql "SELECT * FROM information_schema.innodb_lock_waits LIMIT 100;" 2>/dev/null
@@ -1158,19 +1179,19 @@ collect_sessions_locks() {
     run_sql "SELECT * FROM information_schema.innodb_trx LIMIT 50;"
 
     section "07" "LOCK DETAILS (waiting & blocking)"
-    if mysql_ver_ge 8 0; then
+    if mysql8_ver_ge 8 0; then
         run_sql "SELECT r.trx_id AS waiting_trx_id, r.trx_mysql_thread_id AS waiting_thread, r.trx_query AS waiting_query, b.trx_id AS blocking_trx_id, b.trx_mysql_thread_id AS blocking_thread, b.trx_query AS blocking_query FROM performance_schema.data_lock_waits w INNER JOIN information_schema.innodb_trx b ON b.trx_id=w.BLOCKING_ENGINE_TRANSACTION_ID INNER JOIN information_schema.innodb_trx r ON r.trx_id=w.REQUESTING_ENGINE_TRANSACTION_ID LIMIT 50;" 2>/dev/null
     else
         run_sql "SELECT r.trx_id AS waiting_trx_id, r.trx_mysql_thread_id AS waiting_thread, r.trx_query AS waiting_query, b.trx_id AS blocking_trx_id, b.trx_mysql_thread_id AS blocking_thread, b.trx_query AS blocking_query FROM information_schema.innodb_lock_waits w INNER JOIN information_schema.innodb_trx b ON b.trx_id=w.blocking_trx_id INNER JOIN information_schema.innodb_trx r ON r.trx_id=w.requesting_trx_id LIMIT 50;" 2>/dev/null
     fi
 
     section "07" "Metadata locks"
-    if ! [[ "$DB_VERSION" == "5.6" ]]; then
+    if [[ "$DB_VERSION" != "5.6" && "$IS_MARIADB" -eq 0 ]]; then
         run_sql "SELECT * FROM performance_schema.metadata_locks LIMIT 50;" 2>/dev/null
     fi
 
     section "07" "Lock status counters"
-    if [[ "$DB_VERSION" == "5.6" ]]; then
+    if [[ "$DB_VERSION" == "5.6" || "$IS_MARIADB" -eq 1 ]]; then
         run_sql "SELECT * FROM INFORMATION_SCHEMA.GLOBAL_STATUS WHERE VARIABLE_NAME LIKE '%lock%';"
     else
         run_sql "SELECT * FROM performance_schema.global_status WHERE VARIABLE_NAME LIKE '%lock%';"
@@ -1203,7 +1224,9 @@ collect_innodb() {
     run_sql_vert "SHOW ENGINE INNODB STATUS"
 
     section "08" "InnoDB key metrics (filtered)"
-    run_sql "SELECT name, count, subsystem FROM information_schema.innodb_metrics WHERE status='enabled' AND subsystem IN ('buffer','transaction','dml','lock','adaptive_hash_index','recovery','log','cpu') ORDER BY count DESC LIMIT 80;" 2>/dev/null
+    if [[ "$IS_MARIADB" -eq 0 ]]; then
+        run_sql "SELECT name, count, subsystem FROM information_schema.innodb_metrics WHERE status='enabled' AND subsystem IN ('buffer','transaction','dml','lock','adaptive_hash_index','recovery','log','cpu') ORDER BY count DESC LIMIT 80;" 2>/dev/null
+    fi
 
     section "08" "InnoDB buffer pool stats (per pool)"
     if [[ "$DB_VERSION" != "5.6" ]]; then
@@ -1495,7 +1518,9 @@ collect_security() {
     run_sql "SHOW VARIABLES LIKE 'validate_password%';" 2>/dev/null || echo "(validate_password 插件未启用)"
 
     section "12" "InnoDB encryption status"
-    if mysql_ver_ge 8 0; then
+    if [[ "$IS_MARIADB" -eq 1 ]]; then
+        echo "(MariaDB InnoDB 加密状态见下方变量)"
+    elif mysql_ver_ge 8 0; then
         run_sql "SELECT SPACE, NAME, ENCRYPTION FROM information_schema.INNODB_TABLESPACES WHERE ENCRYPTION='Y' LIMIT 30;" 2>/dev/null || echo "(未启用 InnoDB 加密)"
     else
         run_sql "SELECT SPACE, NAME, FLAG FROM information_schema.INNODB_SYS_TABLESPACES WHERE FLAG & 8192 LIMIT 30;" 2>/dev/null || echo "(未启用 InnoDB 加密)"
