@@ -1,0 +1,42 @@
+name: release-binary
+on:
+  push:
+    tags: ['ykt-v*']
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '18' }
+      - name: Install scripts dependencies
+        run: cd scripts && npm install
+      - name: Build binary
+        run: npm run build:bin
+      - name: Upload Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/mysql-healthcheck-linux-x64
+          name: "mysql-healthcheck ${{ github.ref_name }}"
+          body: |
+            ## mysql-healthcheck Linux 二进制
+
+            零依赖，直接在 Linux x64 上运行，支持输出 Word / Markdown / HTML 三种格式。
+
+            ### 下载
+            ```bash
+            curl -L https://github.com/aimdotsh/mysql-healthcheck/releases/download/${{ github.ref_name }}/mysql-healthcheck-linux-x64 \
+                 -o mysql-healthcheck-linux-x64
+            chmod +x mysql-healthcheck-linux-x64
+            ```
+
+            ### 用法
+            ```bash
+            # 生成全部格式（docx + md + html）
+            ./mysql-healthcheck-linux-x64 /path/to/巡检目录
+
+            # 只生成 Word
+            ./mysql-healthcheck-linux-x64 /path/to/巡检目录 --format docx
+            ```
