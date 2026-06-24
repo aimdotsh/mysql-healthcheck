@@ -89,14 +89,96 @@ function svgGauge(score) {
 }
 
 function svgTopology(nodes) {
+  const isDM = nodes.some(n => n.isDualMaster);
+
+  // 双主专用 SVG：双向箭头
+  if (isDM) {
+    const dmNodes = nodes.filter(n => n.isDualMaster);
+    const others  = nodes.filter(n => !n.isDualMaster);
+    const nodeW = 200, nodeH = 60;
+    const width = 680, height = 260;
+    const lx = 40, rx = width - 40 - nodeW;
+    const topY = 60, botY = 170;
+    const lMid = lx + nodeW / 2, rMid = rx + nodeW / 2;
+    const rowMid = topY + nodeH / 2;
+    const lines = [
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`,
+      '<style>text { font-family: "Microsoft YaHei", Arial, sans-serif; }</style>',
+      `<rect width="${width}" height="${height}" fill="#FFFFFF"/>`,
+      '<defs>',
+      '<marker id="arrowR" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#EF4444"/></marker>',
+      '<marker id="arrowL" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#EF4444"/></marker>',
+      '<marker id="arrowS" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#2E75B6"/></marker>',
+      '</defs>',
+    ];
+
+    // 双主节点盒子
+    const dmA = dmNodes[0], dmB = dmNodes[1] || dmNodes[0];
+    const sidA = dmA?.variables?.server_id || '-';
+    const sidB = dmB?.variables?.server_id || '-';
+    const roA  = dmA?.variables?.read_only;
+    const roB  = dmB?.variables?.read_only;
+    const roLabelA = roA === '0' || roA == null ? '可写' : '只读';
+    const roLabelB = roB === '0' || roB == null ? '可写' : '只读';
+    const fillA = '#7F1D1D', fillB = '#7F1D1D'; // 危险红
+
+    lines.push(
+      `<rect x="${lx}" y="${topY}" width="${nodeW}" height="${nodeH}" rx="8" fill="${fillA}" stroke="#EF4444" stroke-width="2"/>`,
+      `<text x="${lMid}" y="${topY + 24}" text-anchor="middle" font-size="13" font-weight="bold" fill="#FFFFFF">${esc(dmA.ip)}</text>`,
+      `<text x="${lMid}" y="${topY + 42}" text-anchor="middle" font-size="11" fill="#FCA5A5">主库 · server_id=${esc(sidA)} · ${roLabelA}</text>`,
+      `<rect x="${rx}" y="${topY}" width="${nodeW}" height="${nodeH}" rx="8" fill="${fillB}" stroke="#EF4444" stroke-width="2"/>`,
+      `<text x="${rMid}" y="${topY + 24}" text-anchor="middle" font-size="13" font-weight="bold" fill="#FFFFFF">${esc(dmB.ip)}</text>`,
+      `<text x="${rMid}" y="${topY + 42}" text-anchor="middle" font-size="11" fill="#FCA5A5">主库 · server_id=${esc(sidB)} · ${roLabelB}</text>`,
+    );
+
+    // 双向箭头（上行 A→B，下行 B→A）
+    const ax1 = lx + nodeW, ax2 = rx, ay = rowMid - 8;
+    const bx1 = rx,         bx2 = lx + nodeW, by = rowMid + 8;
+    lines.push(
+      `<line x1="${ax1}" y1="${ay}" x2="${ax2}" y2="${ay}" stroke="#EF4444" stroke-width="2" marker-end="url(#arrowR)"/>`,
+      `<text x="${((ax1+ax2)/2).toFixed(0)}" y="${ay-5}" text-anchor="middle" font-size="10" fill="#EF4444">⟶ async replication</text>`,
+      `<line x1="${bx1}" y1="${by}" x2="${bx2}" y2="${by}" stroke="#EF4444" stroke-width="2" marker-end="url(#arrowL)"/>`,
+      `<text x="${((bx1+bx2)/2).toFixed(0)}" y="${by+12}" text-anchor="middle" font-size="10" fill="#EF4444">⟵ async replication</text>`,
+    );
+
+    // 警告标签
+    lines.push(
+      `<text x="${width/2}" y="${topY + nodeH + 28}" text-anchor="middle" font-size="12" font-weight="bold" fill="#EF4444">⚠ 双主（互为主从）架构 — 存在脑裂风险，请确认写端隔离</text>`,
+    );
+
+    // 下游从库
+    let slX = 40;
+    for (const sl of others) {
+      const sid = sl.variables?.server_id || '-';
+      const mx = slX + nodeW / 2;
+      const masterIp = sl.replication?.status?.masterHost || '-';
+      lines.push(
+        `<rect x="${slX}" y="${botY}" width="${nodeW}" height="${nodeH}" rx="8" fill="#2E75B6" stroke="#1F4E79" stroke-width="1.5"/>`,
+        `<text x="${mx}" y="${botY + 24}" text-anchor="middle" font-size="13" font-weight="bold" fill="#FFFFFF">${esc(sl.ip)}</text>`,
+        `<text x="${mx}" y="${botY + 42}" text-anchor="middle" font-size="11" fill="#FFFFFF">从库 · server_id=${esc(sid)}</text>`,
+      );
+      const masterNode = nodes.find(n => n.ip === masterIp);
+      if (masterNode) {
+        const mCx = masterNode.isDualMaster && nodes.indexOf(masterNode) === 0 ? lx + nodeW / 2
+          : masterNode.isDualMaster ? rMid : lMid;
+        lines.push(`<line x1="${mx}" y1="${botY}" x2="${mCx}" y2="${topY + nodeH}" stroke="#2E75B6" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrowS)"/>`);
+      }
+      slX += nodeW + 20;
+    }
+
+    lines.push('</svg>');
+    return lines.join('\n');
+  }
+
+  // 普通主从 SVG
   const primary = nodes.find(n => n.role === 'primary');
-  const slaves = nodes.filter(n => n.replication && n.replication.isSlave);
+  const slaves = nodes.filter(n => n.replication && n.replication.isSlave && n !== primary);
   if (!primary && !slaves.length) return null;
 
   const nodeW = 190, nodeH = 52, nodeY = 84;
   const primaryX = 55;
   const width = 620;
-  const roleLabel = n => ({ primary: '主库', slave: '从库', dr: '灾备' }[n.role] || n.role || '节点');
+  const rlabel = n => ({ primary: '主库', slave: '从库', dr: '灾备' }[n.role] || n.role || '节点');
   const lines = [];
 
   lines.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="220" viewBox="0 0 ${width} 220">`,
@@ -109,7 +191,7 @@ function svgTopology(nodes) {
     const mx = primaryX + nodeW / 2;
     lines.push(`<rect x="${primaryX}" y="${nodeY}" width="${nodeW}" height="${nodeH}" rx="8" fill="#1F4E79" stroke="#1F4E79" stroke-width="1.5"/>`,
       `<text x="${mx}" y="${nodeY + 22}" text-anchor="middle" font-size="13" font-weight="bold" fill="#FFFFFF">${esc(primary.ip)}</text>`,
-      `<text x="${mx}" y="${nodeY + 42}" text-anchor="middle" font-size="11" fill="#FFFFFF">${roleLabel(primary)} · server_id=${esc(sid)}</text>`);
+      `<text x="${mx}" y="${nodeY + 42}" text-anchor="middle" font-size="11" fill="#FFFFFF">${rlabel(primary)} · server_id=${esc(sid)}</text>`);
   }
 
   let slaveX = primaryX + nodeW + 95;
@@ -123,7 +205,7 @@ function svgTopology(nodes) {
     lines.push(
       `<rect x="${slaveX}" y="${nodeY}" width="${nodeW}" height="${nodeH}" rx="8" fill="#2E75B6" stroke="#1F4E79" stroke-width="1.5"/>`,
       `<text x="${mx}" y="${nodeY + 22}" text-anchor="middle" font-size="13" font-weight="bold" fill="#FFFFFF">${esc(slave.ip)}</text>`,
-      `<text x="${mx}" y="${nodeY + 42}" text-anchor="middle" font-size="11" fill="#FFFFFF">${roleLabel(slave)} · server_id=${esc(sid)}</text>`);
+      `<text x="${mx}" y="${nodeY + 42}" text-anchor="middle" font-size="11" fill="#FFFFFF">${rlabel(slave)} · server_id=${esc(sid)}</text>`);
     slaveX += nodeW + 20;
   }
 
@@ -305,29 +387,104 @@ callout('info', '本章小结：展示 MySQL 版本、运行时长及关键启�
 // ── Ch4 集群拓扑 ──────────────────────────────────────────────────────────────
 h('<h2>第四章 集群拓扑</h2>');
 const topoSvg = svgTopology(nodes);
+const isDM = nodes.some(n => n.isDualMaster);
 if (topoSvg) {
-  const slaveCount = nodes.filter(n => n.replication?.isSlave).length;
-  const isDM = nodes.some(n => n.isDualMaster);
-  const topoDesc = isDM ? '双主配置（高危）' : `一主${slaveCount}从（${slaveCount > 0 ? '异步复制' : '单节点'}）`;
+  const slaveCount = nodes.filter(n => n.replication?.isSlave && !n.isDualMaster).length;
+  const topoDesc = isDM ? '双主（互为主从）架构' : `一主${slaveCount}从（${slaveCount > 0 ? '异步复制' : '单节点'}）`;
   fig(topoSvg, `集群拓扑：${topoDesc}`);
 }
-tbl(['节点', '角色', '主机'],
-  nodes.map(n => [nodeLabel(n), n.role || '-', n.hostname || '-']));
+tbl(['节点', '角色', '主机', 'server_id', 'read_only'],
+  nodes.map(n => [
+    nodeLabel(n), n.role || '-', n.hostname || '-',
+    n.variables?.server_id ?? '-',
+    n.variables?.read_only ?? '-',
+  ]));
 h('<h3>复制基础信息</h3>');
-tbl(['节点', 'server_id', 'server_uuid', 'binlog 格式', 'log_bin'],
+tbl(['节点', 'server_id', 'binlog 格式', 'log_bin', 'gtid_mode'],
   nodes.map(n => [
     nodeLabel(n),
     n.variables?.server_id ?? '-',
-    n.variables?.server_uuid ?? '-',
     n.variables?.binlog_format ?? '-',
     n.variables?.log_bin ?? '-',
+    n.variables?.gtid_mode ?? '-',
   ]));
+
+// 双主专项分析
+if (isDM) {
+  const dmNodes = nodes.filter(n => n.isDualMaster);
+  h('<h3>4.1 双主架构专项分析</h3>');
+  callout('crit', '当前集群为双主（互为主从）架构，两端均同时配置为对方的从库。此架构存在脑裂风险：任何一端发生双写同一行将导致主键冲突、复制中断及数据分叉，需严格管控写端隔离。');
+
+  h('<h4>脑裂风险评估</h4>');
+  const bothWritable = dmNodes.every(n => (n.variables?.read_only ?? '0') === '0');
+  const eitherWritable = dmNodes.some(n => (n.variables?.read_only ?? '0') === '0');
+  if (bothWritable) {
+    callout('crit', '两端均 read_only=0（均可写），脑裂风险极高。建议将备用端设为 read_only=1+super_read_only=1，或通过应用层严格保证只写单端。');
+  } else if (eitherWritable) {
+    callout('warn', '一端 read_only=0（可写）、一端 read_only=1（只读），符合「伪双主」安全模式，但需持续监控只读端不被误改为可写。');
+  } else {
+    callout('ok', '两端均 read_only=1，当前无脑裂风险（纯备用待切换状态）。');
+  }
+
+  h('<h4>双主关键参数对照</h4>');
+  tbl(['参数', ...dmNodes.map(n => n.ip)], [
+    ['read_only',               ...dmNodes.map(n => n.variables?.read_only ?? '未知')],
+    ['super_read_only',         ...dmNodes.map(n => n.variables?.super_read_only ?? '-')],
+    ['auto_increment_increment',...dmNodes.map(n => n.variables?.auto_increment_increment ?? '1（默认，高风险）')],
+    ['auto_increment_offset',   ...dmNodes.map(n => n.variables?.auto_increment_offset ?? '1（默认）')],
+    ['log_slave_updates',       ...dmNodes.map(n => n.variables?.log_slave_updates ?? n.variables?.log_replica_updates ?? '-')],
+    ['skip_slave_start',        ...dmNodes.map(n => n.variables?.skip_slave_start ?? n.variables?.skip_replica_start ?? '-')],
+    ['server_id',               ...dmNodes.map(n => n.variables?.server_id ?? '-')],
+  ]);
+
+  h('<h4>双主同步状态</h4>');
+  tbl(['节点', 'IO 线程', 'SQL 线程', '延迟(s)', '对端主库', 'Last SQL Error'],
+    dmNodes.map(n => {
+      const st = n.replication?.status || {};
+      const err = String(st.lastSqlError || '').slice(0, 80);
+      return [
+        n.ip,
+        st.slaveIoRunning  || '-',
+        st.slaveSqlRunning || '-',
+        st.secondsBehindMaster ?? '-',
+        st.masterHost || n.dualMasterPeer || '-',
+        err || '（无）',
+      ];
+    }));
+
+  const ioDown = dmNodes.filter(n => n.replication?.status?.slaveIoRunning === 'No');
+  const sqlDown = dmNodes.filter(n => n.replication?.status?.slaveSqlRunning === 'No');
+  if (ioDown.length || sqlDown.length) {
+    const ioMsg = ioDown.length ? `IO 线程已断：${ioDown.map(n=>n.ip).join('、')}；` : '';
+    const sqlMsg = sqlDown.length ? `SQL 线程已断：${sqlDown.map(n=>n.ip).join('、')}` : '';
+    callout('crit', `双主复制异常：${ioMsg}${sqlMsg}。IO 线程断开意味着两端已停止同步；SQL 线程断开意味着接收的 binlog 未被应用，可能有数据分叉风险。`);
+  } else {
+    callout('ok', '双主两端 IO 线程与 SQL 线程均运行正常，当前无明显复制中断。');
+  }
+
+  h('<h4>双主架构风险清单</h4>');
+  h('<ul>');
+  h('<li><strong>脑裂（Split-Brain）</strong>：两端同时接受写入同一行 → 主键冲突 → SQL 线程停止 → 数据分叉，需人工介入</li>');
+  h('<li><strong>自增主键碰撞</strong>：未设 auto_increment_increment=2 / offset 不同 → 两端生成相同 AUTO_INCREMENT 值</li>');
+  h('<li><strong>复制风暴</strong>：log_slave_updates=OFF 时，来自对端的事务不进本端 binlog，下游从库数据不完整</li>');
+  h('<li><strong>DDL 风险</strong>：两端同时执行 DDL 可能造成复制永久中断，DDL 必须在停写窗口单端执行</li>');
+  h('<li><strong>无 HA 保护</strong>：双主不等于高可用，建议配合 MHA / Orchestrator 进行 VIP 漂移和写端自动切换</li>');
+  h('</ul>');
+
+  h('<h4>双主参数推荐配置</h4>');
+  const dmA = dmNodes[0], dmB = dmNodes[1];
+  h(`<pre><code># ${esc(dmA?.ip || '节点A')}（offset=1）\nauto_increment_increment = 2\nauto_increment_offset    = 1\nlog_slave_updates        = ON\nskip_slave_start         = ON   # 重启后需手动 START SLAVE\nread_only                = OFF  # 主写端\nsuper_read_only          = OFF\n\n# ${esc(dmB?.ip || '节点B')}（offset=2）\nauto_increment_increment = 2\nauto_increment_offset    = 2\nlog_slave_updates        = ON\nskip_slave_start         = ON\nread_only                = ON   # 备用端只读（伪双主推荐）\nsuper_read_only          = ON</code></pre>`);
+}
+
 {
-  const sc = nodes.filter(n => n.replication?.isSlave).length;
-  const isDM = nodes.some(n => n.isDualMaster);
-  const desc = isDM ? '双主' : `一主${sc}从`;
-  const repDesc = sc > 0 ? '异步复制' : '单节点';
-  callout('info', `本章小结：拓扑结构为「${desc}（${repDesc}）」，共 ${nodes.length} 个节点；详细复制状态见第十二章。`);
+  const sc = nodes.filter(n => n.replication?.isSlave && !n.isDualMaster).length;
+  const desc = isDM ? '双主（互为主从）' : `一主${sc}从`;
+  const repDesc = isDM ? '双向异步复制' : (sc > 0 ? '异步复制' : '单节点');
+  if (isDM) {
+    callout('crit', `本章小结：拓扑结构为「${desc}」，共 ${nodes.length} 个节点；双主架构存在脑裂风险，详见上方 4.1 双主专项分析与第十六章行动计划。`);
+  } else {
+    callout('info', `本章小结：拓扑结构为「${desc}（${repDesc}）」，共 ${nodes.length} 个节点；详细复制状态见第十二章。`);
+  }
 }
 
 // ── Ch5 关键参数与一致性 ──────────────────────────────────────────────────────
@@ -521,26 +678,87 @@ if (securityAssessment?.items?.length) {
 
 // ── Ch12 主从复制 ─────────────────────────────────────────────────────────────
 h('<h2>第十二章 主从复制</h2>');
-tbl(['节点', '角色', 'Master_Host', 'Slave_IO', 'Slave_SQL', '延迟(秒)', 'Master_Server_Id'],
-  nodes.map(n => {
-    const st = n.replication?.status || {};
-    return [
-      nodeLabel(n), n.role || '-',
-      st.masterHost || (n.replication?.isSlave ? '-' : n.ip),
-      st.slaveIoRunning || (n.replication?.isSlave ? '-' : 'Yes'),
-      st.slaveSqlRunning || (n.replication?.isSlave ? '-' : 'Yes'),
-      st.secondsBehindMaster ?? (n.replication?.isSlave ? '-' : '0'),
-      '-',
-    ];
-  }));
-h('<h3>并行复制配置</h3>');
-tbl(['节点', 'slave_parallel_workers', 'slave_parallel_type'],
-  nodes.map(n => [
-    nodeLabel(n),
-    n.variables?.slave_parallel_workers ?? n.variables?.replica_parallel_workers ?? '-',
-    n.variables?.slave_parallel_type ?? n.variables?.replica_parallel_type ?? '-',
-  ]));
-callout('info', '本章小结：展示各节点复制状态及并行复制配置；复制状态正常。');
+{
+  const dmNodes = nodes.filter(n => n.isDualMaster);
+  if (isDM && dmNodes.length >= 2) {
+    h('<h3>12.1 双主复制状态（互为主从）</h3>');
+    callout('warn', '本集群为双主架构：两端互相作为对方的从库，以下展示每端「作为从库」方向的复制状态。');
+    tbl(['节点（从库视角）', '对端主库', 'IO 线程', 'SQL 线程', '延迟(s)', '读取位点', 'Last IO Error', 'Last SQL Error'],
+      dmNodes.map(n => {
+        const st = n.replication?.status || {};
+        const ioErr  = String(st.lastIoError  || '').slice(0, 60) || '（无）';
+        const sqlErr = String(st.lastSqlError || '').slice(0, 60) || '（无）';
+        return [
+          n.ip,
+          st.masterHost || n.dualMasterPeer || '-',
+          st.slaveIoRunning  || '-',
+          st.slaveSqlRunning || '-',
+          st.secondsBehindMaster ?? '-',
+          st.execMasterLogPos ? `${st.relayMasterLogFile || ''}:${st.execMasterLogPos}` : '-',
+          ioErr, sqlErr,
+        ];
+      }));
+
+    // 双主复制健康评估
+    const ioProblems  = dmNodes.filter(n => n.replication?.status?.slaveIoRunning  === 'No');
+    const sqlProblems = dmNodes.filter(n => n.replication?.status?.slaveSqlRunning === 'No');
+    if (ioProblems.length) {
+      callout('crit', `IO 线程中断：${ioProblems.map(n=>n.ip).join('、')} 已无法从对端接收 binlog，两端同步已停止。检查网络连通性、账号权限、SSL/TLS 配置。`);
+    }
+    if (sqlProblems.length) {
+      const hasConflict = sqlProblems.some(n => /1062|duplicate entry/i.test(n.replication?.status?.lastSqlError || ''));
+      if (hasConflict) {
+        callout('crit', `SQL 线程因主键冲突中止：${sqlProblems.map(n=>n.ip).join('、')}，两库数据已分叉，需人工选定权威端修复数据后重建复制（详见第十六章行动计划）。`);
+      } else {
+        callout('crit', `SQL 线程中断：${sqlProblems.map(n=>n.ip).join('、')}，接收的 binlog 未被应用，需排查 Last_SQL_Error。`);
+      }
+    }
+    if (!ioProblems.length && !sqlProblems.length) {
+      callout('ok', '双主两端 IO/SQL 线程均正常运行，当前无复制中断。');
+    }
+
+    h('<h3>12.2 GTID 状态</h3>');
+    tbl(['节点', 'gtid_mode', 'gtid_executed（摘要）', 'gtid_purged（摘要）'],
+      dmNodes.map(n => [
+        n.ip,
+        n.variables?.gtid_mode ?? '-',
+        String(n.gtidExecuted || n.variables?.gtid_executed || '-').slice(0, 60),
+        String(n.gtidPurged   || n.variables?.gtid_purged   || '-').slice(0, 60),
+      ]));
+
+    h('<h3>12.3 并行复制配置</h3>');
+    tbl(['节点', 'slave_parallel_workers', 'slave_parallel_type', 'log_slave_updates'],
+      dmNodes.map(n => [
+        n.ip,
+        n.variables?.slave_parallel_workers ?? n.variables?.replica_parallel_workers ?? '-',
+        n.variables?.slave_parallel_type ?? n.variables?.replica_parallel_type ?? '-',
+        n.variables?.log_slave_updates ?? n.variables?.log_replica_updates ?? '-',
+      ]));
+
+    const repOk  = !ioProblems.length && !sqlProblems.length;
+    callout(repOk ? 'info' : 'crit', `本章小结：双主复制状态${repOk ? '正常' : '异常'}；auto_increment 拆分与脑裂保护详见第四章 4.1 双主专项分析及第十六章行动计划。`);
+  } else {
+    tbl(['节点', '角色', 'Master_Host', 'Slave_IO', 'Slave_SQL', '延迟(秒)'],
+      nodes.map(n => {
+        const st = n.replication?.status || {};
+        return [
+          nodeLabel(n), n.role || '-',
+          st.masterHost || (n.replication?.isSlave ? '-' : n.ip),
+          st.slaveIoRunning  || (n.replication?.isSlave ? '-' : 'Yes'),
+          st.slaveSqlRunning || (n.replication?.isSlave ? '-' : 'Yes'),
+          st.secondsBehindMaster ?? (n.replication?.isSlave ? '-' : '0'),
+        ];
+      }));
+    h('<h3>并行复制配置</h3>');
+    tbl(['节点', 'slave_parallel_workers', 'slave_parallel_type'],
+      nodes.map(n => [
+        nodeLabel(n),
+        n.variables?.slave_parallel_workers ?? n.variables?.replica_parallel_workers ?? '-',
+        n.variables?.slave_parallel_type ?? n.variables?.replica_parallel_type ?? '-',
+      ]));
+    callout('info', '本章小结：展示各节点复制状态及并行复制配置；复制状态正常。');
+  }
+}
 
 // ── Ch13 Schema 审计 ──────────────────────────────────────────────────────────
 h('<h2>第十三章 Schema 审计</h2>');
