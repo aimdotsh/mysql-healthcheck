@@ -1784,12 +1784,22 @@ function main() {
 
 // ============== 双主识别 ==============
 function detectDualMaster(nodes) {
+  // Master_Host 可能是 IP 或主机名（短名/FQDN），逐一匹配
+  function matchHost(node, host) {
+    if (!host) return false;
+    if (node.ip === host) return true;
+    const h = host.toLowerCase();
+    if (node.hostname && node.hostname.toLowerCase() === h) return true;
+    if (node.hostname && node.hostname.split('.')[0].toLowerCase() === h) return true;
+    return false;
+  }
   for (const a of nodes) {
     const aMaster = a.replication?.status?.masterHost;
     if (!a.replication?.isSlave || !aMaster) continue;
-    const b = nodes.find(n => n !== a && n.ip === aMaster);
+    const b = nodes.find(n => n !== a && matchHost(n, aMaster));
     if (!b) continue;
-    if (b.replication?.isSlave && b.replication?.status?.masterHost === a.ip) {
+    const bMaster = b.replication?.status?.masterHost;
+    if (b.replication?.isSlave && matchHost(a, bMaster)) {
       a.role = 'primary';
       b.role = 'primary';
       a.isDualMaster = true;
