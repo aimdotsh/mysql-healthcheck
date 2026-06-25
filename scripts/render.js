@@ -1632,8 +1632,31 @@ function chapterReplication(data) {
   // v4.5：只有真从库存在时才渲染 12.2 从库状态表
   if (!hasNoRealSlaves) {
     out.push(h2('12.2 从库复制状态'));
+    const fmtBreak = (secs) => {
+      if (secs == null) return '-';
+      if (secs < 60) return `${secs}s`;
+      if (secs < 3600) return `${Math.floor(secs/60)}m`;
+      if (secs < 86400) return `${Math.floor(secs/3600)}h${Math.floor((secs%3600)/60)}m`;
+      return `${Math.floor(secs/86400)}d${Math.floor((secs%86400)/3600)}h`;
+    };
+    const fmtRelaySpace = (bytesStr) => {
+      if (!bytesStr) return '-';
+      const b = Number(bytesStr);
+      if (isNaN(b)) return '-';
+      if (b >= 1073741824) return (b/1073741824).toFixed(1) + ' GB';
+      if (b >= 1048576) return (b/1048576).toFixed(0) + ' MB';
+      if (b >= 1024) return (b/1024).toFixed(0) + ' KB';
+      return b + ' B';
+    };
     const slaveRows = realSlaves.map(n => {
       const s = n.replication.status || {};
+      const ioDown = s.slaveIoRunning === 'No' || s.slaveIoRunning === 'Connecting';
+      const sqlDown = s.slaveSqlRunning === 'No';
+      const ioBreak = ioDown ? fmtBreak(s.ioBreakSeconds) : '-';
+      const sqlBreak = sqlDown ? fmtBreak(s.sqlBreakSeconds) : '-';
+      const breakCell = (ioDown || sqlDown)
+        ? `${ioDown ? 'IO:' + ioBreak : ''}${(ioDown && sqlDown) ? ' ' : ''}${sqlDown ? 'SQL:' + sqlBreak : ''}`
+        : '-';
       return [
         n.ip, s.masterHost || '-',
         s.slaveIoRunning || '-',
@@ -1641,10 +1664,12 @@ function chapterReplication(data) {
         s.masterLogFile || '-',
         s.readMasterLogPos || '-',
         s.secondsBehindMaster != null ? `${s.secondsBehindMaster} s` : '-',
+        fmtRelaySpace(s.relayLogSpace),
+        breakCell,
       ];
     });
     out.push(makeTable(
-      ['从库 IP', '主库地址', 'IO 线程', 'SQL 线程', '主库 binlog', '已读位置', '延迟'],
+      ['从库 IP', '主库地址', 'IO 线程', 'SQL 线程', '主库 binlog', '已读位置', '延迟', 'Relay积压', '中断时长'],
       slaveRows,
       '从库复制状态',
     ));

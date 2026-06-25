@@ -1271,6 +1271,16 @@ function parseReplication(text) {
       const m = block.match(new RegExp(`\\b${k}:\\s*(.+)`));
       return m ? m[1].trim() : null;
     };
+    const lastIoErrTs = grab('Last_IO_Error_Timestamp');
+    const lastSqlErrTs = grab('Last_SQL_Error_Timestamp');
+    const parseTs = (s) => {
+      if (!s || s === '0000-00-00 00:00:00' || s.startsWith('0000')) return null;
+      const d = new Date(s.replace(' ', 'T') + 'Z');
+      return isNaN(d.getTime()) ? null : d.getTime();
+    };
+    const nowMs = Date.now();
+    const ioErrMs = parseTs(lastIoErrTs);
+    const sqlErrMs = parseTs(lastSqlErrTs);
     result.status = {
       masterHost: grab('Master_Host'),
       masterPort: grab('Master_Port'),
@@ -1281,6 +1291,11 @@ function parseReplication(text) {
       slaveSqlRunning: grab('Slave_SQL_Running'),
       lastIoError: grab('Last_IO_Error'),
       lastSqlError: grab('Last_SQL_Error'),
+      lastIoErrorTimestamp: lastIoErrTs || null,
+      lastSqlErrorTimestamp: lastSqlErrTs || null,
+      ioBreakSeconds: ioErrMs ? Math.floor((nowMs - ioErrMs) / 1000) : null,
+      sqlBreakSeconds: sqlErrMs ? Math.floor((nowMs - sqlErrMs) / 1000) : null,
+      relayLogSpace: grab('Relay_Log_Space'),
       secondsBehindMaster: grab('Seconds_Behind_Master'),
       masterUuid: grab('Master_UUID'),
       retrievedGtidSet: grab('Retrieved_Gtid_Set'),
