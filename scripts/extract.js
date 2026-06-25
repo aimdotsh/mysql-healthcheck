@@ -800,6 +800,25 @@ function parseTxt(filepath) {
     const p = node.binlogDirInfo.match(/binlog dir:\s*(\S+)/);
     if (p) node.binlogDirPath = p[1];
   }
+  // 解析 SHOW BINARY LOGS（[04] Binary logs 段），用于：
+  // 1) binlogDirSizeBytes 缺失时（du 权限不足）提供 fallback 总大小
+  // 2) 15.5 节展示文件数、总大小、最新文件名
+  const binlogListSec = getSection(content, 'Binary logs');
+  if (binlogListSec) {
+    const { headers, rows } = parseMysqlTable(stripCollectorBanner(binlogListSec));
+    const sizeIdx = headers.findIndex(h => /file_size/i.test(h));
+    const nameIdx = headers.findIndex(h => /log_name/i.test(h));
+    if (rows.length > 0 && sizeIdx >= 0) {
+      const totalBytes = rows.reduce((s, r) => s + (parseInt(r[sizeIdx]) || 0), 0);
+      const latestFile = nameIdx >= 0 ? (rows[rows.length - 1][nameIdx] || '') : '';
+      node.binaryLogs = { count: rows.length, totalBytes, latestFile };
+      // du 权限不足时用 SHOW BINARY LOGS 求和作为 fallback
+      if (!node.binlogDirSizeBytes && totalBytes > 0) {
+        node.binlogDirSizeBytes = totalBytes;
+        node.binlogDirSizeFromShowLogs = true;
+      }
+    }
+  }
 
   // v4.9：扩展采集段——datadir / relay log 目录大小（collector v3.1+ 提供，老版本采集会缺失）
   const datadirSec = getSection(content, 'Datadir size');

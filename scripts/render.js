@@ -2194,11 +2194,36 @@ function chapterBackupRecovery(data) {
   out.push(emptyLine());
 
   out.push(h2('15.5 Binlog 保留情况'));
-  for (const b of (ba.binlogs || [])) {
-    if (b.info) {
-      out.push(para([{ text: `节点 ${b.ip}：`, bold: true }]));
-      out.push(code(b.info.slice(0, 1000)));
+  const binlogRows = [];
+  for (const n of data.nodes) {
+    const dir = n.binlogDirPath || (n.binlogDirInfo ? (n.binlogDirInfo.match(/binlog dir:\s*(\S+)/)?.[1] || '-') : '-');
+    const sizeBytes = n.binlogDirSizeBytes;
+    let sizeText = '-';
+    if (sizeBytes > 0) {
+      sizeText = formatBytesNum(sizeBytes);
+      if (n.binlogDirSizeFromShowLogs) sizeText += '（来自 SHOW BINARY LOGS 汇总）';
+    } else {
+      sizeText = '未获取（du 权限不足）';
     }
+    const bl = n.binaryLogs;
+    const count = bl ? `${bl.count} 个` : '-';
+    const latest = bl?.latestFile || '-';
+    binlogRows.push([n.ip, dir, sizeText, count, latest]);
+  }
+  if (binlogRows.length > 0) {
+    out.push(makeTable(
+      ['节点 IP', 'Binlog 目录', '总大小', '文件数', '最新文件'],
+      binlogRows,
+      'Binlog 保留概况',
+    ));
+    if (data.nodes.some(n => !n.binlogDirSizeBytes)) {
+      out.push(noteParagraph(
+        '部分节点 binlog 目录大小未获取（采集账号对 /var/lib/mysql 无 du 读权限）。' +
+        '如需精确值，可在 MySQL 主机以 root 用户执行：du -sh <binlog目录>',
+      ));
+    }
+  } else {
+    out.push(para('未采集到 Binlog 目录信息。'));
   }
   out.push(emptyLine());
 
