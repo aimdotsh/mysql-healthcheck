@@ -120,6 +120,30 @@
       "handler": "evalDualMasterWriteConflict"
     },
     {
+      "id": "dual_master_both_writable",
+      "scope": "node",
+      "priority": "P0",
+      "title": "双主两端均可写（脑裂风险）",
+      "rationale": "双主两端 read_only=0，任意双端写同一主键即触发复制中断与数据分叉。必须收敛为伪双主（单写）或做好自增拆分 + 应用层路由隔离。",
+      "handler": "evalDualMasterBothWritable"
+    },
+    {
+      "id": "dual_master_auto_increment",
+      "scope": "node",
+      "priority": "P1",
+      "title": "双主自增未正确拆分",
+      "rationale": "双主场景下 auto_increment_increment 应为 2，且两端 offset 须不同（1/2），否则 AUTO_INCREMENT 列在两端会生成相同值引发主键冲突。",
+      "handler": "evalDualMasterAutoIncrement"
+    },
+    {
+      "id": "dual_master_log_slave_updates",
+      "scope": "node",
+      "priority": "P1",
+      "title": "双主 log_slave_updates=OFF",
+      "rationale": "双主节点若带有下游从库（DR/备库），log_slave_updates=OFF 会导致对端写入的事务对下游不可见，形成数据孤岛。",
+      "handler": "evalDualMasterLogSlaveUpdates"
+    },
+    {
       "id": "self_ref_slave_residue",
       "scope": "node",
       "priority": "P2",

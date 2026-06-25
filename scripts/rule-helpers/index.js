@@ -1016,6 +1016,104 @@ function evalDualMasterWriteConflict(ctx) {
   }];
 }
 
+function evalDualMasterBothWritable(ctx) {
+  const { node, nodes } = ctx;
+  if (!node.isDualMaster) return [];
+  const peer = nodes.find(n => n.ip === node.dualMasterPeer);
+  if (peer && node.ip > peer.ip) return [];
+
+  const selfRO = String(node.variables?.read_only ?? '0');
+  const peerRO = String(peer?.variables?.read_only ?? '0');
+  const selfWritable = selfRO === '0' || selfRO === 'OFF';
+  const peerWritable = peerRO === '0' || peerRO === 'OFF';
+  if (!selfWritable || !peerWritable) return [];
+
+  const peerIp = node.dualMasterPeer || '对端';
+  return [{
+    type: 'dual_master_both_writable',
+    priority: 'P0',
+    groupKey: `dual_master_both_writable:${node.ip}`,
+    dimension: 'durability',
+    description: `双主脑裂风险：${node.ip} 与 ${peerIp} 两端均 read_only=0（均可写），任意双端写入同一主键即触发复制中断与数据分叉（脑裂）。生产双主必须在应用层或数据库层保证只写单端。`,
+    currentValue: `${node.ip}: read_only=0，${peerIp}: read_only=0（两端均可写）`,
+    recommendedValue: '若为「伪双主（单写）」：将备用端 read_only=1 + super_read_only=1；若必须双写：用 auto_increment_increment=2 + offset 拆分 + 应用层路由隔离写域',
+    action: [
+      '方案 A（推荐）伪双主模式：选定写端，另一端执行：',
+      '  SET GLOBAL read_only = 1; SET GLOBAL super_read_only = 1;',
+      '方案 B 双活必须双写：确保 auto_increment_increment=2，两端 offset 分别为 1/2，应用层按主键奇偶路由写入，避免同行竞争。',
+      '无论哪种方案，均建议配合 MHA / Orchestrator 进行主库漂移保护。',
+    ].join('\n'),
+    sql: '-- 伪双主（备用端只读）：\nSET GLOBAL read_only = 1;\nSET GLOBAL super_read_only = 1;\n-- my.cnf:\nread_only = ON\nsuper_read_only = ON',
+    scope: 'node',
+    node: node.label,
+  }];
+}
+
+function evalDualMasterAutoIncrement(ctx) {
+  const { node, nodes } = ctx;
+  if (!node.isDualMaster) return [];
+  const peer = nodes.find(n => n.ip === node.dualMasterPeer);
+  if (peer && node.ip > peer.ip) return [];
+
+  const issues = [];
+  const selfInc = Number(node.variables?.auto_increment_increment ?? 1);
+  const peerInc = Number(peer?.variables?.auto_increment_increment ?? 1);
+  const selfOff = Number(node.variables?.auto_increment_offset ?? 1);
+  const peerOff = Number(peer?.variables?.auto_increment_offset ?? 1);
+
+  if (selfInc !== 2 || peerInc !== 2) {
+    issues.push({
+      type: 'dual_master_auto_increment',
+      priority: 'P1',
+      groupKey: `dual_master_auto_increment:${node.ip}`,
+      dimension: 'durability',
+      description: `双主 auto_increment_increment 未设为 2（${node.ip}=${selfInc}，${node.dualMasterPeer}=${peerInc}），AUTO_INCREMENT 列在两端可能生成相同值，触发主键冲突与复制中断。`,
+      currentValue: `${node.ip}: increment=${selfInc}, offset=${selfOff}；${node.dualMasterPeer}: increment=${peerInc}, offset=${peerOff}`,
+      recommendedValue: `两端均设 auto_increment_increment=2；${node.ip} 设 offset=1，${node.dualMasterPeer} 设 offset=2（或反之，保持不同）`,
+      action: '两端分别执行下方 SQL，并写入 my.cnf 持久化',
+      sql: `-- ${node.ip}（offset=1）：\nSET GLOBAL auto_increment_increment = 2;\nSET GLOBAL auto_increment_offset = 1;\n\n-- ${node.dualMasterPeer}（offset=2）：\nSET GLOBAL auto_increment_increment = 2;\nSET GLOBAL auto_increment_offset = 2;\n\n-- my.cnf（各自写对应 offset）：\nauto_increment_increment = 2\nauto_increment_offset    = 1   # 或 2`,
+      scope: 'node',
+      node: node.label,
+    });
+  } else if (selfOff === peerOff) {
+    issues.push({
+      type: 'dual_master_auto_increment',
+      priority: 'P0',
+      groupKey: `dual_master_auto_increment:${node.ip}`,
+      dimension: 'durability',
+      description: `双主 auto_increment_offset 两端相同（均为 ${selfOff}），即使 increment=2 也会在同一奇/偶序列上碰撞，必然产生主键冲突。`,
+      currentValue: `两端 offset 均为 ${selfOff}`,
+      recommendedValue: `一端 offset=1，另一端 offset=2`,
+      action: `修改一端 auto_increment_offset 为不同值`,
+      sql: `SET GLOBAL auto_increment_offset = 2;   -- 在 ${node.dualMasterPeer} 端执行\n-- my.cnf:\nauto_increment_offset = 2`,
+      scope: 'node',
+      node: node.label,
+    });
+  }
+  return issues;
+}
+
+function evalDualMasterLogSlaveUpdates(ctx) {
+  const { node } = ctx;
+  if (!node.isDualMaster) return [];
+  const v = node.variables || {};
+  const lsu = v.log_slave_updates ?? v.log_replica_updates;
+  if (lsu == null || lsu === 'ON' || lsu === '1') return [];
+  return [{
+    type: 'dual_master_log_slave_updates',
+    priority: 'P1',
+    groupKey: `dual_master_log_slave_updates:${node.ip}`,
+    dimension: 'durability',
+    description: `双主节点 ${node.ip} 的 log_slave_updates=OFF：从对端复制来的事务不会写入本端 binlog，若此端还带有下游从库（DR/备库），这些事务将对下游不可见，形成数据孤岛。`,
+    currentValue: 'log_slave_updates = OFF',
+    recommendedValue: 'ON',
+    action: '开启后需重启 MySQL 生效（动态改无效）；开启前确认 binlog 磁盘空间充足（复制流量将翻倍写入本端 binlog）',
+    sql: '-- my.cnf（需重启）：\nlog_slave_updates = ON\n# MySQL 8.0+：\nlog_replica_updates = ON',
+    scope: 'node',
+    node: node.label,
+  }];
+}
+
 module.exports = {
   evalDisks,
   evalReplication,
@@ -1042,4 +1140,7 @@ module.exports = {
   evalSwapUsed,
   evalWeakPassword,
   evalDualMasterWriteConflict,
+  evalDualMasterBothWritable,
+  evalDualMasterAutoIncrement,
+  evalDualMasterLogSlaveUpdates,
 };

@@ -287,10 +287,28 @@ function groupIntoClusters(files) {
                  || groupNodes[0];
     const slaves = groupNodes.filter(n => n !== primary);
     const isSingle = groupNodes.length === 1;
+
+    // 双主检测：所有节点互为主从（各自 masterHost 都指向组内另一节点）
+    const isDualMaster = groupNodes.length >= 2 &&
+      groupNodes.every(n => n.isSlave) &&
+      groupNodes.every(n => {
+        const mh = (n.masterHost || '').toLowerCase();
+        if (!mh) return false;
+        return groupNodes.some(p => p !== n && (
+          (p.ip || '').toLowerCase() === mh ||
+          (p.hostname || '').toLowerCase() === mh ||
+          ((p.hostname || '').split('.')[0] || '').toLowerCase() === mh
+        ));
+      });
+
     let topology, label;
     if (isSingle) {
       topology = '单节点';
       label = `${primary.ip || primary.hostname || '?'}（单节点）`;
+    } else if (isDualMaster) {
+      topology = '双主（互为主从）';
+      const ips = groupNodes.map(n => n.ip || n.hostname || '?').join('/');
+      label = `${ips} 双主（互为主从）`;
     } else {
       const slaveCount = slaves.length;
       topology = `一主${slaveCount}从（异步复制）`;
