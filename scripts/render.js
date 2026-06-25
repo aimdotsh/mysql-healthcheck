@@ -2342,7 +2342,26 @@ function chapterConclusion(data) {
   out.push(h2('16.1 整体结论'));
   out.push(para(`【${data.project}】MySQL 集群本次巡检整体评估：${data.overallAssessment}。`));
   const sl = data.nodes.filter(n => n.replication?.isSlave);
-  if (sl.length > 0) {
+  const dmNodes = data.nodes.filter(n => n.isDualMaster);
+  if (dmNodes.length >= 2) {
+    // 双主拓扑：逐方向描述 IO/SQL 线程状态，不能套用"从库"框架
+    const parts = dmNodes.map(n => {
+      const st = n.replication.status || {};
+      const io = st.slaveIoRunning || '未知';
+      const sql = st.slaveSqlRunning || '未知';
+      const master = st.masterHost || n.replication.masterHost || '?';
+      const ioOk = io === 'Yes';
+      const sqlOk = sql === 'Yes';
+      const stateText = (ioOk && sqlOk) ? '✅ 正常' : (!ioOk && !sqlOk) ? '❌ IO+SQL 均中断' : `⚠ IO=${io}/SQL=${sql}`;
+      return `${n.ip}（从 ${master}）${stateText}`;
+    });
+    const allOk = dmNodes.every(n => {
+      const st = n.replication.status || {};
+      return st.slaveIoRunning === 'Yes' && st.slaveSqlRunning === 'Yes';
+    });
+    const summary = allOk ? '双主互为主从复制均正常' : '双主复制存在线程异常，数据同步已中断，请优先处理';
+    out.push(para(`双主复制状态：${parts.join('；')}。${summary}。`));
+  } else if (sl.length > 0) {
     const okSlaves = sl.filter(n => n.replication.status?.slaveIoRunning === 'Yes' && n.replication.status?.slaveSqlRunning === 'Yes').length;
     const lagValues = sl.map(n => {
       const v = n.replication.status?.secondsBehindMaster;
