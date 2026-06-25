@@ -1817,6 +1817,7 @@ function detectDualMaster(nodes) {
 
 // ============== 拓扑推断 ==============
 function deriveTopology(nodes) {
+  if (nodes.some(n => n.isDualMaster)) return '双主（互为主从）';
   const primary = nodes.find(n => n.role === 'primary');
   const slaves = nodes.filter(n => n.role !== 'primary');
   if (primary && slaves.length > 0) {
@@ -2241,13 +2242,13 @@ function analyzeIssues(nodes) {
     // 内存 / BP（数值，方便 handler 直接读）
     n.memGB = memTotalGB(n);
     n.bpMB = mb(n, 'innodb_buffer_pool_size_in_mb');
-    // Swap 已使用判定（沿用原始 parseFloat 逻辑）
+    // Swap 已使用判定（布尔标志用 swapIsUsed，保留 swapUsed 为格式化字符串）
     if (n.swapTotal && n.swapFree && n.swapTotal !== n.swapFree) {
       const sm = parseFloat((n.swapTotal.match(/[\d.]+/) || [])[0]);
       const sfm = parseFloat((n.swapFree.match(/[\d.]+/) || [])[0]);
-      n.swapUsed = !isNaN(sm) && !isNaN(sfm) && sm > sfm + 0.1;
+      n.swapIsUsed = !isNaN(sm) && !isNaN(sfm) && sm > sfm + 0.1;
     } else {
-      n.swapUsed = false;
+      n.swapIsUsed = false;
     }
     // TLS 弱协议（字符串或 null）
     n.tlsWeakDetail = tlsWeakProtocolDetail(n.tlsConfig);
@@ -2589,14 +2590,30 @@ function deriveCorrelations(nodes, issues) {
       }
       continue;
     }
-    // 有 diskAttribution：明确指出主因
+    // 归因覆盖度检查：若已知子目录合计 < 实际已用的 5%，视为数据不足，不做主因判断
+    const diskUsedBytes = parseHumanSizeToBytes(highDiskDisk.used || '0');
+    const coverageRatio = diskUsedBytes > 0 ? attr.totalBytes / diskUsedBytes : 1;
+    if (coverageRatio < 0.05) {
+      // 归因覆盖不到 5%，子目录采集不完整，改为「数据不足」提示
+      corrs.push({
+        title: `节点 ${n.ip} 磁盘高位（${highDiskDisk.usePct}）— 主因待查（子目录覆盖不足）`,
+        detail: [
+          `节点 ${n.ip} 磁盘 ${highDiskDisk.mount} 使用率 ${highDiskDisk.usePct}（已用 ${highDiskDisk.used} / ${highDiskDisk.total}）。`,
+          `已采集子目录（${fmtBytesShort(attr.totalBytes)}）仅覆盖实际已用量的 ${(coverageRatio * 100).toFixed(1)}%，无法定量归因。`,
+          attr.top.length > 0 ? `采集到：${attr.top.map(t => `${({ ibtmp1:'ibtmp1', binlog:'binlog', slowLog:'慢日志', errorLog:'错误日志', relayLog:'relay log', datadir:'datadir' }[t.kind] || t.kind)} ${fmtBytesShort(t.bytes)}`).join('、')}` : '',
+        ].filter(Boolean).join('\n'),
+        suggestion: `建议在目标节点手工排查：\n  du -sh /data1/* | sort -rh | head -20\n  du -sh /home/* | sort -rh | head -20\n重点排查 MySQL 数据目录（datadir）、binlog 目录、slow log、归档文件等大文件。`,
+      });
+      continue;
+    }
+    // 归因覆盖充分：明确指出主因
     const top1 = attr.top[0];
     const top2 = attr.top[1];
     const topKindCN = { binlog: 'binlog 文件', slowLog: '慢日志', errorLog: '错误日志', relayLog: 'relay log', ibtmp1: 'ibtmp1 临时表空间', datadir: 'datadir 整体' }[top1.kind] || top1.kind;
     const top1Pct = top1.pct != null ? (top1.pct * 100).toFixed(0) + '%' : '?';
     const detail = [
       `节点 ${n.ip} 磁盘 ${highDiskDisk.mount} 使用率 ${highDiskDisk.usePct}（已用 ${highDiskDisk.used} / ${highDiskDisk.total}）。`,
-      `已采集子目录归因（合计 ${fmtBytesShort(attr.totalBytes)}）：`,
+      `已采集子目录归因（合计 ${fmtBytesShort(attr.totalBytes)}，覆盖实际已用 ${(coverageRatio * 100).toFixed(0)}%）：`,
       attr.top.map(t => `  · ${({ binlog:'binlog', slowLog:'慢日志', errorLog:'错误日志', relayLog:'relay log', ibtmp1:'ibtmp1', datadir:'datadir' }[t.kind] || t.kind)} ${fmtBytesShort(t.bytes)} (${(t.pct*100).toFixed(0)}%)`).join('\n'),
       `主因明确：${topKindCN} 占 ${top1Pct}（${fmtBytesShort(top1.bytes)}）${top2 ? `；次因：${({binlog:'binlog',slowLog:'慢日志',errorLog:'错误日志',relayLog:'relay log',ibtmp1:'ibtmp1',datadir:'datadir'}[top2.kind] || top2.kind)} ${(top2.pct*100).toFixed(0)}%` : ''}。`,
     ].join('\n');
@@ -2795,7 +2812,7 @@ function deriveCorrelations(nodes, issues) {
     if (Number(n.variables?.max_connections || 0) > 1000) causes.push(`【已确认】max_connections=${n.variables.max_connections}，单连接 buffer 累积放大内存压力`);
     if (causes.length > 0) {
       corrs.push({
-        title: `节点 ${n.ip} Swap 已使用 ${n.swapUsed}（${swapUsedPct}%）— 内存压力链路`,
+        title: `节点 ${n.ip} Swap 已使用 ${n.swapUsed || swapUsedPct + '%'}（${swapUsedPct}%）— 内存压力链路`,
         detail: causes.join('\n'),
         suggestion: `三项处置：① 下调 innodb_buffer_pool_size 至 RAM 60%（当前 ${(bpRatio*100).toFixed(0)}%）；② sysctl -w vm.swappiness=1；③ 评估扩容内存到 ${Math.ceil(memGB * 1.5)} GB。\n参考：v4.8 新增 bp_too_large / max_connections_vs_memory 规则。`,
       });
