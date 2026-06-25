@@ -1438,13 +1438,15 @@ function isMetadataQuery(queryText, dbName) {
   const q = String(queryText).trim();
   // 1. SHOW / DESC / EXPLAIN 类元数据查询
   if (/^(SHOW|DESC|DESCRIBE|EXPLAIN)\s/i.test(q)) return true;
-  // 2. 直接访问系统库（information_schema / performance_schema / mysql / sys）
+  // 2. DB 字段本身是系统库（information_schema / performance_schema / mysql / sys / NULL）
+  if (dbName && /^(information_schema|performance_schema|mysql|sys)$/i.test(String(dbName).trim())) return true;
+  // 3. 直接访问系统库（query 文本中含系统库表名）
   if (/\b(information_schema|performance_schema|mysql\.|sys\.)/i.test(q)) return true;
-  // 3. DB 为 NULL 且查询是元数据探测（如 SELECT NOW(), SYSTEM_USER()）
+  // 4. DB 为 NULL 且查询是元数据探测（如 SELECT NOW(), SYSTEM_USER()）
   if ((dbName == null || dbName === 'NULL' || dbName === '') && /^SELECT\s+(NOW|SYSTEM_USER|VERSION|DATABASE|USER|CURRENT_USER|CONNECTION_ID)\s*\(/i.test(q)) return true;
-  // 4. SET / USE 类会话控制语句
+  // 5. SET / USE 类会话控制语句
   if (/^(SET|USE|RESET)\s/i.test(q)) return true;
-  // 5. 单独的事务控制语句
+  // 6. 单独的事务控制语句
   if (/^(COMMIT|ROLLBACK|BEGIN|START\s+TRANSACTION)\s*$/i.test(q)) return true;
   return false;
 }
@@ -1915,8 +1917,16 @@ function computeHealthScore(nodes, issues) {
   let total = 0;
   for (const k of Object.keys(dim)) total += dim[k] * weights[k];
   total = Math.round(total);
-  // 总分下限 55（数据库正常运行的事实，应反映在评分里）
-  total = Math.max(55, Math.min(100, total));
+
+  // 复合关键风险上限：多个 P0 并存时整体评分不能虚高
+  // 单个 P0 上限 78，两个及以上 P0 上限 70，三个及以上 P0 上限 62
+  const p0Count = issues.filter(i => i.priority === 'P0').length;
+  if (p0Count >= 3) total = Math.min(total, 62);
+  else if (p0Count >= 2) total = Math.min(total, 70);
+  else if (p0Count >= 1) total = Math.min(total, 78);
+
+  // 总分下限：有 P0 时 45（数据库还在运行但风险高），无 P0 时 55
+  total = Math.max(p0Count > 0 ? 45 : 55, total);
 
   return { total, dimensions: dim };
 }

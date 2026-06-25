@@ -662,20 +662,27 @@ function chapterServers(data) {
 
   out.push(makeTable(
     ['节点 IP', '主机名', '角色', 'MySQL 版本', 'server_id', 'Uptime'],
-    data.nodes.map(n => {
-      // v4.5：needsConfirmation 角色加 🔍 提示
-      const confirm = n.roleInference?.needsConfirmation;
-      const roleCell = confirm
-        ? { text: `${roleLabel(n.role)} 🔍`, color: 'BF8F00', bold: true }
-        : roleLabel(n.role);
-      return [
-        n.ip, n.hostname || '-',
-        roleCell,
-        n.mysqlVersion || '-',
-        n.variables?.server_id || '-',
-        n.uptimeText || '-',
-      ];
-    }),
+    (() => {
+      const dmNodes = data.nodes.filter(x => x.isDualMaster);
+      return data.nodes.map(n => {
+        // v4.5：needsConfirmation 角色加 🔍 提示
+        const confirm = n.roleInference?.needsConfirmation;
+        const dmIdx = n.isDualMaster ? dmNodes.indexOf(n) : -1;
+        const roleText = dmIdx >= 0
+          ? `主库/从库（双主节点 ${['A', 'B', 'C'][dmIdx] ?? dmIdx + 1}）`
+          : roleLabel(n.role);
+        const roleCell = confirm
+          ? { text: `${roleText} 🔍`, color: 'BF8F00', bold: true }
+          : (n.isDualMaster ? { text: roleText, color: '1F6FEB' } : roleText);
+        return [
+          n.ip, n.hostname || '-',
+          roleCell,
+          n.mysqlVersion || '-',
+          n.variables?.server_id || '-',
+          n.uptimeText || '-',
+        ];
+      });
+    })(),
     isSingleNode ? '节点信息' : '集群节点信息',
   ));
   // v4.5：角色推断来源说明（标 needsConfirmation 的节点）
@@ -1372,11 +1379,27 @@ function chapterTransactions(data) {
 
   out.push(h2('10.2 最近死锁'));
   let hasDeadlock = false;
+  const reportTs = (() => {
+    const d = new Date(data.reportDate || data.inspectionDate || Date.now());
+    return isNaN(d.getTime()) ? Date.now() : d.getTime();
+  })();
   for (const n of data.nodes) {
     if (n.innodb?.latestDeadlock) {
       hasDeadlock = true;
+      const dlText = n.innodb.latestDeadlock;
+      // 提取死锁文本中第一个时间戳（格式：YYYY-MM-DD HH:MM:SS 或 YYYY-MM-DDTHH:MM:SS）
+      const tsMatch = dlText.match(/(\d{4}-\d{2}-\d{2})[\sT](\d{2}:\d{2}:\d{2})/);
+      const dlTs = tsMatch ? new Date(`${tsMatch[1]}T${tsMatch[2]}`).getTime() : NaN;
+      const daysDiff = !isNaN(dlTs) ? Math.floor((reportTs - dlTs) / 86400000) : null;
+
       out.push(para([{ text: `节点 ${n.ip}：`, bold: true }]));
-      out.push(code(n.innodb.latestDeadlock));
+      if (daysDiff !== null && daysDiff > 30) {
+        const months = Math.floor(daysDiff / 30);
+        out.push(para(`上次死锁记录时间：${tsMatch[1]} ${tsMatch[2]}（距本次巡检约 ${months} 个月前）。最近 30 天内未检测到新死锁，当前无需立即处理。`));
+        out.push(noteParagraph('历史死锁详情已折叠（超过 30 天）。如需排查历史原因，可查阅采集时的 SHOW ENGINE INNODB STATUS 原始输出。'));
+      } else {
+        out.push(code(dlText));
+      }
       out.push(emptyLine());
     }
   }
@@ -2435,10 +2458,10 @@ function osLifecycleLabel(n) {
 }
 function diskHealthLabel(pctText) {
   const pct = parseInt((pctText || '0').replace('%', ''));
-  if (pct >= 90) return '关键';
-  if (pct >= 80) return '关注';
-  if (pct >= 70) return '正常';
-  return '充裕';
+  if (pct >= 90) return { text: '关键 ▲', color: 'C00000', bold: true };
+  if (pct >= 80) return { text: '关注 ▲', color: 'ED7D31', bold: true };
+  if (pct >= 70) return { text: '正常',   color: '375623' };
+  return           { text: '充裕',         color: '375623' };
 }
 function truncate(s, n) {
   if (!s) return '-';
