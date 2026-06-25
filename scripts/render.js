@@ -1735,6 +1735,61 @@ function chapterReplication(data) {
       out.push(bullet(`${i.description}${action}`));
     }
   }
+
+  // 12.5 双主专项：行数对比（仅在双主拓扑时渲染）
+  const dmNodes = data.nodes.filter(n => n.isDualMaster);
+  if (dmNodes.length >= 2) {
+    out.push(emptyLine());
+    out.push(h2('12.5 双主数据一致性对比'));
+    out.push(para('双主互为主从时，两端数据量差异可辅助判断数据是否已出现分叉。以下为各端 TOP 表行数对比（基于采集时快照，仅供参考；精确核对需用 pt-table-checksum）。'));
+
+    const [nodeA, nodeB] = dmNodes;
+    // 汇总 DB 总大小对比
+    const sizeA = nodeA.dbTotalSizeGB || '-';
+    const sizeB = nodeB.dbTotalSizeGB || '-';
+    out.push(makeTable(
+      ['节点', '角色', '数据库总大小'],
+      [
+        [nodeA.ip, roleLabel(nodeA.role), sizeA],
+        [nodeB.ip, roleLabel(nodeB.role), sizeB],
+      ],
+      '双主数据量对比',
+    ));
+    out.push(emptyLine());
+
+    // TOP 表行数对比
+    const tablesA = nodeA.topTables || [];
+    const tablesB = nodeB.topTables || [];
+    // 取两端 TOP 表并集，按 schema.table 匹配
+    const tableKeys = new Set([
+      ...tablesA.map(t => `${t.schema}.${t.table}`),
+      ...tablesB.map(t => `${t.schema}.${t.table}`),
+    ]);
+    if (tableKeys.size > 0) {
+      const mapA = new Map(tablesA.map(t => [`${t.schema}.${t.table}`, t]));
+      const mapB = new Map(tablesB.map(t => [`${t.schema}.${t.table}`, t]));
+      const compareRows = [...tableKeys].slice(0, 20).map(key => {
+        const tA = mapA.get(key);
+        const tB = mapB.get(key);
+        const rowsA = tA?.rows ?? '-';
+        const rowsB = tB?.rows ?? '-';
+        const diff = (rowsA !== '-' && rowsB !== '-' && rowsA !== rowsB) ? '⚠ 差异' : '';
+        return [key, rowsA, rowsB, diff];
+      });
+      out.push(makeTable(
+        ['表', `${nodeA.ip} 行数`, `${nodeB.ip} 行数`, '一致性'],
+        compareRows,
+        '双主 TOP 表行数对比',
+      ));
+      const hasDiff = compareRows.some(r => r[3]);
+      if (hasDiff) {
+        out.push(noteParagraph('发现两端行数不一致的表（标记 ⚠）。建议用 pt-table-checksum 做精确校验，并用 pt-table-sync 修复差异数据。'));
+      } else {
+        out.push(para('TOP 表行数两端一致，暂无明显数据分叉迹象（仅 TOP 表快照对比，非完整校验）。'));
+      }
+    }
+  }
+
   return out;
 }
 
