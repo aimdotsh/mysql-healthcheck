@@ -1157,29 +1157,34 @@ function chapterStorage(data) {
   // 碎片表 — 过滤小表（碎片绝对值 < 100MB 的不展示）
   out.push(h2('7.3 高碎片表（碎片率 ≥70% 且碎片空间 ≥100MB）'));
   const SIG_FRAG_THRESHOLD = 100 * 1024 * 1024;
+  const fragCollected = Array.isArray(refNode.fragTables);
   const sigFrags = (refNode.fragTables || []).filter(t =>
     Number(t.fragRate) >= 0.7 && Number(t.dataFree) >= SIG_FRAG_THRESHOLD
   );
-  const fragRows = sigFrags
-    .sort((a, b) => Number(b.dataFree) - Number(a.dataFree))
-    .map(t => [
-      t.schema, t.table,
-      Number(t.rows).toLocaleString(),
-      formatBytesNum(t.dataLength),
-      formatBytesNum(t.dataFree),
-      (Number(t.fragRate) * 100).toFixed(1) + '%',
-      Number(t.dataFree) >= 10 * 1073741824 ? '高优先级重建' : '建议重建',
-    ]);
-  out.push(makeTable(
-    ['库名', '表名', '行数', '数据大小', '碎片空间', '碎片率', '建议'],
-    fragRows,
-    '显著高碎片表清单（已过滤 <100MB 小表噪声）',
-  ));
   const fragTotalGB = sigFrags.reduce((s, t) => s + Number(t.dataFree), 0) / 1073741824;
-  if (sigFrags.length === 0) {
-    out.push(noteParagraph('未发现需关注的高碎片大表。'));
+  if (!fragCollected) {
+    out.push(noteParagraph('本次采集未获取到碎片表数据（需 collector v3.0+ 且 information_schema 中存在 Tables fragment rate 段）。'));
   } else {
-    out.push(noteParagraph(`重建后可回收约 ${fragTotalGB.toFixed(1)} GB 空间。大表（≥10GB）推荐 pt-online-schema-change 在线重建，避免锁表。`));
+    const fragRows = sigFrags
+      .sort((a, b) => Number(b.dataFree) - Number(a.dataFree))
+      .map(t => [
+        t.schema, t.table,
+        Number(t.rows).toLocaleString(),
+        formatBytesNum(t.dataLength),
+        formatBytesNum(t.dataFree),
+        (Number(t.fragRate) * 100).toFixed(1) + '%',
+        Number(t.dataFree) >= 10 * 1073741824 ? '高优先级重建' : '建议重建',
+      ]);
+    if (sigFrags.length === 0) {
+      out.push(noteParagraph('未发现碎片率 ≥70% 且碎片空间 ≥100MB 的高碎片表，无需处理。'));
+    } else {
+      out.push(makeTable(
+        ['库名', '表名', '行数', '数据大小', '碎片空间', '碎片率', '建议'],
+        fragRows,
+        '显著高碎片表清单（已过滤 <100MB 小表噪声）',
+      ));
+      out.push(noteParagraph(`重建后可回收约 ${fragTotalGB.toFixed(1)} GB 空间。大表（≥10GB）推荐 pt-online-schema-change 在线重建，避免锁表。`));
+    }
   }
   out.push(emptyLine());
 
@@ -1527,9 +1532,8 @@ function chapterUsers(data) {
     const classify = (user) => {
       const u = (user || '').toLowerCase();
       if (u === 'root' || /admin|dba|super/.test(u)) return { level: 'critical', label: '🔴 关键', reason: 'root / 管理员账号' };
-      if (u === 'repl' || /replic/.test(u)) return { level: 'high', label: '🔴 高危', reason: '复制账号，应限制为复制源 IP' };
-      if (/backup|dump/.test(u)) return { level: 'high', label: '🟠 高危', reason: '备份账号，权限较广' };
-      if (/zabbix|prometheus|nagios|monitor|exporter/.test(u)) return { level: 'low', label: '🟢 低危', reason: '监控只读账号' };
+      if (/repl|backup|dump|monitor|orchestrator|pmm|prometheus/i.test(u)) return { level: 'high', label: '🔴 高危', reason: '复制/备份/监控账号高权限，应限制到具体 IP/网段' };
+      if (/zabbix|nagios|exporter/i.test(u)) return { level: 'low', label: '🟢 低危', reason: '监控只读账号' };
       if (/^ro|readonly/.test(u)) return { level: 'low', label: '🟢 低危', reason: '只读账号' };
       return { level: 'medium', label: '🟡 中危', reason: '业务账号' };
     };
@@ -2317,8 +2321,13 @@ function chapterConclusion(data) {
   const sl = data.nodes.filter(n => n.replication?.isSlave);
   if (sl.length > 0) {
     const okSlaves = sl.filter(n => n.replication.status?.slaveIoRunning === 'Yes' && n.replication.status?.slaveSqlRunning === 'Yes').length;
-    const maxLag = Math.max(...sl.map(n => Number(n.replication.status?.secondsBehindMaster || 0)));
-    out.push(para(`主从复制状态：${okSlaves}/${sl.length} 从库 IO+SQL 双线程正常，当前最大延迟 ${maxLag} 秒。`));
+    const lagValues = sl.map(n => {
+      const v = n.replication.status?.secondsBehindMaster;
+      return (v != null && v !== 'NULL' && !isNaN(Number(v))) ? Number(v) : null;
+    }).filter(v => v !== null);
+    const maxLag = lagValues.length > 0 ? Math.max(...lagValues) : null;
+    const lagText = maxLag != null ? `${maxLag} 秒` : '不可测（IO/SQL 线程异常）';
+    out.push(para(`主从复制状态：${okSlaves}/${sl.length} 从库 IO+SQL 双线程正常，当前最大延迟 ${lagText}。`));
   }
   out.push(emptyLine());
 
