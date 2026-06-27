@@ -69,6 +69,10 @@
 | `ibtmp1_oversize` | durability | P2 | ibtmp1 实际大小 > 5GB |
 | `slave_skip_errors_set` | durability | P0 | slave_skip_errors 非空 非 OFF |
 | `self_ref_slave_residue` | durability | P2 | SLAVE STATUS 的 Master_Host = 自身 IP |
+| `dual_master_write_conflict` | durability | P0 | 双主节点 SQL 线程中止且 Last_SQL_Error 含 1062/Duplicate |
+| `dual_master_both_writable` | durability | P0 | 双主两端 read_only 均为 OFF |
+| `dual_master_auto_increment` | durability | P1 | 双主节点 auto_increment_increment ≠ 2 或两端 offset 相同 |
+| `dual_master_log_slave_updates` | durability | P1 | 双主节点 log_slave_updates = OFF |
 | `bp_hit` | performance | P1-P3 | BP 命中率 < 99%（< 95% 升 P1）|
 | `buffer_pool_size` | performance | P1-P2 | BP 占 RAM < 40% 或 > 80% |
 | `redo_log_too_small` | performance | P1-P2 | innodb_log_file_size < 512MB 且数据量大 |
@@ -693,6 +697,130 @@ pt-table-checksum --replicate=percona.checksums h=<primary>,u=<user>,p=<pwd>
 ```sql
 SET GLOBAL sync_binlog = 1;
 -- 同时改 my.cnf 持久化
+```
+
+---
+
+### `dual_master_write_conflict`
+
+**双主写冲突（数据分叉）**
+
+> 双主双写同一主键时复制 SQL 线程中止，两库数据已分叉。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `durability` |
+| Scope | `node` |
+| 优先级 | **P0** |
+
+**触发**：
+```
+node.isDualMaster === true 且 node.replication.status.slaveSqlRunning === 'No'
+且 Last_SQL_Error 含 1062/Duplicate entry
+```
+
+**说明文本**：
+> 双主架构中检测到 SQL 线程因主键冲突中止（{{lastSqlError}}），两库数据已分叉
+
+**建议行动**：
+> 立即确定权威写入端 → 在另一端 STOP SLAVE; RESET SLAVE ALL; → 重建复制（从权威端重做快照）→ 检查应用层双写逻辑 → 补全 auto_increment_increment=2 + offset 拆分
+
+---
+
+### `dual_master_both_writable`
+
+**双主两端均可写（脑裂风险）**
+
+> 双主两端 read_only=0，任意双端写同一主键即触发复制中断。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `durability` |
+| Scope | `node` |
+| 优先级 | **P0** |
+
+**触发**：
+```
+集群存在两个 isDualMaster=true 节点，且两端 read_only 均为 'OFF' 或 '0'
+```
+
+**说明文本**：
+> 双主架构两端 read_only 均为 OFF，存在双写脑裂风险
+
+**建议行动**：
+> 确定读写分离策略：将备用端改为 read_only=1（「伪双主」模式），或确保应用层严格路由写流量至单端；同时配合 auto_increment_increment=2 + offset 防止主键冲突
+
+**示例 SQL / 配置**：
+```sql
+-- 备用节点（只接受查询流量）
+SET GLOBAL read_only = 1;
+SET GLOBAL super_read_only = 1;
+```
+
+---
+
+### `dual_master_auto_increment`
+
+**双主自增未正确拆分**
+
+> 双主场景下两端生成相同 AUTO_INCREMENT 值，引发主键冲突。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `durability` |
+| Scope | `node` |
+| 优先级 | **P1** |
+
+**触发**：
+```
+node.isDualMaster === true 且 (auto_increment_increment != '2' 或 两端 auto_increment_offset 相同)
+```
+
+**说明文本**：
+> 双主节点 auto_increment_increment={{value}}（应为 2）或两端 offset 相同，存在 AUTO_INCREMENT 冲突风险
+
+**建议行动**：
+> 两端均设 auto_increment_increment=2；节点A 设 auto_increment_offset=1，节点B 设 =2；存量数据需确认无已冲突行
+
+**示例 SQL / 配置**：
+```sql
+-- 节点A
+SET GLOBAL auto_increment_increment = 2;
+SET GLOBAL auto_increment_offset = 1;
+-- 节点B
+SET GLOBAL auto_increment_increment = 2;
+SET GLOBAL auto_increment_offset = 2;
+```
+
+---
+
+### `dual_master_log_slave_updates`
+
+**双主 log_slave_updates=OFF**
+
+> 双主带下游从库时，来自对端的事务不进本端 binlog，形成数据孤岛。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `durability` |
+| Scope | `node` |
+| 优先级 | **P1** |
+
+**触发**：
+```
+node.isDualMaster === true 且 node.variables.log_slave_updates == 'OFF' 或 '0'
+```
+
+**说明文本**：
+> 双主节点 log_slave_updates=OFF，来自对端的事务不会进入本端 binlog，下游从库/DR 将缺失对端数据
+
+**建议行动**：
+> 改为 log_slave_updates=ON 并重启；如有下游从库需停止复制再重建，确保 relay log 应用完毕
+
+**示例 SQL / 配置**：
+```ini
+# my.cnf（需重启生效）
+log_slave_updates = ON
 ```
 
 ---
