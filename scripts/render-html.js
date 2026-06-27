@@ -38,6 +38,12 @@ function tbl(headers, rows) {
   rows.forEach(r => h('<tr>' + r.map(c => `<td>${esc(c)}</td>`).join('') + '</tr>'));
   h('</tbody></table>');
 }
+function tblHtml(headers, rows) {
+  if (!rows || !rows.length) { h('<p><em>（无数据）</em></p>'); return; }
+  h('<table><thead><tr>' + headers.map(x => `<th>${esc(x)}</th>`).join('') + '</tr></thead><tbody>');
+  rows.forEach(r => h('<tr>' + r.map(c => `<td>${typeof c === 'string' && c.startsWith('<') ? c : esc(c)}</td>`).join('') + '</tr>'));
+  h('</tbody></table>');
+}
 
 function callout(kind, text) {
   h(`<div class="callout ${kind}">${text}</div>`);
@@ -359,12 +365,19 @@ tbl(['节点', 'hostname', 'OS 发行版', '内核', 'CPU 核', '内存 GB', '�
     memGB(n),
     n.memUsagePct != null ? n.memUsagePct + '%' : '-',
   ]));
+function diskHealthLabel(pctText) {
+  const pct = parseInt((pctText || '0').replace('%', ''));
+  if (pct >= 90) return `<span style="color:#C00000;font-weight:bold">关键 ▲</span>`;
+  if (pct >= 80) return `<span style="color:#ED7D31;font-weight:bold">关注 ▲</span>`;
+  if (pct >= 70) return `<span style="color:#375623">正常</span>`;
+  return `<span style="color:#375623">充裕</span>`;
+}
 for (const n of nodes) {
   const disks = n.disks || [];
   if (!disks.length) continue;
   h(`<h3>${esc(nodeLabel(n))} · 磁盘</h3>`);
-  tbl(['挂载点', '文件系统', '总量', '已用', '可用', '使用率'],
-    disks.map(d => [d.mount || '-', d.filesystem || d.fs || '-', d.total || '-', d.used || '-', d.avail || d.available || '-', d.usePct || '-']));
+  tblHtml(['挂载点', '文件系统', '总量', '已用', '可用', '使用率', '状态'],
+    disks.map(d => [d.mount || '-', d.filesystem || d.fs || '-', d.total || '-', d.used || '-', d.avail || d.available || '-', d.usePct || '-', diskHealthLabel(d.usePct)]));
 }
 callout('info', '本章小结：展示操作系统、CPU、内存、磁盘概况；如有磁盘使用率过高或 OS 已 EOL，详见第十六章行动计划。');
 
@@ -393,12 +406,18 @@ if (topoSvg) {
   const topoDesc = isDM ? '双主（互为主从）架构' : `一主${slaveCount}从（${slaveCount > 0 ? '异步复制' : '单节点'}）`;
   fig(topoSvg, `集群拓扑：${topoDesc}`);
 }
-tbl(['节点', '角色', '主机', 'server_id', 'read_only'],
-  nodes.map(n => [
-    nodeLabel(n), n.role || '-', n.hostname || '-',
-    n.variables?.server_id ?? '-',
-    n.variables?.read_only ?? '-',
-  ]));
+{
+  const roleMap = { primary: '主库', slave: '从库', dr: '灾备' };
+  const dmNodes = nodes.filter(x => x.isDualMaster);
+  tbl(['节点', '角色', '主机', 'server_id', 'read_only'],
+    nodes.map(n => {
+      const dmIdx = n.isDualMaster ? dmNodes.indexOf(n) : -1;
+      const roleText = dmIdx >= 0
+        ? `主库/从库（双主节点 ${['A', 'B', 'C'][dmIdx] ?? dmIdx + 1}）`
+        : (roleMap[n.role] || n.role || '-');
+      return [nodeLabel(n), roleText, n.hostname || '-', n.variables?.server_id ?? '-', n.variables?.read_only ?? '-'];
+    }));
+}
 h('<h3>复制基础信息</h3>');
 tbl(['节点', 'server_id', 'binlog 格式', 'log_bin', 'gtid_mode'],
   nodes.map(n => [
@@ -628,6 +647,28 @@ h('<h3>长时间运行会话</h3>');
 const allLongSessions = nodes.flatMap(n =>
   longSessions(n).map(p => [nodeLabel(n), p.user || '-', p.time || '-', String(p.info || p.state || '').slice(0, 80)]));
 tbl(['节点', '用户', '时长(s)', 'SQL'], allLongSessions);
+h('<h3>最近死锁</h3>');
+{
+  const reportTs = (() => {
+    const d = new Date(data.reportDate || data.inspectionDate || Date.now());
+    return isNaN(d.getTime()) ? Date.now() : d.getTime();
+  })();
+  for (const n of nodes) {
+    const dlText = n.innodb?.latestDeadlock;
+    if (!dlText) { h(`<p>${esc(nodeLabel(n))}：未检测到死锁记录。</p>`); continue; }
+    const tsMatch = dlText.match(/(\d{4}-\d{2}-\d{2})[\sT](\d{2}:\d{2}:\d{2})/);
+    const dlTs = tsMatch ? new Date(`${tsMatch[1]}T${tsMatch[2]}`).getTime() : NaN;
+    const daysDiff = !isNaN(dlTs) ? Math.floor((reportTs - dlTs) / 86400000) : null;
+    if (daysDiff !== null && daysDiff > 30) {
+      const months = Math.floor(daysDiff / 30);
+      h(`<p>${esc(nodeLabel(n))}：上次死锁记录时间：${tsMatch[1]} ${tsMatch[2]}（距本次巡检约 ${months} 个月前）。最近 30 天内未检测到新死锁，当前无需立即处理。</p>`);
+      h('<details><summary>历史死锁详情（超过 30 天，已折叠）</summary>');
+      h(`<pre><code>${esc(dlText)}</code></pre></details>`);
+    } else {
+      h(`<p>${esc(nodeLabel(n))}：</p><pre><code>${esc(dlText)}</code></pre>`);
+    }
+  }
+}
 h('<h3>错误日志摘要</h3>');
 tbl(['节点', '日志范围', 'ERROR 数', 'WARNING 数', 'Deprecated 数'],
   nodes.map(n => {
@@ -640,7 +681,7 @@ tbl(['节点', '日志范围', 'ERROR 数', 'WARNING 数', 'Deprecated 数'],
       el.deprecatedCount ?? '-',
     ];
   }));
-callout('info', '本章小结：展示当前会话、长时间运行会话及错误日志统计；错误日志未发现 ERROR 级别记录。');
+callout('info', '本章小结：展示当前会话、长时间运行会话、死锁记录及错误日志统计；错误日志未发现 ERROR 级别记录。');
 
 // ── Ch11 用户与权限 ──────────────────────────────────────────────────────────
 h('<h2>第十一章 用户与权限</h2>');
@@ -849,6 +890,31 @@ if (!backupAssessment) {
     h('<p><em>（无数据）</em></p>');
   }
   callout(sevKind, `备份能力评估：${esc(assessment)}`);
+}
+h('<h3>Binlog 保留情况</h3>');
+{
+  function formatBytesNum(b) {
+    if (b == null || b === 0) return '-';
+    if (b >= 1073741824) return (b / 1073741824).toFixed(2) + ' GB';
+    if (b >= 1048576)    return (b / 1048576).toFixed(1) + ' MB';
+    return (b / 1024).toFixed(0) + ' KB';
+  }
+  const binlogRows = nodes.map(n => {
+    const dir = n.binlogDirPath || (n.binlogDirInfo ? n.binlogDirInfo.replace(/\n[\s\S]*/,'').trim() : '-');
+    const sizeBytes = n.binlogDirSizeBytes;
+    let sizeText = '-';
+    if (sizeBytes > 0) {
+      sizeText = formatBytesNum(sizeBytes);
+      if (n.binlogDirSizeFromShowLogs) sizeText += '（来自 SHOW BINARY LOGS 汇总）';
+    } else if (sizeBytes === 0) {
+      sizeText = '未获取（du 权限不足）';
+    }
+    const bl = n.binaryLogs;
+    const count = bl ? `${bl.count} 个` : '-';
+    const latest = bl?.latestFile || '-';
+    return [n.ip, dir || '-', sizeText, count, latest];
+  });
+  tbl(['节点 IP', 'Binlog 目录', '总大小', '文件数', '最新文件'], binlogRows);
 }
 callout('info', `本章小结：展示备份工具检测、备份产物发现及备份能力评估；当前评估：${esc(backupAssessment?.assessment || '未检测到 mysqldump / xtrabackup / mariabackup 等备份工具')}`);
 

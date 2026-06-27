@@ -331,6 +331,32 @@ ${selfRefHint}`;
     return svgWrap(W, H, body);
   }
 
+  // 双主互为主从：两个节点并排 + 双向箭头
+  const isDualMaster = nodes.length === 2 && nodes.every(n => n.isDualMaster);
+  if (isDualMaster) {
+    const H = opts.height || 220;
+    const cx1 = 155;
+    const cx2 = W - 155;
+    const cy = H / 2;
+    const ay1 = cy - 16;   // A→B 箭头 y
+    const ay2 = cy + 16;   // B→A 箭头 y
+    const mx = W / 2;
+    const [nodeA, nodeB] = nodes;
+    const arrowDefs = `<defs>
+  <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="${COLORS.secondary}"/></marker>
+</defs>`;
+    const body = `
+${arrowDefs}
+${title}
+${nodeBox(cx1, cy, nodeA, '主库/从库（双主节点 A）', COLORS.primary)}
+<line x1="${cx1 + 96}" y1="${ay1}" x2="${cx2 - 96}" y2="${ay1}" stroke="${COLORS.secondary}" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="${mx}" y="${ay1 - 5}" text-anchor="middle" font-size="10" fill="${COLORS.muted}">async replication</text>
+<line x1="${cx2 - 96}" y1="${ay2}" x2="${cx1 + 96}" y2="${ay2}" stroke="${COLORS.secondary}" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="${mx}" y="${ay2 + 15}" text-anchor="middle" font-size="10" fill="${COLORS.muted}">async replication</text>
+${nodeBox(cx2, cy, nodeB, '主库/从库（双主节点 B）', COLORS.primary)}`;
+    return svgWrap(W, H, body);
+  }
+
   // 多节点拓扑：主库居左，所有非主库节点居右
   const H = opts.height || Math.max(220, 120 + Math.max(0, replicas.length - 1) * 42);
   const px = 150;

@@ -31,38 +31,6 @@
       "sqlTpl": "SET GLOBAL binlog_format = ROW;\n-- my.cnf:\nbinlog_format = ROW\nbinlog_row_image = FULL"
     },
     {
-      "id": "dual_master_write_conflict",
-      "scope": "node",
-      "priority": "P0",
-      "title": "双主写冲突",
-      "rationale": "双主双写同一主键导致复制 SQL 线程中止、两库数据已分叉。点名冲突表，给出选定权威端 + 重建复制 + 自增拆分的处置。",
-      "handler": "evalDualMasterWriteConflict"
-    },
-    {
-      "id": "dual_master_both_writable",
-      "scope": "node",
-      "priority": "P0",
-      "title": "双主脑裂风险：两端均可写",
-      "rationale": "双主架构两端均未设 read_only，任何应用/人工操作在两端写入同一行都会造成主键冲突、复制中断、数据分叉（脑裂）。双主必须有一端只读，或通过应用层严格保证只写单端。",
-      "handler": "evalDualMasterBothWritable"
-    },
-    {
-      "id": "dual_master_auto_increment",
-      "scope": "node",
-      "priority": "P1",
-      "title": "双主 auto_increment 未正确拆分",
-      "rationale": "双主架构若两端 auto_increment_increment != 2 或 auto_increment_offset 相同，任一 AUTO_INCREMENT 表都可能产生主键碰撞，触发复制中断。",
-      "handler": "evalDualMasterAutoIncrement"
-    },
-    {
-      "id": "dual_master_log_slave_updates",
-      "scope": "node",
-      "priority": "P1",
-      "title": "双主 log_slave_updates 未开启",
-      "rationale": "双主架构中，若某端 log_slave_updates=OFF，从对端复制过来的事务不会写入本端 binlog，导致链路上任意第三节点（备库/DR）丢失对端写入，形成数据孤岛。",
-      "handler": "evalDualMasterLogSlaveUpdates"
-    },
-    {
       "id": "doublewrite_off",
       "scope": "node",
       "priority": "P1",
@@ -142,6 +110,38 @@
       "title": "ibtmp1 超大",
       "rationale": "临时表空间无上限，已增长到危险体积。追因落盘临时表 TOP SQL，并提示开启 performance_schema 精确定位元凶。",
       "handler": "evalIbtmp1Oversize"
+    },
+    {
+      "id": "dual_master_write_conflict",
+      "scope": "node",
+      "priority": "P0",
+      "title": "双主写冲突",
+      "rationale": "双主双写同一主键导致复制 SQL 线程中止、两库数据已分叉。点名冲突表，给出选定权威端 + 重建复制 + 自增拆分的处置。",
+      "handler": "evalDualMasterWriteConflict"
+    },
+    {
+      "id": "dual_master_both_writable",
+      "scope": "node",
+      "priority": "P0",
+      "title": "双主两端均可写（脑裂风险）",
+      "rationale": "双主两端 read_only=0，任意双端写同一主键即触发复制中断与数据分叉。必须收敛为伪双主（单写）或做好自增拆分 + 应用层路由隔离。",
+      "handler": "evalDualMasterBothWritable"
+    },
+    {
+      "id": "dual_master_auto_increment",
+      "scope": "node",
+      "priority": "P1",
+      "title": "双主自增未正确拆分",
+      "rationale": "双主场景下 auto_increment_increment 应为 2，且两端 offset 须不同（1/2），否则 AUTO_INCREMENT 列在两端会生成相同值引发主键冲突。",
+      "handler": "evalDualMasterAutoIncrement"
+    },
+    {
+      "id": "dual_master_log_slave_updates",
+      "scope": "node",
+      "priority": "P1",
+      "title": "双主 log_slave_updates=OFF",
+      "rationale": "双主节点若带有下游从库（DR/备库），log_slave_updates=OFF 会导致对端写入的事务对下游不可见，形成数据孤岛。",
+      "handler": "evalDualMasterLogSlaveUpdates"
     },
     {
       "id": "self_ref_slave_residue",

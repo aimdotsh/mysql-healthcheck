@@ -869,7 +869,7 @@ function evalIbtmp1Oversize(ctx) {
 // Swap 被使用 —— 关联到内存预算（buffer_pool + 每连接 buffer × max_connections）
 function evalSwapUsed(ctx) {
   const { node } = ctx;
-  if (!node.swapUsed) return [];
+  if (!node.swapIsUsed) return [];
   const memGB = node.memGB;
   const bpMB = node.bpMB;
   const maxConn = Number(node.variables?.max_connections || 0);

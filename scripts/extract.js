@@ -800,6 +800,22 @@ function parseTxt(filepath) {
     const p = node.binlogDirInfo.match(/binlog dir:\s*(\S+)/);
     if (p) node.binlogDirPath = p[1];
   }
+  // SHOW BINARY LOGS fallback：du 权限不足时从文件列表求和
+  const binlogListSec = getSection(content, 'Binary logs');
+  if (binlogListSec) {
+    const { headers, rows } = parseMysqlTable(stripCollectorBanner(binlogListSec));
+    const sizeIdx = headers.findIndex(h => /file_size/i.test(h));
+    const nameIdx = headers.findIndex(h => /log_name/i.test(h));
+    if (rows.length > 0 && sizeIdx >= 0) {
+      const totalBytes = rows.reduce((s, r) => s + (parseInt(r[sizeIdx]) || 0), 0);
+      const latestFile = nameIdx >= 0 ? (rows[rows.length - 1][nameIdx] || '') : '';
+      node.binaryLogs = { count: rows.length, totalBytes, latestFile };
+      if (!node.binlogDirSizeBytes && totalBytes > 0) {
+        node.binlogDirSizeBytes = totalBytes;
+        node.binlogDirSizeFromShowLogs = true;
+      }
+    }
+  }
 
   // v4.9：扩展采集段——datadir / relay log 目录大小（collector v3.1+ 提供，老版本采集会缺失）
   const datadirSec = getSection(content, 'Datadir size');
@@ -1271,6 +1287,16 @@ function parseReplication(text) {
       const m = block.match(new RegExp(`\\b${k}:\\s*(.+)`));
       return m ? m[1].trim() : null;
     };
+    const lastIoErrTs = grab('Last_IO_Error_Timestamp');
+    const lastSqlErrTs = grab('Last_SQL_Error_Timestamp');
+    const parseTs = (s) => {
+      if (!s || s === '0000-00-00 00:00:00' || s.startsWith('0000')) return null;
+      const d = new Date(s.replace(' ', 'T') + 'Z');
+      return isNaN(d.getTime()) ? null : d.getTime();
+    };
+    const nowMs = Date.now();
+    const ioErrMs = parseTs(lastIoErrTs);
+    const sqlErrMs = parseTs(lastSqlErrTs);
     result.status = {
       masterHost: grab('Master_Host'),
       masterPort: grab('Master_Port'),
@@ -1281,6 +1307,11 @@ function parseReplication(text) {
       slaveSqlRunning: grab('Slave_SQL_Running'),
       lastIoError: grab('Last_IO_Error'),
       lastSqlError: grab('Last_SQL_Error'),
+      lastIoErrorTimestamp: lastIoErrTs || null,
+      lastSqlErrorTimestamp: lastSqlErrTs || null,
+      ioBreakSeconds: ioErrMs ? Math.floor((nowMs - ioErrMs) / 1000) : null,
+      sqlBreakSeconds: sqlErrMs ? Math.floor((nowMs - sqlErrMs) / 1000) : null,
+      relayLogSpace: grab('Relay_Log_Space'),
       secondsBehindMaster: grab('Seconds_Behind_Master'),
       masterUuid: grab('Master_UUID'),
       retrievedGtidSet: grab('Retrieved_Gtid_Set'),
@@ -1423,13 +1454,15 @@ function isMetadataQuery(queryText, dbName) {
   const q = String(queryText).trim();
   // 1. SHOW / DESC / EXPLAIN 类元数据查询
   if (/^(SHOW|DESC|DESCRIBE|EXPLAIN)\s/i.test(q)) return true;
-  // 2. 直接访问系统库（information_schema / performance_schema / mysql / sys）
+  // 2. DB 字段本身是系统库（information_schema / performance_schema / mysql / sys / NULL）
+  if (dbName && /^(information_schema|performance_schema|mysql|sys)$/i.test(String(dbName).trim())) return true;
+  // 3. 直接访问系统库（query 文本中含系统库表名）
   if (/\b(information_schema|performance_schema|mysql\.|sys\.)/i.test(q)) return true;
-  // 3. DB 为 NULL 且查询是元数据探测（如 SELECT NOW(), SYSTEM_USER()）
+  // 4. DB 为 NULL 且查询是元数据探测（如 SELECT NOW(), SYSTEM_USER()）
   if ((dbName == null || dbName === 'NULL' || dbName === '') && /^SELECT\s+(NOW|SYSTEM_USER|VERSION|DATABASE|USER|CURRENT_USER|CONNECTION_ID)\s*\(/i.test(q)) return true;
-  // 4. SET / USE 类会话控制语句
+  // 5. SET / USE 类会话控制语句
   if (/^(SET|USE|RESET)\s/i.test(q)) return true;
-  // 5. 单独的事务控制语句
+  // 6. 单独的事务控制语句
   if (/^(COMMIT|ROLLBACK|BEGIN|START\s+TRANSACTION)\s*$/i.test(q)) return true;
   return false;
 }
@@ -1812,6 +1845,7 @@ function detectDualMaster(nodes) {
 
 // ============== 拓扑推断 ==============
 function deriveTopology(nodes) {
+  if (nodes.some(n => n.isDualMaster)) return '双主（互为主从）';
   const primary = nodes.find(n => n.role === 'primary');
   const slaves = nodes.filter(n => n.role !== 'primary');
   if (primary && slaves.length > 0) {
@@ -1909,8 +1943,16 @@ function computeHealthScore(nodes, issues) {
   let total = 0;
   for (const k of Object.keys(dim)) total += dim[k] * weights[k];
   total = Math.round(total);
-  // 总分下限 55（数据库正常运行的事实，应反映在评分里）
-  total = Math.max(55, Math.min(100, total));
+
+  // 复合关键风险上限：多个 P0 并存时整体评分不能虚高
+  const p0Count = issues.filter(i => i.priority === 'P0').length;
+  if (p0Count >= 3) total = Math.min(total, 62);
+  else if (p0Count >= 2) total = Math.min(total, 70);
+  else if (p0Count >= 1) total = Math.min(total, 78);
+
+  // 总分下限：有 P0 时 45，无 P0 时 55
+  total = Math.max(p0Count > 0 ? 45 : 55, total);
+  total = Math.min(100, total);
 
   return { total, dimensions: dim };
 }
@@ -2228,13 +2270,13 @@ function analyzeIssues(nodes) {
     // 内存 / BP（数值，方便 handler 直接读）
     n.memGB = memTotalGB(n);
     n.bpMB = mb(n, 'innodb_buffer_pool_size_in_mb');
-    // Swap 已使用判定（沿用原始 parseFloat 逻辑）
+    // Swap 已使用判定（bool，不覆盖 n.swapUsed 格式化字符串）
     if (n.swapTotal && n.swapFree && n.swapTotal !== n.swapFree) {
       const sm = parseFloat((n.swapTotal.match(/[\d.]+/) || [])[0]);
       const sfm = parseFloat((n.swapFree.match(/[\d.]+/) || [])[0]);
-      n.swapUsed = !isNaN(sm) && !isNaN(sfm) && sm > sfm + 0.1;
+      n.swapIsUsed = !isNaN(sm) && !isNaN(sfm) && sm > sfm + 0.1;
     } else {
-      n.swapUsed = false;
+      n.swapIsUsed = false;
     }
     // TLS 弱协议（字符串或 null）
     n.tlsWeakDetail = tlsWeakProtocolDetail(n.tlsConfig);
@@ -2576,14 +2618,29 @@ function deriveCorrelations(nodes, issues) {
       }
       continue;
     }
-    // 有 diskAttribution：明确指出主因
+    // 归因覆盖度检查：若已知子目录合计 < 实际已用的 5%，视为数据不足，不做主因判断
+    const diskUsedBytes = parseHumanSizeToBytes(highDiskDisk.used || '0');
+    const coverageRatio = diskUsedBytes > 0 ? attr.totalBytes / diskUsedBytes : 1;
+    if (coverageRatio < 0.05) {
+      corrs.push({
+        title: `节点 ${n.ip} 磁盘高位（${highDiskDisk.usePct}）— 主因待查（子目录覆盖不足）`,
+        detail: [
+          `节点 ${n.ip} 磁盘 ${highDiskDisk.mount} 使用率 ${highDiskDisk.usePct}（已用 ${highDiskDisk.used} / ${highDiskDisk.total}）。`,
+          `已采集子目录（${fmtBytesShort(attr.totalBytes)}）仅覆盖实际已用量的 ${(coverageRatio * 100).toFixed(1)}%，无法定量归因。`,
+          attr.top.length > 0 ? `采集到：${attr.top.map(t => `${({ ibtmp1:'ibtmp1', binlog:'binlog', slowLog:'慢日志', errorLog:'错误日志', relayLog:'relay log', datadir:'datadir' }[t.kind] || t.kind)} ${fmtBytesShort(t.bytes)}`).join('、')}` : '',
+        ].filter(Boolean).join('\n'),
+        suggestion: `建议在目标节点手工排查：\n  du -sh /data1/* | sort -rh | head -20\n  du -sh /home/* | sort -rh | head -20\n重点排查 MySQL 数据目录（datadir）、binlog 目录、slow log、归档文件等大文件。`,
+      });
+      continue;
+    }
+    // 归因覆盖充分：明确指出主因
     const top1 = attr.top[0];
     const top2 = attr.top[1];
     const topKindCN = { binlog: 'binlog 文件', slowLog: '慢日志', errorLog: '错误日志', relayLog: 'relay log', ibtmp1: 'ibtmp1 临时表空间', datadir: 'datadir 整体' }[top1.kind] || top1.kind;
     const top1Pct = top1.pct != null ? (top1.pct * 100).toFixed(0) + '%' : '?';
     const detail = [
       `节点 ${n.ip} 磁盘 ${highDiskDisk.mount} 使用率 ${highDiskDisk.usePct}（已用 ${highDiskDisk.used} / ${highDiskDisk.total}）。`,
-      `已采集子目录归因（合计 ${fmtBytesShort(attr.totalBytes)}）：`,
+      `已采集子目录归因（合计 ${fmtBytesShort(attr.totalBytes)}，覆盖实际已用 ${(coverageRatio * 100).toFixed(0)}%）：`,
       attr.top.map(t => `  · ${({ binlog:'binlog', slowLog:'慢日志', errorLog:'错误日志', relayLog:'relay log', ibtmp1:'ibtmp1', datadir:'datadir' }[t.kind] || t.kind)} ${fmtBytesShort(t.bytes)} (${(t.pct*100).toFixed(0)}%)`).join('\n'),
       `主因明确：${topKindCN} 占 ${top1Pct}（${fmtBytesShort(top1.bytes)}）${top2 ? `；次因：${({binlog:'binlog',slowLog:'慢日志',errorLog:'错误日志',relayLog:'relay log',ibtmp1:'ibtmp1',datadir:'datadir'}[top2.kind] || top2.kind)} ${(top2.pct*100).toFixed(0)}%` : ''}。`,
     ].join('\n');
