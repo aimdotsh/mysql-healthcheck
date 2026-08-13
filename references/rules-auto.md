@@ -1,7 +1,7 @@
 # 巡检规则手册（自动生成）
 
 > **本文档由 `scripts/gen-rules-md.js` 从 `scripts/rules/*.json` 自动生成。请勿手动编辑。**
-> 生成时间：2026-06-17　|　规则总数：50
+> 生成时间：2026-08-13　|　规则总数：55
 
 v5.0 GA：所有 ~51 条巡检规则（节点级 + 集群级）全部以声明式 JSON 描述，由 `scripts/rule-engine.js` 加载并求值；复杂规则通过 `scripts/rule-helpers/index.js` 注册的 handler 计算。详细 schema 见 [`scripts/rules/SCHEMA.md`](../scripts/rules/SCHEMA.md)。
 
@@ -13,14 +13,31 @@ v5.0 GA：所有 ~51 条巡检规则（节点级 + 集群级）全部以声明�
 
 | 维度 | 规则数 |
 |---|---|
-| 可用性 (availability) | 10 |
-| 持久化 (durability) | 13 |
-| 性能 (performance) | 9 |
+| 可用性 (availability) | 11 |
+| 持久化 (durability) | 16 |
+| 性能 (performance) | 10 |
 | 安全 (security) | 5 |
 | 数据设计 (dataDesign) | 7 |
 | 运维 (operations) | 6 |
 
 ## 可用性 (availability)
+
+### `connection_usage_high`
+
+**当前连接使用率偏高**
+
+> Threads_connected 接近 max_connections 时，新连接可能被拒绝；必须结合连接池、长事务和历史峰值复核，不能只盲目调大上限。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `availability` |
+| Scope | `node` |
+| Handler | `evalConnectionUsage` |
+| 文件 | `scripts/rules/availability.json` |
+
+**触发**：调用 helper `evalConnectionUsage`（详见 `scripts/rule-helpers/`）
+
+---
 
 ### `disks`
 
@@ -279,6 +296,60 @@ innodb_doublewrite = 1
 
 ---
 
+### `dual_master_auto_increment`
+
+**双主自增未正确拆分**
+
+> 双主场景下 auto_increment_increment 应为 2，且两端 offset 须不同（1/2），否则 AUTO_INCREMENT 列在两端会生成相同值引发主键冲突。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `durability` |
+| Scope | `node` |
+| 优先级 | **P1** |
+| Handler | `evalDualMasterAutoIncrement` |
+| 文件 | `scripts/rules/durability.json` |
+
+**触发**：调用 helper `evalDualMasterAutoIncrement`（详见 `scripts/rule-helpers/`）
+
+---
+
+### `dual_master_both_writable`
+
+**双主两端均可写（脑裂风险）**
+
+> 双主两端 read_only=0，任意双端写同一主键即触发复制中断与数据分叉。必须收敛为伪双主（单写）或做好自增拆分 + 应用层路由隔离。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `durability` |
+| Scope | `node` |
+| 优先级 | **P0** |
+| Handler | `evalDualMasterBothWritable` |
+| 文件 | `scripts/rules/durability.json` |
+
+**触发**：调用 helper `evalDualMasterBothWritable`（详见 `scripts/rule-helpers/`）
+
+---
+
+### `dual_master_log_slave_updates`
+
+**双主 log_slave_updates=OFF**
+
+> 双主节点若带有下游从库（DR/备库），log_slave_updates=OFF 会导致对端写入的事务对下游不可见，形成数据孤岛。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `durability` |
+| Scope | `node` |
+| 优先级 | **P1** |
+| Handler | `evalDualMasterLogSlaveUpdates` |
+| 文件 | `scripts/rules/durability.json` |
+
+**触发**：调用 helper `evalDualMasterLogSlaveUpdates`（详见 `scripts/rule-helpers/`）
+
+---
+
 ### `dual_master_write_conflict`
 
 **双主写冲突**
@@ -312,7 +383,7 @@ innodb_doublewrite = 1
 
 **触发**：
 ```
-node.variables.expire_logs_days != '0' && node.variables.expire_logs_days > cfg.thresholds.binlog.expire_logs_max_days
+(node.variables.log_bin == 'ON' || node.variables.log_bin == '1') && node.variables.expire_logs_days != '0' && node.variables.expire_logs_days > cfg.thresholds.binlog.expire_logs_max_days
 ```
 
 **说明文本**：
@@ -338,7 +409,7 @@ node.variables.expire_logs_days != '0' && node.variables.expire_logs_days > cfg.
 
 **触发**：
 ```
-node.variables.expire_logs_days == '0'
+(node.variables.log_bin == 'ON' || node.variables.log_bin == '1') && node.variables.expire_logs_days == '0'
 ```
 
 **说明文本**：
@@ -600,7 +671,7 @@ pt-table-checksum --replicate=percona.checksums h=<primary>,u=<user>,p=<pwd>
 
 **触发**：
 ```
-node.variables.sync_binlog == '0'
+(node.variables.log_bin == 'ON' || node.variables.log_bin == '1') && node.variables.sync_binlog == '0'
 ```
 
 **说明文本**：
@@ -650,6 +721,23 @@ SET GLOBAL sync_binlog = 1;
 | 文件 | `scripts/rules/performance.json` |
 
 **触发**：调用 helper `evalBufferPoolSize`（详见 `scripts/rule-helpers/`）
+
+---
+
+### `current_lock_waits`
+
+**采集时刻存在行锁或元数据锁等待**
+
+> 当前锁等待会直接放大事务响应时间；需通过阻塞链和长事务证据定位，避免无依据终止会话。
+
+| 字段 | 值 |
+|---|---|
+| 维度 | `performance` |
+| Scope | `node` |
+| Handler | `evalCurrentLockWaits` |
+| 文件 | `scripts/rules/performance.json` |
+
+**触发**：调用 helper `evalCurrentLockWaits`（详见 `scripts/rule-helpers/`）
 
 ---
 

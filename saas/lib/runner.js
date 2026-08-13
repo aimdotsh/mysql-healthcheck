@@ -10,6 +10,7 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const SCRIPTS_DIR = path.join(REPO_ROOT, 'scripts');
 const EXTRACT_SCRIPT = path.join(SCRIPTS_DIR, 'extract.js');
 const RENDER_SCRIPT = path.join(SCRIPTS_DIR, 'render.js');
+const llmReview = require(path.join(SCRIPTS_DIR, 'lib', 'llm-review.js'));
 
 /**
  * 异步执行子进程，捕获 stdout/stderr。
@@ -34,7 +35,7 @@ function runChild(cmd, args, opts = {}) {
 }
 
 /**
- * 跑一个 job：extract.js → render.js → 返回结果路径 + 摘要
+ * 跑一个 job：extract.js → 可选大模型辅助研判 → render.js → 返回结果路径 + 摘要
  * @param {object} opts
  * @param {string} opts.uploadDir      含 MySQLHealthCheck_*.txt 的目录
  * @param {string} opts.outputDir      docx + data.json 的输出目录
@@ -44,7 +45,7 @@ function runChild(cmd, args, opts = {}) {
  * @returns {Promise<{docxPath, dataJsonPath, summary}>}
  */
 async function generateReport(opts) {
-  const { uploadDir, outputDir, project, configPath, onProgress } = opts;
+  const { uploadDir, outputDir, project, configPath, llmConfig, onProgress } = opts;
   if (!fs.existsSync(uploadDir)) throw new Error(`上传目录不存在: ${uploadDir}`);
   fs.mkdirSync(outputDir, { recursive: true });
 
@@ -57,7 +58,20 @@ async function generateReport(opts) {
   if (configPath) extractArgs.push('--config', configPath);
   await runChild(process.execPath, extractArgs);
 
-  // Phase 2: render
+  // Phase 2: optional LLM review. failOpen=true 时失败不影响规则报告交付。
+  let aiError = null;
+  if (llmConfig?.enabled) {
+    onProgress?.('ai-review');
+    try {
+      await llmReview.reviewDataFile(dataJsonPath, llmConfig);
+    } catch (err) {
+      aiError = err.message;
+      if (llmConfig.failOpen === false) throw err;
+      console.warn(`[llm-review] ${aiError}（failOpen=true，继续生成纯规则报告）`);
+    }
+  }
+
+  // Phase 3: render
   onProgress?.('render');
   // 跳过 LibreOffice 刷新以加快 SaaS 响应；前端可以提示用户自行更新目录
   await runChild(process.execPath, [RENDER_SCRIPT, dataJsonPath, '--out', docxPath, '--no-toc-refresh']);
@@ -77,6 +91,11 @@ async function generateReport(opts) {
     overallAssessment: data.overallAssessment || '-',
     correlationCount: (data.correlations || []).length,
     disabledRules: data.disabledRulesApplied || [],
+    aiEnabled: !!llmConfig?.enabled,
+    aiStatus: data.aiAssessment?.status || (aiError ? 'failed-open' : 'disabled'),
+    aiFindingCount: (data.aiAssessment?.findings || []).length,
+    aiModel: data.aiAssessment?.model || (llmConfig?.enabled ? llmConfig.model : null),
+    aiError,
     docxSizeBytes: fs.statSync(docxPath).size,
   };
 

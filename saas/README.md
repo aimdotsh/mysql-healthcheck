@@ -32,11 +32,33 @@ open http://localhost:3000
 | `STORAGE_ROOT` | `saas/storage` | 上传文件与生成报告的根目录 |
 | `MAX_FILES` | 16 | 单次最多上传文件数 |
 | `MAX_FILE_SIZE_MB` | 50 | 单文件最大尺寸 |
+| `MYSQL_HC_LLM_CONFIG` | （空） | 大模型配置 JSON 的容器内绝对路径；未设置保持纯规则模式 |
+| `MYSQL_HC_LLM_API_KEY` | （空） | 示例配置默认从此环境变量读取模型 API Key |
 
 示例：
 ```bash
 PORT=8080 API_KEY=$(openssl rand -hex 16) STORAGE_ROOT=/var/mysql-hc node server.js
 ```
+
+## 大模型辅助巡检（可选）
+
+SaaS 支持“规则基线 + 大模型二次研判”。启用后的阶段为：
+
+```
+extract（确定性规则） → ai-review（结构化补充建议） → render（独立展示）
+```
+
+```bash
+cp scripts/config/llm.example.json deploy/llm.json
+# 编辑 deploy/llm.json：填写 baseUrl、model；不要写 API Key
+export MYSQL_HC_LLM_CONFIG="$PWD/deploy/llm.json"
+export MYSQL_HC_LLM_API_KEY='<secret>'
+cd saas && node server.js
+```
+
+默认不发送原始 TXT、IP/hostname 或 SQL 文本。`failOpen=true` 时模型超时、限流或返回格式错误不会阻止报告交付，作业摘要会显示 `failed-open`。模型输出写入 `data.json.aiAssessment` 并在报告中独立展示，不计入规则问题数或健康度评分。
+
+完整隐私、输出和候选规则契约见 [`references/ai-review.md`](../references/ai-review.md)。
 
 ---
 

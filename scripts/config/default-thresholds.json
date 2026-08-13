@@ -12,6 +12,15 @@
       "_doc": "内存使用率告警阈值",
       "high_pct": 90
     },
+    "connection": {
+      "_doc": "当前 Threads_connected / max_connections 使用率阈值；单次采集仅代表快照，规则会要求结合历史峰值复核",
+      "usage_p1_pct": 85,
+      "usage_p2_pct": 70
+    },
+    "locks": {
+      "_doc": "采集时刻当前锁等待数量阈值",
+      "current_waits_p1": 5
+    },
     "innodb": {
       "_doc": "InnoDB 引擎相关阈值",
       "hll_warn": 10000,

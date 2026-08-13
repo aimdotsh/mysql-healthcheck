@@ -34,6 +34,16 @@ const REPORTS_DIR = path.join(STORAGE_ROOT, 'reports');
 const HISTORY_DIR = path.join(STORAGE_ROOT, 'history');
 const MAX_FILES = Number(process.env.MAX_FILES) || 16;
 const MAX_FILE_SIZE_MB = Number(process.env.MAX_FILE_SIZE_MB) || 50;
+const LLM_CONFIG_PATH = process.env.MYSQL_HC_LLM_CONFIG || path.join(__dirname, 'config', 'llm.json');
+let LLM_CONFIG = null;
+try {
+  if (fs.existsSync(LLM_CONFIG_PATH)) {
+    LLM_CONFIG = require(path.join(__dirname, '..', 'scripts', 'lib', 'llm-review.js')).loadConfig(LLM_CONFIG_PATH);
+  }
+} catch (err) {
+  console.error(`LLM 配置加载失败 (${LLM_CONFIG_PATH})：${err.message}`);
+  process.exit(1);
+}
 
 // 准备存储目录
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -126,6 +136,13 @@ app.get('/api/v1/health', (req, res) => {
     saasVersion: require('./package.json').version,
     scriptsVersion,
     apiKeyEnabled: !!API_KEY,
+    llm: {
+      enabled: !!LLM_CONFIG?.enabled,
+      provider: LLM_CONFIG?.enabled ? LLM_CONFIG.provider : null,
+      model: LLM_CONFIG?.enabled ? LLM_CONFIG.model : null,
+      redactHosts: LLM_CONFIG?.enabled ? LLM_CONFIG.redactHosts : null,
+      includeSqlText: LLM_CONFIG?.enabled ? LLM_CONFIG.includeSqlText : null,
+    },
     storage: { uploadsDir: UPLOADS_DIR, reportsDir: REPORTS_DIR },
   });
 });
@@ -236,8 +253,11 @@ app.post('/api/v1/reports', upload.array('files', MAX_FILES), async (req, res) =
             uploadDir: subUploadDir,
             outputDir: subOutputDir,
             project: subProject,
+            llmConfig: LLM_CONFIG,
             onProgress: (stage) => {
-              const next = stage === 'extract' ? STATUS.RUNNING_EXTRACT : STATUS.RUNNING_RENDER;
+              const next = stage === 'extract' ? STATUS.RUNNING_EXTRACT
+                : stage === 'ai-review' ? STATUS.RUNNING_AI
+                : STATUS.RUNNING_RENDER;
               jobs.update(subJobId, { status: next, progress: stage });
               history.updateCluster(batchId, subJobId, { status: 'running:' + stage, progress: stage });
             },
@@ -455,4 +475,6 @@ app.listen(PORT, () => {
   console.log(`   Storage:  ${STORAGE_ROOT}`);
   if (API_KEY) console.log(`   API key:  required (X-API-Key header)`);
   else console.log(`   API key:  not required (set API_KEY env var to enable)`);
+  if (LLM_CONFIG?.enabled) console.log(`   LLM:      ${LLM_CONFIG.provider}/${LLM_CONFIG.model} (redactHosts=${LLM_CONFIG.redactHosts}, includeSqlText=${LLM_CONFIG.includeSqlText})`);
+  else console.log(`   LLM:      disabled (set MYSQL_HC_LLM_CONFIG to enable)`);
 });

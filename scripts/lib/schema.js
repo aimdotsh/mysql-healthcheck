@@ -24,6 +24,7 @@ const FIELD_SPEC = {
   securityAssessment:  { kind: 'object', required: false },
   nodes:               { kind: 'array',  required: true, minLen: 1 },
   recommendations:     { kind: 'object', required: false },
+  aiAssessment:        { kind: 'object', required: false },
 };
 
 const NODE_FIELDS = {

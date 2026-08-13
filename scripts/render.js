@@ -2445,7 +2445,54 @@ function chapterConclusion(data) {
     out.push(emptyLine());
   }
 
-  out.push(h2('16.3 附录 · 数据来源'));
+  const ai = data.aiAssessment;
+  if (ai && ai.status === 'success') {
+    out.push(h2('16.3 大模型辅助研判'));
+    out.push(noteParagraph(ai.disclaimer || '本节为大模型辅助研判，不改变规则告警与健康度评分；生产变更前须由 DBA 复核。'));
+    if (ai.summary) out.push(para(ai.summary));
+    const findings = Array.isArray(ai.findings) ? ai.findings : [];
+    if (findings.length > 0) {
+      const dimLabel = {
+        availability: '可用性', performance: '性能', durability: '持久化',
+        security: '安全', operations: '运维', dataDesign: '数据规范',
+      };
+      out.push(makeTable(
+        ['级别', '维度 / 发现', '证据', '建议与验证'],
+        findings.map(f => [
+          f.priority || 'P2',
+          `${dimLabel[f.category] || f.category || '运维'} · ${f.title || '补充建议'}${f.isRuleGap ? '（候选规则）' : ''}`,
+          f.evidence || '-',
+          `${f.suggestion || '-'}${f.verification ? `\n验证：${f.verification}` : ''}`,
+        ]),
+        '大模型补充发现（不计入规则问题数与健康度评分）',
+      ));
+      const candidates = findings.filter(f => f.isRuleGap && f.candidateRule);
+      if (candidates.length > 0) {
+        out.push(makeTable(
+          ['候选规则 ID', '维度 / 范围', '触发思路', '数据依赖与误报守卫'],
+          candidates.map(f => {
+            const c = f.candidateRule;
+            return [
+              c.id || '待命名',
+              `${dimLabel[c.dimension] || c.dimension || f.category} / ${c.scope || 'node'}`,
+              c.triggerIdea || '-',
+              `依赖：${(c.dataDependencies || []).join('、') || '-'}\n守卫：${(c.falsePositiveGuards || []).join('；') || '-'}`,
+            ];
+          }),
+          '候选规则（须完成确定性触发条件、误报守卫与测试后才能进入正式规则库）',
+        ));
+      }
+    } else {
+      out.push(para('大模型未补充新的高价值发现。'));
+    }
+    if ((ai.limitations || []).length > 0) {
+      out.push(para([{ text: '证据边界：', bold: true }]));
+      ai.limitations.forEach(x => out.push(bullet(x)));
+    }
+    out.push(emptyLine());
+  }
+
+  out.push(h2(`16.${ai && ai.status === 'success' ? '4' : '3'} 附录 · 数据来源`));
   out.push(para('本报告基于以下原始采集文件生成：'));
   for (const n of data.nodes) {
     out.push(bullet(`${n.ip}（${roleLabel(n.role)}）：${n._file || '-'}`));

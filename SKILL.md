@@ -1,6 +1,6 @@
 ---
 name: mysql-healthcheck
-description: 为 MySQL 数据库集群生成商业可交付级巡检报告（.docx）。当用户提供包含 MySQLHealthCheck_*.txt 的数据目录并要求「生成巡检报告」「整理巡检数据」「写月度巡检」「健康评估」「上线评估」「故障复盘」「合规自查」「商业交付级报告」等任务时使用。产物含 17 章详细分析 + 执行摘要 + 自动目录 + 六维度健康度评分 + TOP SQL 治理 + 备份评估 + 等保/PCI/GDPR/SOX 合规对照表 + 10 张嵌入图表。
+description: 为 MySQL 数据库集群生成商业可交付级巡检报告，并用当前智能体或可配置的大模型 API 对规则结果做二次研判、补充建议和识别候选规则。适用于 MySQL 巡检、健康评估、上线评估、故障复盘、SQL/容量/复制/备份/安全审查及规则完善。规则引擎负责确定性告警和评分，大模型结论独立展示并要求 DBA 复核。
 ---
 
 # MySQL 巡检报告 Skill
@@ -20,6 +20,21 @@ description: 为 MySQL 数据库集群生成商业可交付级巡检报告（.do
 
 **不要**用于：非 MySQL 数据库；纯只读数据查询任务（不生成 docx）。
 
+## 工作原则：规则基线 + 大模型补充
+
+本技能不是让模型替代规则引擎，而是执行两层审查：
+
+1. **确定性层**：`extract.js` 和声明式规则输出 `issues[]`、优先级和健康度评分；可复现、可审计。
+2. **研判层**：智能体或 API 模型读取裁剪后的结构化事实，发现跨指标关联、补充建议和规则缺口，写入独立的 `aiAssessment`。
+
+硬性边界：
+
+- 不得用模型结论改写 `issues[]`、`healthScore` 或既有规则优先级。
+- 不得因模型建议直接执行 `KILL`、`ALTER`、重启、故障切换或数据修复。
+- 没有采集证据时必须标记证据不足，并给出补采字段或只读验证 SQL。
+- 模型发现的新风险先进入 `candidateRule`；只有满足可观测字段、确定性触发条件、误报守卫和测试后，才能加入 `scripts/rules/*.json`。
+- 默认不向外部 API 发送原始 TXT、主机 IP/hostname 或 SQL 文本；详见 `references/ai-review.md`。
+
 ---
 
 ## 输入契约
@@ -38,7 +53,7 @@ description: 为 MySQL 数据库集群生成商业可交付级巡检报告（.do
 
 ---
 
-## 执行流程（标准 2 步 + 可选润色）
+## 执行流程（规则必选 + AI 二选一 + 渲染）
 
 ### Step 0（可选但**强烈建议**）：交互确认巡检范围
 
@@ -92,7 +107,51 @@ node extract.js <数据目录> --project "<项目正式名>"
   - 自动检出问题：N 项 (P0:N, P1:N, P2:N, P3:N)
 ```
 
-### Step 2：渲染 docx
+### Step 2A（推荐）：使用当前智能体能力完成二次巡检
+
+当本技能由 Codex / Claude / Cursor 等具备推理能力的智能体执行时，优先使用此模式，不需要外部 API Key：
+
+```bash
+node ai-review.js <数据目录>/data.json --prepare --out <数据目录>/ai-review-input.json
+```
+
+随后智能体必须完整阅读 `references/ai-review.md`，基于 `ai-review-input.json.snapshot` 生成严格 JSON，保存为 `ai-review-result.json`，再执行：
+
+```bash
+node ai-review.js <数据目录>/data.json \
+  --apply <数据目录>/ai-review-result.json
+```
+
+智能体审查重点：
+
+- 同一节点或跨节点指标组合是否形成复合风险；
+- 规则告警与采集事实是否矛盾，是否需要业务上下文确认；
+- TOP SQL、连接、锁等待、复制、容量和持久化配置之间的因果关系；
+- 是否存在当前规则未覆盖、但能够转为确定性规则的缺口。
+
+只报告有具体证据的增量发现。不要换一种措辞重复 `issues[]`。
+
+### Step 2B（SaaS/自动化）：调用可配置的大模型 API
+
+复制示例配置并只填写非密钥参数：
+
+```bash
+cp scripts/config/llm.example.json <安全目录>/mysql-healthcheck.llm.json
+export MYSQL_HC_LLM_API_KEY='<API Key>'
+node ai-review.js <数据目录>/data.json \
+  --config <安全目录>/mysql-healthcheck.llm.json
+```
+
+也可端到端运行：
+
+```bash
+npm run build -- <数据目录> --project "<项目正式名>" \
+  --llm-config <安全目录>/mysql-healthcheck.llm.json
+```
+
+API 必须兼容 `POST /chat/completions`。密钥仅从 `apiKeyEnv` 指定的环境变量读取，禁止写入配置文件、`data.json`、命令历史或报告。
+
+### Step 3：渲染 docx
 
 ```bash
 node render.js <数据目录>/data.json
@@ -108,7 +167,9 @@ node render.js <数据目录>/data.json
 生成成功：<数据目录>/<项目>_MySQL健康巡检报告_v1.0.docx
 ```
 
-### Step 3（可选）：润色 data.json 后重渲染
+若存在 `aiAssessment`，报告的“巡检总结与行动计划”会增加“大模型辅助研判”小节，并明确其不计入规则问题数和健康度评分。
+
+### Step 4（可选）：润色 data.json 后重渲染
 
 如果用户希望调整业务侧描述（不影响纯技术数据），可手工编辑 data.json 这些字段：
 
@@ -119,6 +180,7 @@ node render.js <数据目录>/data.json
 | `issues[*].description` / `action` | 让问题描述措辞更贴业务 |
 | `issues[*].status` | 已处理可改为 "已修复" |
 | `recommendations.longTerm` | 追加项目特有长期规划 |
+| `aiAssessment` | 大模型辅助研判；优先通过 `ai-review.js --apply` 写入，不要自由改结构 |
 | `nodes[*].interviewTemplate` | 客户访谈占位（见 references/interview-guide.md）|
 
 **不要改**：`nodes[*].variables` / `topTables` / `disks` 等纯采集数据 —— 重跑 extract.js 会覆盖。
@@ -160,6 +222,9 @@ bash install.sh                                    # 装到 ~/.workbuddy/skills/
 | 某节点字段全是 `-` | txt 段名与解析器期待不一致 | 查 `references/parsing.md`，必要时改 `extract.js` 中的 `getSection()` 关键字 |
 | docx 在 WPS 表格列宽乱 | 极早期版本残留 | v4.0 已修复；重跑 render.js 即可 |
 | 残留 `{xxx}` 占位符 | 模板硬编码未替换 | 不该出现，请查 render.js |
+| 大模型 API 超时 / 429 / 5xx | 网络、限流或服务异常 | SaaS 默认 `failOpen=true`，继续交付纯规则报告；记录失败原因后重试 AI 步骤 |
+| 模型返回非 JSON | 模型未遵守输出契约或接口不支持 JSON mode | 降低 temperature，启用 `jsonMode`，按 `references/ai-review.md` 检查契约 |
+| `API Key 未设置` | `apiKeyEnv` 对应环境变量不存在 | 用环境变量注入，不要把 key 写入 JSON |
 
 ---
 
@@ -172,6 +237,9 @@ bash install.sh                                    # 装到 ~/.workbuddy/skills/
 - [ ] 第十五章备份评估非空（若 V3.0 采集脚本运行过）
 - [ ] 第十六章安全合规检查 PASS/WARN/FAIL 计数合理
 - [ ] 在 WPS / Word 中**右键目录 → 更新域**显示页码
+- [ ] 若启用 AI：`aiAssessment.status=success`，每条 finding 有 evidence / suggestion / verification
+- [ ] AI finding 未改变 `issues[]` 数量和 `healthScore`
+- [ ] candidateRule 未经规则化与测试，不计入正式告警
 
 ---
 
@@ -183,6 +251,8 @@ bash install.sh                                    # 装到 ~/.workbuddy/skills/
 | `references/rules.md` | 用户问"为什么报了 X 问题"或想新增检测规则 |
 | `references/parsing.md` | extract.js 解析失败 / 想新增采集字段 |
 | `references/interview-guide.md` | 用户要填写客户访谈表 / 业务方需要协助 |
+| `references/ai-review.md` | 使用智能体/API 二次巡检，或把模型发现转成候选规则 |
+| `scripts/rules/SCHEMA.md` | 将经验证的 candidateRule 落为正式声明式规则 |
 | `USAGE.md` | 用户希望直接看完整的人类阅读使用说明 |
 | `CHANGELOG.md` | 用户问版本历史或差异 |
 
@@ -220,7 +290,9 @@ collectors/mysqlHealthCheckV3.0.sh \
 │   └── mysqlHealthCheckV3.0.sh
 └── scripts/
     ├── extract.js                 # txt → data.json
+    ├── ai-review.js               # data.json → aiAssessment（智能体或 API）
     ├── render.js                  # data.json → docx
+    ├── lib/llm-review.js          # 脱敏快照、API 调用、输出校验
     ├── lib/charts.js              # SVG 图表
     └── assets/logo.png
 ```

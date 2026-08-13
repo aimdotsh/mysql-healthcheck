@@ -1114,6 +1114,49 @@ function evalDualMasterLogSlaveUpdates(ctx) {
   }];
 }
 
+function evalConnectionUsage(ctx) {
+  const { node, cfg } = ctx;
+  const current = Number(node.threadsConnected);
+  const max = Number(node.variables?.max_connections);
+  if (!Number.isFinite(current) || !Number.isFinite(max) || max <= 0) return [];
+  const pct = current / max * 100;
+  const p1 = Number(cfg?.thresholds?.connection?.usage_p1_pct ?? 85);
+  const p2 = Number(cfg?.thresholds?.connection?.usage_p2_pct ?? 70);
+  if (pct < p2) return [];
+  const priority = pct >= p1 ? 'P1' : 'P2';
+  return [{
+    priority,
+    groupKey: `connection_usage:${node.ip}`,
+    description: `当前连接 ${current}/${max}（${pct.toFixed(1)}%），连接容量余量${priority === 'P1' ? '不足' : '偏低'}`,
+    currentValue: `${current}/${max}（${pct.toFixed(1)}%）`,
+    recommendedValue: `< ${p2}%（需结合历史峰值确认）`,
+    action: '先检查连接池是否复用、空闲连接是否及时释放及长事务/慢 SQL；结合监控中的 Threads_connected 峰值评估，避免仅通过盲目调高 max_connections 掩盖泄漏',
+    sql: "SHOW GLOBAL STATUS LIKE 'Threads_connected';\nSHOW GLOBAL STATUS LIKE 'Max_used_connections';\nSHOW PROCESSLIST;",
+    needsConfirmation: true,
+  }];
+}
+
+function evalCurrentLockWaits(ctx) {
+  const { node, cfg } = ctx;
+  const rowWaits = Number(node.lockStatusCounters?.Innodb_row_lock_current_waits || 0);
+  const detailWaits = (node.innodbLockWaits || []).length + (node.innodbLockDetails || []).length;
+  const metadataWaits = (node.metadataLocks || []).length;
+  const total = Math.max(rowWaits, detailWaits) + metadataWaits;
+  if (total <= 0) return [];
+  const p1Count = Number(cfg?.thresholds?.locks?.current_waits_p1 ?? 5);
+  const priority = total >= p1Count ? 'P1' : 'P2';
+  return [{
+    priority,
+    groupKey: `current_lock_waits:${node.ip}`,
+    description: `采集时刻存在锁等待：行锁等待 ${Math.max(rowWaits, detailWaits)} 条，元数据锁 ${metadataWaits} 条`,
+    currentValue: `当前等待合计 ${total} 条`,
+    recommendedValue: '采集时刻无持续锁等待；历史趋势由监控确认',
+    action: '使用只读视图定位阻塞链、长事务和等待 SQL；确认业务影响及事务状态后再决定提交、回滚或终止会话，禁止仅凭巡检报告直接 KILL',
+    sql: "SELECT * FROM sys.innodb_lock_waits;\nSELECT * FROM information_schema.innodb_trx ORDER BY trx_started;\nSELECT * FROM performance_schema.metadata_locks WHERE LOCK_STATUS='PENDING';",
+    needsConfirmation: true,
+  }];
+}
+
 module.exports = {
   evalDisks,
   evalReplication,
@@ -1143,4 +1186,6 @@ module.exports = {
   evalDualMasterBothWritable,
   evalDualMasterAutoIncrement,
   evalDualMasterLogSlaveUpdates,
+  evalConnectionUsage,
+  evalCurrentLockWaits,
 };

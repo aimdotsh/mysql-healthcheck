@@ -31,6 +31,13 @@
       "handler": "evalMaxConnectionsVsMemory"
     },
     {
+      "id": "connection_usage_high",
+      "scope": "node",
+      "title": "当前连接使用率偏高",
+      "rationale": "Threads_connected 接近 max_connections 时，新连接可能被拒绝；必须结合连接池、长事务和历史峰值复核，不能只盲目调大上限。",
+      "handler": "evalConnectionUsage"
+    },
+    {
       "id": "mem_high",
       "scope": "node",
       "priority": "P1",

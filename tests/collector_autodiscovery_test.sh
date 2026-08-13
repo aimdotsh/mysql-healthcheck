@@ -13,6 +13,7 @@ mkdir -p "$BASE_DIR/bin" "$DATA_DIR" "$OUT_DIR"
 cat > "$BASE_DIR/bin/mysql" <<'MYSQL'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${FAKE_MYSQL_ARGS_LOG}"
+printf 'MYSQL_PWD_SET=%s\n' "${MYSQL_PWD:+yes}" >> "${FAKE_MYSQL_ARGS_LOG}"
 case "$*" in
   *"SELECT VERSION()"*) echo "5.7.20" ;;
   *"SELECT LEFT(VERSION(),3)"*) echo "5.7" ;;
@@ -50,8 +51,13 @@ export FAKE_MYSQL_ARGS_LOG="$TMP_DIR/mysql-args.log"
   --non-interactive \
   --test-login
 
-grep -q -- "--socket=$DATA_DIR/mydata/mysql.sock" "$FAKE_MYSQL_ARGS_LOG"
-grep -q -- "--defaults-extra-file=" "$FAKE_MYSQL_ARGS_LOG"
+# 自动发现模式先尝试与手工 mysql 登录一致的 default 连接；fake mysql 首次即成功，
+# 因此不应强制注入 socket。显式 --socket 的行为由 collector 参数分支负责。
+if grep -q -- "--socket=" "$FAKE_MYSQL_ARGS_LOG"; then
+  echo "collector unexpectedly forced socket after default connection succeeded" >&2
+  exit 1
+fi
+grep -q -- "MYSQL_PWD_SET=yes" "$FAKE_MYSQL_ARGS_LOG"
 grep -Eq -- "--ssl-mode=DISABLED|--ssl=0" "$FAKE_MYSQL_ARGS_LOG"
 
 if grep -q -- "-psecret" "$FAKE_MYSQL_ARGS_LOG"; then

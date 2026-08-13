@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const STATUS = Object.freeze({
   QUEUED: 'queued',
   RUNNING_EXTRACT: 'running:extract',
+  RUNNING_AI: 'running:ai-review',
   RUNNING_RENDER: 'running:render',
   DONE: 'done',
   ERROR: 'error',

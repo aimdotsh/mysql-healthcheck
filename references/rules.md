@@ -4,7 +4,7 @@
 
 完整的规则定义、触发条件、说明文本、建议行动、SQL 模板请见：
 
-➡️ **[`references/rules-auto.md`](./rules-auto.md)** （自动生成，~42 条规则覆盖 6 个维度）
+➡️ **[`references/rules-auto.md`](./rules-auto.md)** （自动生成，55 条规则覆盖 6 个维度）
 
 ## 快速入口
 

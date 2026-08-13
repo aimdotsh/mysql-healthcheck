@@ -70,6 +70,13 @@
       "actionTpl": "建议设为 1 秒以更敏感地捕获慢 SQL"
     },
     {
+      "id": "current_lock_waits",
+      "scope": "node",
+      "title": "采集时刻存在行锁或元数据锁等待",
+      "rationale": "当前锁等待会直接放大事务响应时间；需通过阻塞链和长事务证据定位，避免无依据终止会话。",
+      "handler": "evalCurrentLockWaits"
+    },
+    {
       "id": "redo_log_too_small",
       "scope": "node",
       "title": "InnoDB redo log 偏小",

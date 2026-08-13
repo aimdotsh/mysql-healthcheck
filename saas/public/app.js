@@ -283,6 +283,7 @@
     const labels = {
       'queued': '排队中…',
       'extract': '解析采集文件…',
+      'ai-review': '大模型辅助研判…',
       'render': '渲染报告…',
       'done': '完成',
     };
@@ -318,6 +319,7 @@
         <a class="btn btn-secondary" href="${withApiKey(job.dataJsonUrl || '/api/v1/reports/' + jobId + '/data.json')}" download>📊 data.json</a>
       </div>
       ${s.overallAssessment ? '<div class="cluster-assessment">' + escapeHtml(s.overallAssessment) + '</div>' : ''}
+      ${s.aiEnabled ? '<div class="cluster-assessment">🤖 大模型研判：' + escapeHtml(s.aiStatus || '-') + ' · 补充 ' + Number(s.aiFindingCount || 0) + ' 条' + (s.aiError ? '（已降级为规则报告）' : '') + '</div>' : ''}
     `;
   }
 
@@ -465,6 +467,7 @@
             <a class="btn btn-secondary" href="${withApiKey('/api/v1/reports/' + c.jobId + '/data.json')}" download>📊 data.json</a>
           </div>
           ${s.overallAssessment ? '<div class="cluster-assessment">' + escapeHtml(s.overallAssessment) + '</div>' : ''}
+          ${s.aiEnabled ? '<div class="cluster-assessment">🤖 大模型研判：' + escapeHtml(s.aiStatus || '-') + ' · 补充 ' + Number(s.aiFindingCount || 0) + ' 条' + (s.aiError ? '（已降级为规则报告）' : '') + '</div>' : ''}
         `;
       } else if (isError) {
         bodyHtml = `<div class="error active">⚠ ${escapeHtml(c.error || '生成失败')}</div>`;

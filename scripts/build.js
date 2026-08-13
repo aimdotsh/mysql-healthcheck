@@ -3,7 +3,7 @@
  * mysql-healthcheck 端到端构建脚本
  *
  * 用法：
- *   npm run build -- <数据目录> --project "项目名" [--report-version 1.0]
+ *   npm run build -- <数据目录> --project "项目名" [--report-version 1.0] [--llm-config llm.json]
  *   或：node build.js <数据目录> --project "项目名"
  *
  * 等价于：
@@ -27,6 +27,12 @@ if (args.length === 0 || args[0].startsWith('--')) {
 // 找出数据目录（第一个非选项参数）
 const dataDir = path.resolve(args[0]);
 const rest = args.slice(1);
+let llmConfig = null;
+const extractRest = [];
+for (let i = 0; i < rest.length; i++) {
+  if (rest[i] === '--llm-config') llmConfig = rest[++i];
+  else extractRest.push(rest[i]);
+}
 
 console.error('═══════════════════════════════════════════');
 console.error('mysql-healthcheck 端到端构建');
@@ -36,7 +42,7 @@ console.error('');
 
 // Step 1: extract
 console.error('▶ Step 1: 解析 txt → data.json');
-const r1 = spawnSync('node', [path.join(__dirname, 'extract.js'), dataDir, ...rest], {
+const r1 = spawnSync('node', [path.join(__dirname, 'extract.js'), dataDir, ...extractRest], {
   stdio: 'inherit',
 });
 if (r1.status !== 0) {
@@ -46,14 +52,27 @@ if (r1.status !== 0) {
 
 // 期望 data.json 在数据目录下（除非用户用了 --out）
 let dataJsonPath = path.join(dataDir, 'data.json');
-const outIdx = rest.indexOf('--out');
-if (outIdx !== -1 && rest[outIdx + 1]) {
-  dataJsonPath = path.resolve(rest[outIdx + 1]);
+const outIdx = extractRest.indexOf('--out');
+if (outIdx !== -1 && extractRest[outIdx + 1]) {
+  dataJsonPath = path.resolve(extractRest[outIdx + 1]);
 }
 
-// Step 2: render
+// Optional Step 2: LLM review
+if (llmConfig) {
+  console.error('');
+  console.error('▶ Step 2: 大模型辅助研判');
+  const ai = spawnSync('node', [path.join(__dirname, 'ai-review.js'), dataJsonPath, '--config', llmConfig], {
+    stdio: 'inherit',
+  });
+  if (ai.status !== 0) {
+    console.error('✗ 大模型辅助研判失败');
+    process.exit(ai.status || 1);
+  }
+}
+
+// Final Step: render
 console.error('');
-console.error('▶ Step 2: 渲染 data.json → docx');
+console.error(`▶ Step ${llmConfig ? 3 : 2}: 渲染 data.json → docx`);
 const r2 = spawnSync('node', [path.join(__dirname, 'render.js'), dataJsonPath], {
   stdio: 'inherit',
 });

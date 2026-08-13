@@ -1,0 +1,4 @@
+{
+  "_doc": "Docker Compose 默认挂载的关闭配置。要启用时，用 MYSQL_HC_LLM_CONFIG_HOST 指向自行维护的配置文件。",
+  "enabled": false
+}

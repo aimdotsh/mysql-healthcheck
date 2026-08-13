@@ -46,6 +46,24 @@ if (run.status !== 0) {
 const data = JSON.parse(fs.readFileSync(outPath, 'utf8'));
 const byIp = Object.fromEntries(data.nodes.map((node) => [node.ip, node]));
 
+// 大模型辅助研判为独立可选字段：渲染应展示，但不能改变 issues/healthScore。
+data.aiAssessment = {
+  status: 'success', model: 'mock-dba-model',
+  summary: '测试用大模型综合研判。',
+  disclaimer: '本节为大模型辅助研判，不改变规则告警与健康度评分。',
+  findings: [{
+    priority: 'P2', category: 'performance', title: '测试补充发现',
+    evidence: '测试证据', suggestion: '测试建议', verification: '测试验证', isRuleGap: true,
+    candidateRule: {
+      id: 'test_candidate_rule', dimension: 'performance', scope: 'node',
+      triggerIdea: '测试确定性触发条件', dataDependencies: ['nodes[].testMetric'],
+      falsePositiveGuards: ['字段缺失时不触发'],
+    },
+  }],
+  limitations: ['测试证据边界'],
+};
+fs.writeFileSync(outPath, JSON.stringify(data, null, 2));
+
 assert.strictEqual(data.nodes[0].ip, '10.10.10.2', 'primary node should be listed first for all report tables and charts');
 assert.strictEqual(data.cluster.topology, '一主3从（异步复制）', 'cluster topology should identify one primary and three replicas');
 assert.strictEqual(byIp['10.10.10.2'].role, 'primary', '10.10.10.2 should be inferred as the primary node');
@@ -179,5 +197,9 @@ assert(bodyText.includes('个长期未使用的索引') && bodyText.includes('�
 assert(bodyText.includes('组冗余索引') && bodyText.includes('业务表索引'), 'redundant index section should summarize table categories (v4.9.7 reworded)');
 assert(bodyText.includes('nodes[].unusedIndexes') || bodyText.includes('nodes[].redundantIndexes'), 'v4.9.7: index sections should point users to data.json for the complete dataset');
 assert(bodyText.includes('建议处置流程（三步走）'), 'v4.9.7: index sections should include the 3-step processing workflow');
+assert(bodyText.includes('大模型辅助研判'), 'report should render optional AI assessment section');
+assert(bodyText.includes('测试补充发现'), 'report should render AI findings');
+assert(bodyText.includes('不计入规则问题数与健康度评分'), 'report should disclose AI/rule boundary');
+assert(bodyText.includes('test_candidate_rule'), 'report should render candidate rule details');
 
 console.log('report regression test passed');

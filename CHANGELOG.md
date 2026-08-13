@@ -6,6 +6,33 @@
 
 ---
 
+## [Unreleased] - 2026-08-13
+
+### 规则 + 大模型混合巡检
+
+- 新增 `scripts/lib/llm-review.js`：从 `data.json` 构造裁剪后的结构化快照，默认脱敏项目名/IP/hostname、默认不发送 SQL 文本，通过 OpenAI-compatible `chat/completions` 生成严格 JSON 研判。
+- 新增 `scripts/ai-review.js`：支持 API 模式，以及智能体 `--prepare` → `--apply` 离线模式；模型输出写入独立 `aiAssessment`，不改写 `issues[]`、优先级或健康度评分。
+- `render.js` 在总结章节独立展示大模型发现、证据、建议、验证步骤和候选规则标记。
+- SaaS 作业链路扩展为 `extract → ai-review（可选） → render`，支持模型配置文件、环境变量密钥和 `failOpen` 降级；历史摘要记录 AI 状态与发现数。
+- 新增 `connection_usage_high`、`current_lock_waits` 两条确定性规则及阈值、正反例测试，规则总数更新为 55 条。
+- 新增 `references/ai-review.md`，定义隐私边界、输出契约和 candidateRule 晋升流程；完善 `SKILL.md`，使智能体可以直接参与巡检和规则补全。
+
+### 安全约束
+
+- API Key 只从 `apiKeyEnv` 指定的环境变量读取，不接受配置文件内密钥。
+- 默认不上传原始 collector 文件；主机标识默认别名化；SQL 文本默认关闭。
+- 模型建议只作辅助研判，不自动执行 SQL 或生产变更，不计入确定性评分。
+
+### 验证
+
+- 规则引擎：37 passed
+- 大模型离线/模拟 API：passed（不访问真实外部 API）
+- SaaS 集群分组：10 passed
+- docx 回归（含 AI 小节）：passed
+- Docker Compose 配置解析：passed
+
+---
+
 ## [5.0.9] - 2026-06-18
 
 **弱密码检测 + 6 条高价值参数配置检查 + 采集端高级诊断增强**。

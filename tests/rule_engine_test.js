@@ -361,6 +361,45 @@ test('groupKeyTpl renders with node context', () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('built-in connection_usage_high fires at configured threshold', () => {
+  const rulesDir = path.join(__dirname, '..', 'scripts', 'rules');
+  const helpers = require('../scripts/rule-helpers');
+  const e = engine.createEngine({ rulesDir, helpers });
+  const issues = e.run({
+    nodes: [{ ip: '10.0.0.1', threadsConnected: 90, variables: { max_connections: '100' } }],
+    cfg: { thresholds: { connection: { usage_p1_pct: 85, usage_p2_pct: 70 } }, disabledRules: [] },
+  });
+  const issue = issues.find(i => i.type === 'connection_usage_high');
+  assert(issue, 'connection usage rule should fire');
+  assert.strictEqual(issue.priority, 'P1');
+  assert(issue.description.includes('90/100'));
+});
+
+test('built-in connection_usage_high ignores missing denominator', () => {
+  const rulesDir = path.join(__dirname, '..', 'scripts', 'rules');
+  const helpers = require('../scripts/rule-helpers');
+  const e = engine.createEngine({ rulesDir, helpers });
+  const issues = e.run({ nodes: [{ ip: '10.0.0.1', threadsConnected: 90, variables: {} }], cfg: {} });
+  assert(!issues.some(i => i.type === 'connection_usage_high'));
+});
+
+test('built-in current_lock_waits fires only with current evidence', () => {
+  const rulesDir = path.join(__dirname, '..', 'scripts', 'rules');
+  const helpers = require('../scripts/rule-helpers');
+  const e = engine.createEngine({ rulesDir, helpers });
+  const issues = e.run({
+    nodes: [{
+      ip: '10.0.0.1', variables: {}, lockStatusCounters: { Innodb_row_lock_current_waits: '2' },
+      innodbLockWaits: [], innodbLockDetails: [], metadataLocks: [{ lock: 'pending' }],
+    }],
+    cfg: { thresholds: { locks: { current_waits_p1: 5 } } },
+  });
+  const issue = issues.find(i => i.type === 'current_lock_waits');
+  assert(issue, 'current lock wait rule should fire');
+  assert.strictEqual(issue.priority, 'P2');
+  assert(issue.needsConfirmation);
+});
+
 // ─────────────────────────────────────────────────────────────
 
 console.log('');

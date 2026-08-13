@@ -9,6 +9,12 @@ Thumbs.db
 *.docx
 data.json
 scripts/data.json
+mysql-healthcheck.llm.json
+**/mysql-healthcheck.llm.json
+deploy/llm.json
+ai-review-input.json
+ai-review-result.json
+.env
 
 # 编辑器
 .vscode/
