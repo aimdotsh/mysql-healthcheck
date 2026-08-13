@@ -1140,7 +1140,7 @@ function evalCurrentLockWaits(ctx) {
   const { node, cfg } = ctx;
   const rowWaits = Number(node.lockStatusCounters?.Innodb_row_lock_current_waits || 0);
   const detailWaits = (node.innodbLockWaits || []).length + (node.innodbLockDetails || []).length;
-  const metadataWaits = (node.metadataLocks || []).length;
+  const metadataWaits = (node.metadataLockWaits || []).length;
   const total = Math.max(rowWaits, detailWaits) + metadataWaits;
   if (total <= 0) return [];
   const p1Count = Number(cfg?.thresholds?.locks?.current_waits_p1 ?? 5);

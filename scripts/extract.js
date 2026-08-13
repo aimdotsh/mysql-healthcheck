@@ -734,7 +734,15 @@ function parseTxt(filepath) {
   node.innodbLocks = parseMysqlTable(getSection(content, 'INNODB LOCKS')).rows;
   node.innodbLockWaits = parseMysqlTable(getSection(content, 'INNODB LOCK WAITS')).rows;
   node.innodbLockDetails = parseMysqlTable(getSection(content, 'LOCK DETAILS')).rows;
-  node.metadataLocks = parseMysqlTable(getSection(content, 'Metadata locks')).rows;
+  const metadataLockTable = parseMysqlTable(getSection(content, 'Metadata locks'));
+  node.metadataLocks = metadataLockTable.rows;
+  // performance_schema.metadata_locks 同时包含正常的 GRANTED 锁和真正等待的
+  // PENDING 锁。保留原始 rows 供报告追溯，同时提供结构化 pending 子集给规则使用。
+  node.metadataLockWaits = metadataLockTable.rows.filter((row) => {
+    const obj = rowObject(metadataLockTable.headers, row);
+    const status = obj.lock_status ?? obj.LOCK_STATUS;
+    return String(status || '').toUpperCase() === 'PENDING';
+  });
   const lockCounterTable = parseMysqlTable(getSection(content, 'Lock status counters'));
   node.lockStatusCounters = Object.fromEntries(lockCounterTable.rows.map(r => [r[0], r[1]]));
 

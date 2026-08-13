@@ -182,7 +182,7 @@ function buildInspectionSnapshot(data, config = {}) {
         lagSeconds: numberOrNull(st.secondsBehindMaster),
         currentRowLockWaits: Number(n.lockStatusCounters?.Innodb_row_lock_current_waits || 0),
         lockWaitRecords: (n.innodbLockWaits || []).length + (n.innodbLockDetails || []).length,
-        metadataLockRecords: (n.metadataLocks || []).length,
+        metadataLockRecords: (n.metadataLockWaits || []).length,
       };
     }
     return base;

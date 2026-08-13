@@ -390,7 +390,7 @@ test('built-in current_lock_waits fires only with current evidence', () => {
   const issues = e.run({
     nodes: [{
       ip: '10.0.0.1', variables: {}, lockStatusCounters: { Innodb_row_lock_current_waits: '2' },
-      innodbLockWaits: [], innodbLockDetails: [], metadataLocks: [{ lock: 'pending' }],
+      innodbLockWaits: [], innodbLockDetails: [], metadataLocks: [], metadataLockWaits: [{ lockStatus: 'PENDING' }],
     }],
     cfg: { thresholds: { locks: { current_waits_p1: 5 } } },
   });
@@ -398,6 +398,20 @@ test('built-in current_lock_waits fires only with current evidence', () => {
   assert(issue, 'current lock wait rule should fire');
   assert.strictEqual(issue.priority, 'P2');
   assert(issue.needsConfirmation);
+});
+
+test('built-in current_lock_waits ignores normal GRANTED metadata locks', () => {
+  const rulesDir = path.join(__dirname, '..', 'scripts', 'rules');
+  const helpers = require('../scripts/rule-helpers');
+  const e = engine.createEngine({ rulesDir, helpers });
+  const issues = e.run({
+    nodes: [{
+      ip: '10.0.0.1', variables: {}, lockStatusCounters: { Innodb_row_lock_current_waits: '0' },
+      innodbLockWaits: [], innodbLockDetails: [], metadataLocks: [['GRANTED']], metadataLockWaits: [],
+    }],
+    cfg: { thresholds: { locks: { current_waits_p1: 5 } } },
+  });
+  assert(!issues.some(i => i.type === 'current_lock_waits'));
 });
 
 // ─────────────────────────────────────────────────────────────

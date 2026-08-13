@@ -15,6 +15,7 @@
 - `render.js` 在总结章节独立展示大模型发现、证据、建议、验证步骤和候选规则标记。
 - SaaS 作业链路扩展为 `extract → ai-review（可选） → render`，支持模型配置文件、环境变量密钥和 `failOpen` 降级；历史摘要记录 AI 状态与发现数。
 - 新增 `connection_usage_high`、`current_lock_waits` 两条确定性规则及阈值、正反例测试，规则总数更新为 55 条。
+- 演示数据复核发现并修复 `current_lock_waits` 误报：`metadata_locks` 仅统计 `LOCK_STATUS=PENDING`，正常的 `GRANTED` 锁不再触发告警。
 - 新增 `references/ai-review.md`，定义隐私边界、输出契约和 candidateRule 晋升流程；完善 `SKILL.md`，使智能体可以直接参与巡检和规则补全。
 
 ### 安全约束

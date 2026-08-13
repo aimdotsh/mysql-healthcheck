@@ -1414,7 +1414,7 @@ function chapterTransactions(data) {
   const counterRows = [];
   for (const n of data.nodes) {
     const waits = (n.innodbLockWaits || []).length + (n.innodbLockDetails || []).length;
-    const metadata = (n.metadataLocks || []).length;
+    const metadata = (n.metadataLockWaits || []).length;
     if (waits > 0 || metadata > 0) {
       waitRows.push([n.ip, waits, metadata, '存在锁等待，需结合 SQL 与事务线程定位阻塞源']);
     }
