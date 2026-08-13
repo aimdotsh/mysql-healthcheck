@@ -10,19 +10,15 @@ sudo mkdir -p /opt/mysql-healthcheck && sudo chown $USER /opt/mysql-healthcheck
 cd /opt/mysql-healthcheck
 git clone -b SaaS https://github.com/aimdotsh/mysql-healthcheck.git .
 
-# 2. 准备数据目录
-sudo mkdir -p /var/lib/mysql-healthcheck
-sudo chown 1001:1001 /var/lib/mysql-healthcheck   # 容器内 uid=1001
-
-# 3. （可选）配置环境变量
+# 2. （可选）配置环境变量
 cp deploy/env.example .env
 # 编辑 .env，至少改 API_KEY
 
-# 4. 起服务
+# 3. 起服务
 docker compose up -d
 docker compose logs -f       # Ctrl+C 不会停容器，只是退出日志查看
 
-# 5. 验证
+# 4. 验证
 curl http://127.0.0.1:3000/api/v1/health
 # {"version":"5.0.3", ...}
 ```
@@ -64,14 +60,18 @@ cd /opt/mysql-healthcheck
 git clone -b SaaS https://github.com/aimdotsh/mysql-healthcheck.git .
 ```
 
-### 3. 数据目录
+### 3. 数据持久化
+
+数据默认保存在宿主机 `/var/lib/mysql-healthcheck`。容器启动入口会以 root 创建挂载目录和三个直接子目录、将它们设为 uid 1001，随后立即降权运行 Node 服务，因此无需手工初始化权限。
+
+若环境使用 NFS `root_squash` 等不允许容器修正属主的文件系统，需由管理员预先执行：
 
 ```bash
 sudo mkdir -p /var/lib/mysql-healthcheck
 sudo chown 1001:1001 /var/lib/mysql-healthcheck   # Dockerfile 里 USER mysqlhc uid=1001
 ```
 
-> 若想用 docker volume 而非 bind mount，编辑 `docker-compose.yml` 启用 `volumes:` 段。
+> Node 服务仍以非 root 用户 `mysqlhc`（uid 1001）运行；root 仅用于启动时准备挂载目录。
 
 ### 4. （可选）环境变量
 
@@ -169,7 +169,7 @@ docker compose logs --tail=200 saas  # 最近 200 行
 
 ### 备份
 
-数据全在 `/var/lib/mysql-healthcheck`，简单 tar 即可：
+数据全在 `/var/lib/mysql-healthcheck`，可直接定时打包宿主机目录：
 
 ```bash
 sudo tee /etc/cron.daily/mysql-hc-backup <<'EOF'
@@ -206,7 +206,7 @@ prometheus-node-exporter:
 | `Cannot find module '@resvg/resvg-js'` | 镜像构建时未装好原生模块，重新 `docker compose build --no-cache` |
 | 上传 413 Request Entity Too Large | nginx `client_max_body_size` 不够；或 multer `MAX_FILE_SIZE_MB` 不够 |
 | 容器内时区是 UTC | docker-compose.yml 加 `TZ: Asia/Shanghai` |
-| `Permission denied` 写 `/data` | `/var/lib/mysql-healthcheck` 没 chown 给 uid 1001 |
+| `EACCES: permission denied, mkdir '/data/uploads'` | 确认使用含 `docker-entrypoint.sh` 的最新镜像；NFS `root_squash` 场景需由管理员把目录属主设为 uid 1001 |
 | 重启后历史记录丢了 | 没挂 volume，或 volume 路径不对 |
 | Healthcheck 一直 unhealthy | `docker exec mysql-hc-saas wget --spider http://localhost:3000/api/v1/health` 手动测 |
 
@@ -217,9 +217,9 @@ prometheus-node-exporter:
 - [ ] `API_KEY` 已设置（除非完全内网）
 - [ ] HTTPS 已启用（certbot 自动续期）
 - [ ] 防火墙只放 80/443
-- [ ] `/var/lib/mysql-healthcheck` 权限正确（uid 1001）
+- [ ] `/var/lib/mysql-healthcheck` 权限正确（启动入口会自动设为 uid 1001）
 - [ ] 备份 cron 已就位
-- [ ] Docker 容器以非 root 用户运行（Dockerfile 已配，无需额外处理）
+- [ ] Node 服务以非 root 用户运行（入口脚本准备目录后自动降权）
 - [ ] 日志轮转生效（compose 已配，无需额外处理）
 
 ---

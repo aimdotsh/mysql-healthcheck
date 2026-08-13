@@ -39,7 +39,7 @@ services:
       MYSQL_HC_LLM_API_KEY: ${MYSQL_HC_LLM_API_KEY:-}
 
     volumes:
-      # 持久化数据；宿主机目录不存在会自动创建（但要确保父目录权限）
+      # 启动入口会创建子目录、修正属主，然后降权到 uid 1001 运行服务。
       - ${STORAGE_HOST_DIR:-/var/lib/mysql-healthcheck}:/data
       # 默认挂载 enabled=false 的关闭配置；启用时在 .env 让 MYSQL_HC_LLM_CONFIG_HOST
       # 指向复制并编辑后的 llm.json。
@@ -66,8 +66,3 @@ services:
       options:
         max-size: "20m"
         max-file: "5"
-
-# 命名 volume 方式（可选）— 取代上面的 bind mount。
-# 用 docker volume 管理，docker volume inspect mysql_hc_data 看路径。
-# volumes:
-#   mysql_hc_data:

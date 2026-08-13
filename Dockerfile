@@ -25,7 +25,7 @@ FROM node:20-slim AS runtime
 
 # tini 作 PID 1：正确处理信号转发 + 回收僵尸进程
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      tini ca-certificates wget \
+      tini ca-certificates wget gosu \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -39,14 +39,14 @@ COPY scripts/    ./scripts/
 COPY saas/       ./saas/
 # 采集脚本：Web UI「采集脚本使用说明」页支持直接下载
 COPY collectors/ ./collectors/
+COPY --chmod=755 docker/docker-entrypoint.sh /usr/local/bin/mysql-healthcheck-entrypoint
 
 # 准备数据目录（容器外挂卷应该挂到 /data）
 RUN mkdir -p /data/uploads /data/reports /data/history
 
-# 创建非 root 用户运行（安全实践）
+# 创建非 root 用户；入口脚本准备挂载目录后会用 gosu 降权运行服务。
 RUN groupadd -r mysqlhc && useradd -r -g mysqlhc -u 1001 mysqlhc \
     && chown -R mysqlhc:mysqlhc /app /data
-USER mysqlhc
 
 WORKDIR /app/saas
 
@@ -63,5 +63,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget --quiet --tries=1 --spider http://localhost:${PORT}/api/v1/health || exit 1
 
 # tini 作 PID 1，处理 SIGTERM / SIGINT 优雅退出
-ENTRYPOINT ["/usr/bin/tini", "--"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/mysql-healthcheck-entrypoint"]
 CMD ["node", "server.js"]
