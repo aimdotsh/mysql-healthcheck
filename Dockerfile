@@ -25,7 +25,7 @@ FROM node:20-slim AS runtime
 
 # tini 作 PID 1：正确处理信号转发 + 回收僵尸进程
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      tini ca-certificates wget gosu \
+      tini ca-certificates wget gosu fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

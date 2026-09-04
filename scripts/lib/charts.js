@@ -1,7 +1,12 @@
 // SVG 图表生成 + PNG 转换
 // 6 类图形组件：gauge（健康度仪表）/ radar（雷达）/ pie（饼图）/ hbar（横向柱）/ vbar（纵向柱）/ topology（拓扑图）
 'use strict';
+const fs = require('fs');
 const path = require('path');
+
+const FONT_DIRS = [
+  '/usr/share/fonts/opentype/noto',
+].filter(dir => fs.existsSync(dir));
 
 function loadResvg() {
   const candidates = [
@@ -37,7 +42,7 @@ const COLORS = {
 function svgWrap(width, height, body) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
 <style>
-text { font-family: "Microsoft YaHei", Arial, sans-serif; }
+text { font-family: "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
 </style>
 <rect width="${width}" height="${height}" fill="${COLORS.bg}"/>
 ${body}
@@ -396,7 +401,11 @@ function svgToPng(svg, opts = {}) {
     const Resvg = resvg.Resvg;
     const r = new Resvg(svg, {
       fitTo: opts.fitTo || { mode: 'original' },
-      font: { loadSystemFonts: true },
+      font: {
+        loadSystemFonts: true,
+        fontDirs: FONT_DIRS,
+        defaultFontFamily: 'Noto Sans CJK SC',
+      },
     });
     return r.render().asPng();
   } catch (e) {
